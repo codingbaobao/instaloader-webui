@@ -362,6 +362,16 @@ class LibraryRepository:
             media_items = session.scalars(query).all()
             return self._media_snapshots(session, media_items)
 
+    def list_all_media_for_profile(self, profile_id: str) -> tuple[MediaSnapshot, ...]:
+        """Return every media item owned by one profile for worker deletion."""
+        with self._session_factory() as session:
+            media_items = session.scalars(
+                select(MediaItem)
+                .where(MediaItem.owner_profile_id == profile_id)
+                .order_by(MediaItem.published_at.desc(), MediaItem.id)
+            ).all()
+            return self._media_snapshots(session, media_items)
+
     def count_media(
         self,
         *,
@@ -390,6 +400,23 @@ class LibraryRepository:
             )
             if model is None:
                 return None
+            return self._media_snapshots(session, [model])[0]
+
+    def set_media_kind(
+        self, *, shortcode: str, kind: str, now: datetime
+    ) -> MediaSnapshot | None:
+        """Update a known item's normalized kind without replacing its assets."""
+        if kind not in {"post", "reel"}:
+            raise ValueError("Media kind must be post or reel.")
+        with self._session_factory.begin() as session:
+            model = session.scalar(
+                select(MediaItem).where(MediaItem.shortcode == shortcode)
+            )
+            if model is None:
+                return None
+            model.kind = kind
+            model.updated_at = _as_utc(now)
+            session.flush()
             return self._media_snapshots(session, [model])[0]
 
     def upsert_media(

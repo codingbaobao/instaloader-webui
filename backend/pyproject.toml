@@ -26,6 +26,9 @@ test = [
     "ruff>=0.8,<1",
 ]
 
+[project.scripts]
+instaloader-webui-worker = "instaloader_webui.worker:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/instaloader_webui"]
 
