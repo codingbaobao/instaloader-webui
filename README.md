@@ -48,9 +48,19 @@
 
 - 本專案不提供 HTTPS、Caddy 或 Nginx。直接將 HTTP 暴露於公網並不安全；
   請自行在外部反向代理或其他入口終止 TLS，並限制來源與登入嘗試。
+- 應用程式只信任 `IW_FORWARDED_ALLOW_IPS` 列出的直接反向代理所提供的
+  forwarded headers。值必須是已知 proxy 的 container IP 或 CIDR（多個值以
+  逗號分隔）；不要設為 `*`，也不要加入不受信任的網段，否則用戶端可偽造
+  來源 IP 並繞過依 IP 的登入限制。未使用反向代理時保留預設
+  `127.0.0.1`。Compose 前方另有 proxy container 時，請明確改成該 proxy
+  所在的受信任網段。
 - 只有外部入口已完整使用 HTTPS 時，才將
   `IW_SESSION_COOKIE_SECURE=true`。若在純 HTTP 下設為 `true`，瀏覽器不會
   傳送 session cookie，登入流程將無法正常使用。
+- 應用程式會送出 CSP、frame、MIME、referrer、permissions 與 no-store
+  等安全標頭，但刻意不送 HSTS，因為它無法知道用戶端是否確實經由 HTTPS
+  抵達。TLS 入口應覆寫/補上適合部署網域的 HSTS，並避免把內部純 HTTP
+  連線誤宣告為 HTTPS。
 - 管理者首次建立後，`IW_ADMIN_USERNAME` 與 `IW_ADMIN_PASSWORD` 的 bootstrap
   值會被忽略；之後修改環境變數不會重設既有帳號或密碼。確認已完成首次
   建立後，可清空 `.env` 的 `IW_ADMIN_PASSWORD` 並重新建立 container，避免

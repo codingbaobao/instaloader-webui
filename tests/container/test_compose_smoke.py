@@ -20,6 +20,19 @@ COMPOSE_ENV_FILE = PROJECT_ROOT / ".env.example"
 COMPOSE_CONTROL_PREFIX = "COMPOSE_"
 
 
+def test_compose_declares_runtime_security_boundaries() -> None:
+    compose_source = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    assert "read_only: true" in compose_source
+    assert "cap_drop:" in compose_source
+    assert "- ALL" in compose_source
+    assert "no-new-privileges:true" in compose_source
+    assert "tmpfs:" in compose_source
+    assert 'FORWARDED_ALLOW_IPS: "${IW_FORWARDED_ALLOW_IPS:-127.0.0.1}"' in (
+        compose_source
+    )
+
+
 def prepare_data_root(data_root: Path, *, posix: bool = os.name == "posix") -> None:
     data_root.mkdir()
     if posix:
@@ -209,6 +222,13 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
             "-c",
             (
                 "import importlib.metadata, json, os, pathlib, shutil; "
+                "app_process = next(path for path in pathlib.Path('/proc').iterdir() "
+                "if path.name.isdigit() and (path / 'cmdline').is_file() "
+                "and any(token.endswith(b'/uvicorn') for token in "
+                "(path / 'cmdline').read_bytes().split(b'\\0'))); "
+                "status = dict(line.split(':', 1) for line in "
+                "(app_process / 'status').read_text().splitlines() "
+                "if ':' in line); "
                 "print(json.dumps({"
                 "'uid': os.getuid(), "
                 "'gid': os.getgid(), "
@@ -216,6 +236,13 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
                 "'node': shutil.which('node'), "
                 "'npm': shutil.which('npm'), "
                 "'database': pathlib.Path('/data/database/app.sqlite3').is_file(), "
+                "'database_mode': oct(pathlib.Path('/data/database/app.sqlite3')"
+                ".stat().st_mode & 0o777), "
+                "'database_directory_mode': oct(pathlib.Path('/data/database')"
+                ".stat().st_mode & 0o777), "
+                "'umask': status['Umask'].strip(), "
+                "'no_new_privileges': status['NoNewPrivs'].strip(), "
+                "'effective_capabilities': status['CapEff'].strip(), "
                 "'forbidden': [str(path) for path in ("
                 "pathlib.Path('/app/frontend'), pathlib.Path('/app/backend'), "
                 "pathlib.Path('/app/.env'), pathlib.Path('/app/.git'), "
@@ -231,10 +258,29 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
             "node": None,
             "npm": None,
             "database": True,
+            "database_mode": "0o600",
+            "database_directory_mode": "0o700",
+            "umask": "0077",
+            "no_new_privileges": "1",
+            "effective_capabilities": "0000000000000000",
             "forbidden": [],
         }
         pip_version = tuple(int(part) for part in runtime["pip"].split("."))
         assert (26, 1, 2) <= pip_version < (27,)
+        container_id = compose(project_name, env, "ps", "-q", "web").stdout.strip()
+        container_inspect = json.loads(
+            subprocess.run(
+                ["docker", "inspect", container_id],
+                check=True,
+                text=True,
+                encoding="utf-8",
+                capture_output=True,
+            ).stdout
+        )[0]["HostConfig"]
+        assert container_inspect["ReadonlyRootfs"] is True
+        assert container_inspect["CapDrop"] == ["ALL"]
+        assert "no-new-privileges:true" in container_inspect["SecurityOpt"]
+        assert "/tmp" in container_inspect["Tmpfs"]
 
         post_bootstrap_env = {**env, "IW_ADMIN_PASSWORD": ""}
         compose(
