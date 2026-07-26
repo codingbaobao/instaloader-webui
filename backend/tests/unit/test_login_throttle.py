@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
+from threading import Barrier, Event
+
+from sqlalchemy import event
 
 from instaloader_webui.auth.throttle import LoginAttemptKey
 
@@ -81,27 +83,73 @@ def test_retry_after_is_never_negative_when_a_block_expires(throttle) -> None:
 
 
 def test_concurrent_failures_are_counted_atomically(
-    throttle, login_failure_repository, monkeypatch
+    throttle, engine
 ) -> None:
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
-    all_reads_completed = Barrier(5)
-    original_get = login_failure_repository.get
+    workers_started = Barrier(5)
+    write_locks_started = Barrier(5)
+    begin_immediate_calls = 0
 
-    def wait_after_read(bucket_digest: str):
-        result = original_get(bucket_digest)
-        all_reads_completed.wait(timeout=5)
-        return result
+    def synchronize_write_lock(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        nonlocal begin_immediate_calls
+        if statement == "BEGIN IMMEDIATE":
+            begin_immediate_calls += 1
+            write_locks_started.wait(timeout=5)
 
-    monkeypatch.setattr(login_failure_repository, "get", wait_after_read)
+    event.listen(engine, "before_cursor_execute", synchronize_write_lock)
+    try:
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(
+                    lambda: (
+                        workers_started.wait(timeout=5),
+                        throttle.record_failure(key, now),
+                    )
+                )
+                for _ in range(5)
+            ]
+            for future in futures:
+                future.result(timeout=10)
+    finally:
+        event.remove(engine, "before_cursor_execute", synchronize_write_lock)
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(throttle.record_failure, key, now) for _ in range(5)]
-        for future in futures:
-            future.result(timeout=10)
-
-    monkeypatch.undo()
+    assert begin_immediate_calls == 5
     decision = throttle.check(key, now)
 
     assert decision.allowed is False
     assert decision.retry_after_seconds == 15 * 60
+
+
+def test_stale_expiry_check_does_not_delete_a_reset_failure_bucket(
+    throttle, login_failure_repository, monkeypatch
+) -> None:
+    first_failure = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    expired_at = first_failure + timedelta(minutes=15)
+    key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
+    throttle.record_failure(key, first_failure)
+    stale_read_complete = Event()
+    allow_stale_check_to_continue = Event()
+    original_get = login_failure_repository.get
+
+    def pause_after_stale_read(bucket_digest: str):
+        snapshot = original_get(bucket_digest)
+        stale_read_complete.set()
+        assert allow_stale_check_to_continue.wait(timeout=5)
+        return snapshot
+
+    monkeypatch.setattr(login_failure_repository, "get", pause_after_stale_read)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        stale_check = executor.submit(throttle.check, key, expired_at)
+        assert stale_read_complete.wait(timeout=5)
+        throttle.record_failure(key, expired_at)
+        allow_stale_check_to_continue.set()
+        assert stale_check.result(timeout=5).allowed is True
+
+    monkeypatch.undo()
+    for offset in range(1, 5):
+        throttle.record_failure(key, expired_at + timedelta(seconds=offset))
+
+    assert throttle.check(key, expired_at + timedelta(seconds=5)).allowed is False

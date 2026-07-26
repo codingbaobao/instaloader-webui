@@ -7,7 +7,6 @@ from hashlib import sha256
 
 from instaloader_webui.db.repositories import (
     LoginFailureRepository,
-    LoginFailureSnapshot,
 )
 
 FAILURE_WINDOW = timedelta(minutes=15)
@@ -52,8 +51,6 @@ class LoginThrottle:
                 allowed=False,
                 retry_after_seconds=max(0, seconds_remaining),
             )
-        if bucket.blocked_until is not None or self._is_expired(bucket, current_time):
-            self._repository.delete(bucket_digest)
         return ThrottleDecision(allowed=True, retry_after_seconds=0)
 
     def record_failure(self, key: LoginAttemptKey, now: datetime) -> None:
@@ -77,7 +74,3 @@ class LoginThrottle:
         return hmac.new(
             self._hmac_secret.encode("utf-8"), payload, sha256
         ).hexdigest()
-
-    @staticmethod
-    def _is_expired(bucket: LoginFailureSnapshot, now: datetime) -> bool:
-        return now - bucket.first_failure_at >= FAILURE_WINDOW
