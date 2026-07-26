@@ -95,9 +95,7 @@ def _validate_csrf(
 
 
 def require_csrf(
-    request_session: Annotated[
-        RequestSession, Depends(require_authenticated_session)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_authenticated_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
 ) -> RequestSession:
@@ -113,8 +111,6 @@ def require_session_status_csrf(
 
 
 def require_password_change_complete(
-    request_session: Annotated[
-        RequestSession, Depends(require_authenticated_session)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_authenticated_session)],
 ) -> RequestSession:
     return request_session

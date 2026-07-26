@@ -34,9 +34,7 @@ def install_spa(app: FastAPI, static_root: Path, data_root: Path) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def spa_fallback(
-        request: Request, error: StarletteHTTPException
-    ) -> Response:
+    async def spa_fallback(request: Request, error: StarletteHTTPException) -> Response:
         requested_path = request.url.path.lstrip("/")
         route_root = requested_path.partition("/")[0]
         if (
