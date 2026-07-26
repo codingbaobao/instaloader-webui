@@ -109,6 +109,7 @@ export function SessionProvider({
   );
   const [logoutPending, setLogoutPending] = useState(false);
   const generation = useRef(0);
+  const logoutLock = useRef(false);
   const logoutOperation = useRef<Promise<boolean> | null>(null);
   const sessionRef = useRef<SessionData | null>(state.session);
 
@@ -149,6 +150,9 @@ export function SessionProvider({
   }, [beginSessionOperation, commitSessionState, initialSession]);
 
   const refreshSession = useCallback(async () => {
+    if (logoutLock.current) {
+      return;
+    }
     const operationGeneration = beginSessionOperation();
     commitSessionState(operationGeneration, {
       status: "loading",
@@ -167,6 +171,9 @@ export function SessionProvider({
   }, [beginSessionOperation, commitSessionState]);
 
   const setSession = useCallback((session: SessionData) => {
+    if (logoutLock.current) {
+      return;
+    }
     const operationGeneration = beginSessionOperation();
     try {
       commitSessionState(operationGeneration, {
@@ -183,6 +190,9 @@ export function SessionProvider({
     async (
       operation: () => Promise<SessionData>,
     ): Promise<SessionData | null> => {
+      if (logoutLock.current) {
+        return null;
+      }
       const operationGeneration = beginSessionOperation();
       const session = parseSessionData(await operation());
       if (
@@ -208,6 +218,7 @@ export function SessionProvider({
       clearSession();
       return Promise.resolve(true);
     }
+    logoutLock.current = true;
     const operationGeneration = beginSessionOperation();
     const operation = (async () => {
       setLogoutPending(true);
@@ -232,6 +243,7 @@ export function SessionProvider({
         }
         throw error;
       } finally {
+        logoutLock.current = false;
         setLogoutPending(false);
         logoutOperation.current = null;
       }

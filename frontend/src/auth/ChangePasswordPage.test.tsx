@@ -1,5 +1,11 @@
 import { HttpResponse, http } from "msw";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -271,6 +277,85 @@ describe("ChangePasswordPage", () => {
     expect(screen.queryByRole("navigation", { name: "Desktop" })).not.toBeInTheDocument();
     expect(
       screen.queryByText("The password could not be changed."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("blocks password changes that are submitted after logout begins", async () => {
+    let changeRequests = 0;
+    let logoutStarted = false;
+    let releaseLogout: (() => void) | undefined;
+    const logoutGate = new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    server.use(
+      http.post("/api/auth/logout", async () => {
+        logoutStarted = true;
+        await logoutGate;
+        return HttpResponse.json({
+          success: true,
+          data: { logged_out: true },
+          error: null,
+          meta: {},
+        });
+      }),
+      http.post("/api/auth/change-password", () => {
+        changeRequests += 1;
+        return HttpResponse.json({
+          success: true,
+          data: {
+            username: "owner",
+            must_change_password: false,
+            expires_at: "2026-08-04T00:00:00Z",
+            csrf_token: "d".repeat(64),
+          },
+          error: null,
+          meta: {},
+        });
+      }),
+    );
+    render(
+      <TestRouter
+        initialPath="/change-password"
+        initialSession={{
+          username: "owner",
+          must_change_password: true,
+          expires_at: "2026-08-02T00:00:00Z",
+          csrf_token: CSRF_TOKEN,
+        }}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(
+      screen.getByLabelText("Current password"),
+      "initial-password-value",
+    );
+    await user.type(
+      screen.getByLabelText("New password"),
+      "different-long-owner-password",
+    );
+    await user.type(
+      screen.getByLabelText("Confirm new password"),
+      "different-long-owner-password",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(logoutStarted).toBe(true));
+
+    const changeButton = screen.getByRole("button", {
+      name: "Change password",
+    });
+    const changeForm = changeButton.closest("form");
+    expect(changeForm).not.toBeNull();
+    fireEvent.submit(changeForm as HTMLFormElement);
+    const disabledWhileLogoutPending = changeButton.hasAttribute("disabled");
+
+    releaseLogout?.();
+
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeVisible();
+    expect(disabledWhileLogoutPending).toBe(true);
+    expect(changeRequests).toBe(0);
+    expect(
+      screen.queryByRole("navigation", { name: "Desktop" }),
     ).not.toBeInTheDocument();
   });
 });

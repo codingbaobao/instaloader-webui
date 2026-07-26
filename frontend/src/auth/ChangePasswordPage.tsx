@@ -14,7 +14,7 @@ export function ChangePasswordPage({
   csrfToken,
 }: ChangePasswordPageProps = {}) {
   const navigate = useNavigate();
-  const { session, applySessionOperation } = useSession();
+  const { session, applySessionOperation, logoutPending } = useSession();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -30,7 +30,7 @@ export function ChangePasswordPage({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) {
+    if (submitting || logoutPending) {
       return;
     }
     if (newPassword !== confirmation) {
@@ -115,7 +115,11 @@ export function ChangePasswordPage({
               {errorMessage}
             </p>
           ) : null}
-          <button className="primary-button" type="submit" disabled={submitting}>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={submitting || logoutPending}
+          >
             {submitting ? "Changing password…" : "Change password"}
           </button>
         </form>

@@ -7,7 +7,7 @@ import { useSession } from "./useSession";
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { session, applySessionOperation } = useSession();
+  const { session, applySessionOperation, logoutPending } = useSession();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -24,7 +24,7 @@ export function LoginPage() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) {
+    if (submitting || logoutPending) {
       return;
     }
     setSubmitting(true);
@@ -93,7 +93,11 @@ export function LoginPage() {
               {errorMessage}
             </p>
           ) : null}
-          <button className="primary-button" type="submit" disabled={submitting}>
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={submitting || logoutPending}
+          >
             {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
