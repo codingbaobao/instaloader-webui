@@ -15,7 +15,7 @@
    ```
 
 2. 產生不可預測的應用程式密鑰，將輸出填入 `.env` 的
-   `IW_APP_SECRET_KEY`：
+   `IW_APP_SECRET_KEY`。服務會拒絕少於 32 個字元的密鑰：
 
    ```sh
    python -c "import secrets; print(secrets.token_urlsafe(48))"
@@ -27,11 +27,11 @@
 4. 將 `IW_DATA_ROOT_HOST` 設為你要保存資料的主機目錄；該目錄會掛載到
    container 的 `/data`，SQLite 位於 `/data/database/app.sqlite3`。
    Linux 主機需事先建立目錄，並確保 container 的非 root 使用者
-   （UID 100）可讀寫：
+   （固定 UID/GID `10001:10001`）可讀寫：
 
    ```sh
    mkdir -p /your/chosen/path
-   sudo chown 100:100 /your/chosen/path
+   sudo chown 10001:10001 /your/chosen/path
    ```
 
 5. 建置並啟動：
@@ -40,8 +40,9 @@
    docker compose up -d --build
    ```
 
-   預設可由 `http://主機位址:8080` 開啟；可用 `IW_HTTP_PORT` 修改主機
-   port。
+   預設在所有主機介面提供 `http://主機位址:8080`；可用 `IW_HTTP_BIND`
+   限制綁定介面，並以 `IW_HTTP_PORT` 修改主機 port。例如只允許同機反向
+   代理連線時，可設 `IW_HTTP_BIND=127.0.0.1`。
 
 ## 安全注意事項
 

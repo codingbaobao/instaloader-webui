@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:22-alpine AS frontend-build
 
 WORKDIR /build/frontend
@@ -11,7 +13,8 @@ FROM python:3.12-slim AS python-build
 
 WORKDIR /build/backend
 COPY backend/ ./
-RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
+RUN PIP_ROOT_USER_ACTION=ignore \
+    python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 
 FROM python:3.12-slim AS runtime
@@ -19,13 +22,26 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN addgroup --system app \
-    && adduser --system --ingroup app app
+ARG APP_UID=10001
+ARG APP_GID=10001
+RUN groupadd --gid "${APP_GID}" app \
+    && useradd --uid "${APP_UID}" \
+        --gid app \
+        --no-create-home \
+        --no-log-init \
+        --shell /usr/sbin/nologin \
+        app
 
 WORKDIR /app
-COPY --from=python-build /wheels /wheels
-RUN python -m pip install --no-cache-dir /wheels/* \
-    && rm -rf /wheels
+RUN --mount=type=bind,from=python-build,source=/wheels,target=/wheels,ro \
+    PIP_ROOT_USER_ACTION=ignore \
+    python -m pip install --no-cache-dir --upgrade "pip>=26.1.2,<27" \
+    && PIP_ROOT_USER_ACTION=ignore \
+    python -m pip install \
+        --no-cache-dir \
+        --no-index \
+        --find-links=/wheels \
+        "instaloader-webui==0.1.0"
 COPY --from=frontend-build /build/frontend/dist /app/static
 RUN mkdir -p /data \
     && chown -R app:app /app /data
