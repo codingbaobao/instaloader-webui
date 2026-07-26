@@ -1,8 +1,17 @@
 import logging
+import shutil
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
+from fastapi import Depends
 from fastapi.testclient import TestClient
 
+import instaloader_webui.db.migrations as migration_module
+from instaloader_webui.api.dependencies import (
+    RequestSession,
+    require_authenticated_session,
+)
+from instaloader_webui.api.envelope import ApiEnvelope
 from instaloader_webui.auth.session_tokens import (
     digest_session_token,
     issue_session_token,
@@ -184,6 +193,24 @@ def test_state_change_rejects_incorrect_csrf(authenticated_client) -> None:
     assert response.json()["error"]["code"] == "csrf_invalid"
 
 
+def test_state_change_rejects_non_ascii_csrf(authenticated_client) -> None:
+    response = authenticated_client.post(
+        "/api/auth/change-password",
+        headers=[(b"X-CSRF-Token", b"\xff")],
+        json={
+            "current_password": BOOTSTRAP_PASSWORD,
+            "new_password": CHANGED_PASSWORD,
+        },
+    )
+
+    assert_error_envelope(
+        response,
+        status_code=403,
+        code="csrf_invalid",
+        message="The CSRF token is invalid.",
+    )
+
+
 def test_password_change_rejects_incorrect_current_password(
     authenticated_client,
 ) -> None:
@@ -309,6 +336,46 @@ def test_password_change_accepts_long_unicode_password(
     assert response.status_code == 200
 
 
+def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
+    @client.app.get(
+        "/api/protected-test",
+        response_model=ApiEnvelope[dict[str, bool]],
+    )
+    def protected_test_route(
+        _request_session: Annotated[
+            RequestSession, Depends(require_authenticated_session)
+        ],
+    ) -> ApiEnvelope[dict[str, bool]]:
+        return ApiEnvelope(success=True, data={"allowed": True})
+
+    logged_in = client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
+    )
+    blocked = client.get("/api/protected-test")
+    csrf = logged_in.json()["data"]["csrf_token"]
+    changed = client.post(
+        "/api/auth/change-password",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "current_password": BOOTSTRAP_PASSWORD,
+            "new_password": CHANGED_PASSWORD,
+        },
+    )
+    allowed = client.get("/api/protected-test")
+
+    assert logged_in.status_code == 200
+    assert_error_envelope(
+        blocked,
+        status_code=403,
+        code="password_change_required",
+        message="The administrator password must be changed.",
+    )
+    assert changed.status_code == 200
+    assert allowed.status_code == 200
+    assert allowed.json()["data"] == {"allowed": True}
+
+
 def test_logout_revokes_session_and_clears_cookie(authenticated_client) -> None:
     csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
 
@@ -354,6 +421,33 @@ def test_lifespan_migrations_are_independent_of_working_directory(
 
     with TestClient(create_app(test_settings)) as cwd_independent_client:
         response = cwd_independent_client.get("/api/health")
+
+    assert response.status_code == 200
+
+
+def test_lifespan_uses_packaged_migration_assets(
+    test_settings: Settings, tmp_path, monkeypatch
+) -> None:
+    packaged_root = tmp_path / "installed" / "instaloader_webui"
+    packaged_migrations = packaged_root / "migrations"
+    source_migrations = migration_module.Path(migration_module.__file__).parents[3] / (
+        "migrations"
+    )
+    shutil.copytree(source_migrations, packaged_migrations)
+    monkeypatch.setattr(
+        migration_module,
+        "files",
+        lambda _package: packaged_root,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        migration_module,
+        "__file__",
+        str(tmp_path / "unrelated" / "site-packages" / "module.py"),
+    )
+
+    with TestClient(create_app(test_settings)) as packaged_client:
+        response = packaged_client.get("/api/health")
 
     assert response.status_code == 200
 

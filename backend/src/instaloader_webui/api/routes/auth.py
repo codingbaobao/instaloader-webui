@@ -9,8 +9,8 @@ from instaloader_webui.api.dependencies import (
     RequestSession,
     get_auth_service,
     get_settings,
-    require_authenticated_session,
     require_csrf,
+    require_session_status,
 )
 from instaloader_webui.api.envelope import ApiEnvelope
 from instaloader_webui.auth.session_tokens import derive_csrf_token
@@ -113,7 +113,7 @@ def login(
 @router.get("/session", response_model=ApiEnvelope[dict[str, object]])
 def session(
     request_session: Annotated[
-        RequestSession, Depends(require_authenticated_session)
+        RequestSession, Depends(require_session_status)
     ],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, object]]:

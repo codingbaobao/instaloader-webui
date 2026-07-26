@@ -29,6 +29,9 @@ test = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/instaloader_webui"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "instaloader_webui/migrations"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --cov=instaloader_webui --cov-report=term-missing --cov-fail-under=80"

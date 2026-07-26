@@ -1,4 +1,5 @@
 import hmac
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Annotated
@@ -35,7 +36,7 @@ def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
 
 
-def require_authenticated_session(
+def require_session_status(
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     raw_token: Annotated[str | None, Cookie(alias="iw_session")] = None,
 ) -> RequestSession:
@@ -55,10 +56,20 @@ def require_authenticated_session(
     return RequestSession(raw_token=raw_token, authenticated=authenticated)
 
 
+def require_authenticated_session(
+    request_session: Annotated[RequestSession, Depends(require_session_status)],
+) -> RequestSession:
+    if request_session.authenticated.must_change_password:
+        raise ApiError(
+            status_code=403,
+            code="password_change_required",
+            message="The administrator password must be changed.",
+        )
+    return request_session
+
+
 def require_csrf(
-    request_session: Annotated[
-        RequestSession, Depends(require_authenticated_session)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_session_status)],
     settings: Annotated[Settings, Depends(get_settings)],
     submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
 ) -> RequestSession:
@@ -66,10 +77,26 @@ def require_csrf(
         request_session.raw_token,
         settings.app_secret_key.get_secret_value(),
     )
-    if not hmac.compare_digest(submitted_token or "", expected_token):
+    submitted_bytes = (
+        submitted_token.encode("ascii")
+        if submitted_token is not None
+        and re.fullmatch(r"[0-9a-f]{64}", submitted_token) is not None
+        else None
+    )
+    if submitted_bytes is None or not hmac.compare_digest(
+        submitted_bytes, expected_token.encode("ascii")
+    ):
         raise ApiError(
             status_code=403,
             code="csrf_invalid",
             message="The CSRF token is invalid.",
         )
+    return request_session
+
+
+def require_password_change_complete(
+    request_session: Annotated[
+        RequestSession, Depends(require_authenticated_session)
+    ],
+) -> RequestSession:
     return request_session

@@ -6,12 +6,14 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from instaloader_webui.db.repositories import (
+    LoginAdmissionSnapshot,
     LoginFailureRepository,
 )
 
 FAILURE_WINDOW = timedelta(minutes=15)
 MAXIMUM_FAILURES = 5
 BLOCK_DURATION = timedelta(minutes=15)
+RESERVATION_LEASE = timedelta(seconds=30)
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,28 @@ class LoginThrottle:
                 retry_after_seconds=max(0, seconds_remaining),
             )
         return ThrottleDecision(allowed=True, retry_after_seconds=0)
+
+    def reserve(self, key: LoginAttemptKey, now: datetime) -> LoginAdmissionSnapshot:
+        return self._repository.reserve_attempt(
+            bucket_digest=self._bucket_digest(key),
+            now=_as_utc(now),
+            failure_window=FAILURE_WINDOW,
+            maximum_failures=MAXIMUM_FAILURES,
+            reservation_lease=RESERVATION_LEASE,
+        )
+
+    def record_reserved_failure(
+        self, admission: LoginAdmissionSnapshot, now: datetime
+    ) -> None:
+        if admission.reservation_id is None:
+            return
+        self._repository.complete_reserved_failure(
+            reservation_id=admission.reservation_id,
+            now=_as_utc(now),
+            failure_window=FAILURE_WINDOW,
+            maximum_failures=MAXIMUM_FAILURES,
+            block_duration=BLOCK_DURATION,
+        )
 
     def record_failure(self, key: LoginAttemptKey, now: datetime) -> None:
         current_time = _as_utc(now)

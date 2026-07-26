@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from instaloader_webui.db.base import Base
@@ -45,3 +45,18 @@ class LoginFailure(Base):
         DateTime(timezone=True), nullable=False
     )
     blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class LoginAttemptReservation(Base):
+    __tablename__ = "login_attempt_reservations"
+    __table_args__ = (
+        Index(
+            "ix_login_attempt_reservations_bucket_digest",
+            "bucket_digest",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

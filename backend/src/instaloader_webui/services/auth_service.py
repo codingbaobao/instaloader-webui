@@ -80,9 +80,10 @@ class AuthService:
     ) -> LoginResult:
         current_time = _as_utc(now)
         attempt = LoginAttemptKey(username=username, client_ip=client_ip)
-        decision = self._throttle.check(attempt, current_time)
-        if not decision.allowed:
-            raise LoginThrottledError(decision.retry_after_seconds)
+        admission = self._throttle.reserve(attempt, current_time)
+        if not admission.allowed:
+            raise LoginThrottledError(admission.retry_after_seconds)
+        assert admission.reservation_id is not None
 
         administrator = self._administrators.get_single()
         username_matches = (
@@ -97,18 +98,22 @@ class AuthService:
             and self._passwords.verify(administrator.password_hash, password)
         )
         if not username_matches or not password_matches or administrator is None:
-            self._throttle.record_failure(attempt, current_time)
+            self._throttle.record_reserved_failure(admission, current_time)
             raise InvalidCredentialsError
 
-        self._throttle.record_success(attempt)
         issued = issue_session_token()
         expires_at = current_time + SESSION_LIFETIME
-        self._sessions.create(
-            admin_user_id=administrator.id,
+        session = self._administrators.create_session_if_password_hash_matches(
+            administrator_id=administrator.id,
+            expected_password_hash=administrator.password_hash,
+            reservation_id=admission.reservation_id,
+            bucket_digest=admission.bucket_digest,
             token_digest=issued.digest,
             now=current_time,
             expires_at=expires_at,
         )
+        if session is None:
+            raise InvalidCredentialsError
         return LoginResult(
             administrator_id=administrator.id,
             username=administrator.username,
@@ -122,29 +127,17 @@ class AuthService:
     ) -> AuthenticatedSession | None:
         current_time = _as_utc(now)
         token_digest = digest_session_token(raw_token)
-        session = self._sessions.get_by_token_digest(token_digest)
-        if (
-            session is None
-            or session.revoked_at is not None
-            or session.expires_at <= current_time
-        ):
+        session = self._sessions.get_active_and_touch(
+            token_digest=token_digest,
+            now=current_time,
+            cadence=SESSION_TOUCH_INTERVAL,
+        )
+        if session is None:
             return None
 
         administrator = self._administrators.get_by_id(session.admin_user_id)
         if administrator is None:
             return None
-
-        if current_time - session.last_seen_at >= SESSION_TOUCH_INTERVAL:
-            refreshed = self._sessions.touch(
-                token_digest=token_digest, now=current_time
-            )
-            if (
-                refreshed is None
-                or refreshed.revoked_at is not None
-                or refreshed.expires_at <= current_time
-            ):
-                return None
-            session = refreshed
 
         return AuthenticatedSession(
             administrator_id=administrator.id,
@@ -181,6 +174,7 @@ class AuthService:
 
         updated = self._administrators.change_password_and_revoke_other_sessions(
             administrator_id=administrator.id,
+            expected_password_hash=administrator.password_hash,
             password_hash=self._passwords.hash(new_password),
             must_change_password=False,
             retained_token_digest=digest_session_token(raw_token),

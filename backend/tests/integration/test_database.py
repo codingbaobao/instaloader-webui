@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 from alembic import command
@@ -109,9 +111,21 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
     assert inspector.get_pk_constraint("login_failures")["constrained_columns"] == [
         "bucket_digest"
     ]
+    assert {
+        column["name"]
+        for column in inspector.get_columns("login_attempt_reservations")
+    } == {
+        "id",
+        "bucket_digest",
+        "created_at",
+        "expires_at",
+    }
 
     command.downgrade(config, "0001_admin_and_sessions")
     assert "login_failures" not in inspect(
+        build_engine(test_settings.database_path)
+    ).get_table_names()
+    assert "login_attempt_reservations" not in inspect(
         build_engine(test_settings.database_path)
     ).get_table_names()
 
@@ -129,6 +143,9 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
         "last_failure_at",
         "blocked_until",
     }
+    assert "login_attempt_reservations" in inspect(
+        build_engine(test_settings.database_path)
+    ).get_table_names()
 
 
 def test_admin_repository_returns_immutable_snapshot(
@@ -187,3 +204,51 @@ def test_web_session_repository_returns_new_snapshots_on_updates(
     assert revoked is not None
     assert revoked.revoked_at == revoked_at
     assert sessions.get_by_token_digest(created.token_digest) == revoked
+
+
+def test_delayed_session_touch_cannot_regress_last_seen(
+    session_factory, test_settings
+) -> None:
+    run_migrations(test_settings)
+    admins = AdminRepository(session_factory)
+    sessions = WebSessionRepository(session_factory)
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    admin = admins.create(
+        username="owner",
+        password_hash="argon2-hash",
+        must_change_password=False,
+        now=now,
+    )
+    created = sessions.create(
+        admin_user_id=admin.id,
+        token_digest="b" * 64,
+        now=now,
+        expires_at=now + timedelta(days=7),
+    )
+    older_ready = Event()
+    allow_older = Event()
+
+    def delayed_older_touch():
+        older_ready.set()
+        assert allow_older.wait(timeout=5)
+        return sessions.get_active_and_touch(
+            token_digest=created.token_digest,
+            now=now + timedelta(minutes=5),
+            cadence=timedelta(minutes=5),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        older = executor.submit(delayed_older_touch)
+        assert older_ready.wait(timeout=5)
+        newer = sessions.get_active_and_touch(
+            token_digest=created.token_digest,
+            now=now + timedelta(minutes=10),
+            cadence=timedelta(minutes=5),
+        )
+        allow_older.set()
+        assert older.result(timeout=5) is not None
+
+    persisted = sessions.get_by_token_digest(created.token_digest)
+    assert newer is not None
+    assert persisted is not None
+    assert persisted.last_seen_at == now + timedelta(minutes=10)

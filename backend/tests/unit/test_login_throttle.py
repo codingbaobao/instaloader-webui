@@ -153,3 +153,34 @@ def test_stale_expiry_check_does_not_delete_a_reset_failure_bucket(
         throttle.record_failure(key, expired_at + timedelta(seconds=offset))
 
     assert throttle.check(key, expired_at + timedelta(seconds=5)).allowed is False
+
+
+def test_concurrent_login_admission_reserves_only_five_attempts(throttle) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
+    workers_started = Barrier(8)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(
+                lambda: (
+                    workers_started.wait(timeout=5),
+                    throttle.reserve(key, now),
+                )[1]
+            )
+            for _ in range(8)
+        ]
+        admissions = tuple(future.result(timeout=10) for future in futures)
+
+    assert sum(admission.allowed for admission in admissions) == 5
+    assert sum(not admission.allowed for admission in admissions) == 3
+    assert all(
+        admission.reservation_id is not None
+        for admission in admissions
+        if admission.allowed
+    )
+    assert all(
+        admission.retry_after_seconds > 0
+        for admission in admissions
+        if not admission.allowed
+    )
