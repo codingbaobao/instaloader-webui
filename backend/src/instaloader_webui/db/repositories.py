@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -209,6 +209,65 @@ class LoginFailureRepository:
                 if snapshot.blocked_until is not None
                 else None
             )
+
+    def record_failure(
+        self,
+        *,
+        bucket_digest: str,
+        now: datetime,
+        failure_window: timedelta,
+        maximum_failures: int,
+        block_duration: timedelta,
+    ) -> None:
+        """Atomically apply a failed attempt using SQLite's write lock."""
+        current_time = _as_utc(now)
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            model = session.get(LoginFailure, bucket_digest)
+            if model is None or current_time - _as_utc(
+                model.first_failure_at
+            ) >= failure_window:
+                snapshot = LoginFailureSnapshot(
+                    bucket_digest=bucket_digest,
+                    failure_count=1,
+                    first_failure_at=current_time,
+                    last_failure_at=current_time,
+                    blocked_until=None,
+                )
+            elif model.blocked_until is not None and _as_utc(
+                model.blocked_until
+            ) > current_time:
+                session.commit()
+                return
+            else:
+                failure_count = model.failure_count + 1
+                snapshot = LoginFailureSnapshot(
+                    bucket_digest=bucket_digest,
+                    failure_count=failure_count,
+                    first_failure_at=_as_utc(model.first_failure_at),
+                    last_failure_at=current_time,
+                    blocked_until=(
+                        current_time + block_duration
+                        if failure_count >= maximum_failures
+                        else None
+                    ),
+                )
+            if model is None:
+                session.add(
+                    LoginFailure(
+                        bucket_digest=snapshot.bucket_digest,
+                        failure_count=snapshot.failure_count,
+                        first_failure_at=snapshot.first_failure_at,
+                        last_failure_at=snapshot.last_failure_at,
+                        blocked_until=snapshot.blocked_until,
+                    )
+                )
+            else:
+                model.failure_count = snapshot.failure_count
+                model.first_failure_at = snapshot.first_failure_at
+                model.last_failure_at = snapshot.last_failure_at
+                model.blocked_until = snapshot.blocked_until
+            session.commit()
 
     def delete(self, bucket_digest: str) -> None:
         with self._session_factory.begin() as session:

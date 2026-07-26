@@ -1,7 +1,10 @@
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import inspect, text
 
 from instaloader_webui.db.engine import build_engine
@@ -84,6 +87,48 @@ def test_initial_migration_matches_auth_model_schema(test_settings) -> None:
             "options": {},
         }
     ]
+
+
+def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
+    test_settings
+) -> None:
+    run_migrations(test_settings)
+    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    config.set_main_option(
+        "sqlalchemy.url", f"sqlite:///{test_settings.database_path.resolve().as_posix()}"
+    )
+
+    inspector = inspect(build_engine(test_settings.database_path))
+    assert {column["name"] for column in inspector.get_columns("login_failures")} == {
+        "bucket_digest",
+        "failure_count",
+        "first_failure_at",
+        "last_failure_at",
+        "blocked_until",
+    }
+    assert inspector.get_pk_constraint("login_failures")["constrained_columns"] == [
+        "bucket_digest"
+    ]
+
+    command.downgrade(config, "0001_admin_and_sessions")
+    assert "login_failures" not in inspect(
+        build_engine(test_settings.database_path)
+    ).get_table_names()
+
+    command.upgrade(config, "head")
+    upgraded_columns = {
+        column["name"]
+        for column in inspect(build_engine(test_settings.database_path)).get_columns(
+            "login_failures"
+        )
+    }
+    assert upgraded_columns == {
+        "bucket_digest",
+        "failure_count",
+        "first_failure_at",
+        "last_failure_at",
+        "blocked_until",
+    }
 
 
 def test_admin_repository_returns_immutable_snapshot(

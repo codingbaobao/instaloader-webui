@@ -30,10 +30,16 @@ def session_factory(engine):
 
 
 @pytest.fixture
-def throttle(session_factory, test_settings: Settings) -> LoginThrottle:
+def login_failure_repository(session_factory, test_settings: Settings) -> LoginFailureRepository:
     run_migrations(test_settings)
-    repository = LoginFailureRepository(session_factory)
+    return LoginFailureRepository(session_factory)
+
+
+@pytest.fixture
+def throttle(
+    login_failure_repository: LoginFailureRepository, test_settings: Settings
+) -> LoginThrottle:
     return LoginThrottle(
-        repository=repository,
+        repository=login_failure_repository,
         hmac_secret=test_settings.app_secret_key.get_secret_value(),
     )

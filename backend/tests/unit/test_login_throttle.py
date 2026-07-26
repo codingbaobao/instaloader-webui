@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 from instaloader_webui.auth.throttle import LoginAttemptKey
 
@@ -76,3 +78,30 @@ def test_retry_after_is_never_negative_when_a_block_expires(throttle) -> None:
 
     assert decision.allowed is True
     assert decision.retry_after_seconds == 0
+
+
+def test_concurrent_failures_are_counted_atomically(
+    throttle, login_failure_repository, monkeypatch
+) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
+    all_reads_completed = Barrier(5)
+    original_get = login_failure_repository.get
+
+    def wait_after_read(bucket_digest: str):
+        result = original_get(bucket_digest)
+        all_reads_completed.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(login_failure_repository, "get", wait_after_read)
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(throttle.record_failure, key, now) for _ in range(5)]
+        for future in futures:
+            future.result(timeout=10)
+
+    monkeypatch.undo()
+    decision = throttle.check(key, now)
+
+    assert decision.allowed is False
+    assert decision.retry_after_seconds == 15 * 60

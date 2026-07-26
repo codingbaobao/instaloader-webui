@@ -58,35 +58,12 @@ class LoginThrottle:
 
     def record_failure(self, key: LoginAttemptKey, now: datetime) -> None:
         current_time = _as_utc(now)
-        bucket_digest = self._bucket_digest(key)
-        bucket = self._repository.get(bucket_digest)
-        if bucket is None or self._is_expired(bucket, current_time):
-            self._repository.save(
-                LoginFailureSnapshot(
-                    bucket_digest=bucket_digest,
-                    failure_count=1,
-                    first_failure_at=current_time,
-                    last_failure_at=current_time,
-                    blocked_until=None,
-                )
-            )
-            return
-        if bucket.blocked_until is not None and bucket.blocked_until > current_time:
-            return
-        failure_count = bucket.failure_count + 1
-        blocked_until = (
-            current_time + BLOCK_DURATION
-            if failure_count >= MAXIMUM_FAILURES
-            else None
-        )
-        self._repository.save(
-            LoginFailureSnapshot(
-                bucket_digest=bucket_digest,
-                failure_count=failure_count,
-                first_failure_at=bucket.first_failure_at,
-                last_failure_at=current_time,
-                blocked_until=blocked_until,
-            )
+        self._repository.record_failure(
+            bucket_digest=self._bucket_digest(key),
+            now=current_time,
+            failure_window=FAILURE_WINDOW,
+            maximum_failures=MAXIMUM_FAILURES,
+            block_duration=BLOCK_DURATION,
         )
 
     def record_success(self, key: LoginAttemptKey) -> None:
