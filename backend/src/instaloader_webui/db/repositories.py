@@ -172,10 +172,14 @@ class AdminRepository:
             if failure is not None:
                 session.delete(failure)
             session.execute(
-                delete(LoginAttemptReservation).where(
-                    LoginAttemptReservation.bucket_digest == bucket_digest
+                update(LoginAttemptReservation)
+                .where(
+                    LoginAttemptReservation.bucket_digest == bucket_digest,
+                    LoginAttemptReservation.id != reservation_id,
                 )
+                .values(failure_valid=False)
             )
+            session.delete(reservation)
             session.add(model)
             session.flush()
             snapshot = _web_session_snapshot(model)
@@ -372,6 +376,7 @@ class LoginFailureRepository:
                 select(func.count(LoginAttemptReservation.id)).where(
                     LoginAttemptReservation.bucket_digest == bucket_digest,
                     LoginAttemptReservation.expires_at > current_time,
+                    LoginAttemptReservation.failure_valid.is_(True),
                 )
             )
             assert active_reservations is not None
@@ -380,6 +385,7 @@ class LoginFailureRepository:
                     select(func.min(LoginAttemptReservation.expires_at)).where(
                         LoginAttemptReservation.bucket_digest == bucket_digest,
                         LoginAttemptReservation.expires_at > current_time,
+                        LoginAttemptReservation.failure_valid.is_(True),
                     )
                 )
                 retry_after = (
@@ -404,6 +410,7 @@ class LoginFailureRepository:
                     bucket_digest=bucket_digest,
                     created_at=current_time,
                     expires_at=current_time + reservation_lease,
+                    failure_valid=True,
                 )
             )
             session.commit()
@@ -427,7 +434,11 @@ class LoginFailureRepository:
         with self._session_factory() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             reservation = session.get(LoginAttemptReservation, reservation_id)
-            if reservation is None or _as_utc(reservation.expires_at) <= current_time:
+            if (
+                reservation is None
+                or _as_utc(reservation.expires_at) <= current_time
+                or not reservation.failure_valid
+            ):
                 if reservation is not None:
                     session.delete(reservation)
                 session.commit()
@@ -545,7 +556,14 @@ class LoginFailureRepository:
         model.blocked_until = snapshot.blocked_until
 
     def delete(self, bucket_digest: str) -> None:
-        with self._session_factory.begin() as session:
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
             model = session.get(LoginFailure, bucket_digest)
             if model is not None:
                 session.delete(model)
+            session.execute(
+                update(LoginAttemptReservation)
+                .where(LoginAttemptReservation.bucket_digest == bucket_digest)
+                .values(failure_valid=False)
+            )
+            session.commit()

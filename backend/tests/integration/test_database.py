@@ -119,6 +119,7 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
         "bucket_digest",
         "created_at",
         "expires_at",
+        "failure_valid",
     }
 
     command.downgrade(config, "0001_admin_and_sessions")
@@ -143,9 +144,18 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
         "last_failure_at",
         "blocked_until",
     }
-    assert "login_attempt_reservations" in inspect(
-        build_engine(test_settings.database_path)
-    ).get_table_names()
+    upgraded_inspector = inspect(build_engine(test_settings.database_path))
+    assert "login_attempt_reservations" in upgraded_inspector.get_table_names()
+    assert {
+        column["name"]
+        for column in upgraded_inspector.get_columns("login_attempt_reservations")
+    } == {
+        "id",
+        "bucket_digest",
+        "created_at",
+        "expires_at",
+        "failure_valid",
+    }
 
 
 def test_admin_repository_returns_immutable_snapshot(

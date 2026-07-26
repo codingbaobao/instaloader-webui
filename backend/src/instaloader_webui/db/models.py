@@ -60,3 +60,4 @@ class LoginAttemptReservation(Base):
     bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    failure_valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

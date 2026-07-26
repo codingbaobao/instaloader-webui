@@ -323,6 +323,44 @@ def test_success_invalidates_in_flight_failures_from_the_same_bucket(
         )
 
 
+def test_concurrent_successful_logins_from_the_same_bucket_both_create_sessions(
+    session_factory, test_settings
+) -> None:
+    run_migrations(test_settings)
+    bootstrap_admin(session_factory, test_settings, PasswordService())
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    password_barrier = Barrier(2)
+    services = (
+        make_auth_service(
+            session_factory,
+            test_settings,
+            BarrierPasswordService(password_barrier),
+        ),
+        make_auth_service(
+            session_factory,
+            test_settings,
+            BarrierPasswordService(password_barrier),
+        ),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                service.login,
+                "owner",
+                "correct-horse-battery-staple",
+                "203.0.113.7",
+                now,
+            )
+            for service in services
+        ]
+        results = tuple(future.result(timeout=10) for future in futures)
+
+    assert results[0].raw_token != results[1].raw_token
+    assert services[0].authenticate_session(results[0].raw_token, now) is not None
+    assert services[1].authenticate_session(results[1].raw_token, now) is not None
+
+
 def test_concurrent_password_changes_allow_exactly_one_winner(
     session_factory, test_settings
 ) -> None:
