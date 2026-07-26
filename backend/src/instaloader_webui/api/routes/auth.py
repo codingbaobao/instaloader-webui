@@ -8,17 +8,17 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from instaloader_webui.api.dependencies import (
     ApiError,
     RequestSession,
+    get_app_secret,
     get_auth_service,
     get_settings,
     require_session_status,
     require_session_status_csrf,
 )
 from instaloader_webui.api.envelope import ApiEnvelope
+from instaloader_webui.auth.app_secret import AppSecret
 from instaloader_webui.auth.session_tokens import derive_csrf_token
 from instaloader_webui.config import (
-    MAXIMUM_CREDENTIAL_BYTES,
     MAXIMUM_USERNAME_BYTES,
-    MINIMUM_ADMIN_PASSWORD_LENGTH,
     Settings,
 )
 from instaloader_webui.services.auth_service import (
@@ -27,7 +27,6 @@ from instaloader_webui.services.auth_service import (
     InvalidCredentialsError,
     InvalidCurrentPasswordError,
     LoginThrottledError,
-    PasswordUnchangedError,
 )
 
 SESSION_COOKIE_NAME = "iw_session"
@@ -40,7 +39,7 @@ class LoginRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     username: str = Field(min_length=1, max_length=64)
-    password: SecretStr = Field(min_length=1)
+    password: SecretStr
 
     @field_validator("username", mode="before")
     @classmethod
@@ -53,37 +52,39 @@ class LoginRequest(BaseModel):
 
     @field_validator("password")
     @classmethod
-    def validate_password_bytes(cls, value: SecretStr) -> SecretStr:
-        _validate_utf8_bytes(value.get_secret_value())
+    def validate_password_text(cls, value: SecretStr) -> SecretStr:
+        _validate_utf8(value.get_secret_value())
         return value
 
 
 class ChangePasswordRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    current_password: SecretStr = Field(min_length=1)
-    new_password: SecretStr = Field(min_length=MINIMUM_ADMIN_PASSWORD_LENGTH)
+    current_password: SecretStr
+    new_password: SecretStr
 
     @field_validator("current_password", "new_password")
     @classmethod
-    def validate_password_bytes(cls, value: SecretStr) -> SecretStr:
-        _validate_utf8_bytes(value.get_secret_value())
+    def validate_password_text(cls, value: SecretStr) -> SecretStr:
+        _validate_utf8(value.get_secret_value())
         return value
 
 
-def _validate_utf8_bytes(
-    value: str, *, maximum_bytes: int = MAXIMUM_CREDENTIAL_BYTES
-) -> None:
-    try:
-        encoded = value.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("credential must be valid UTF-8") from error
+def _validate_utf8_bytes(value: str, *, maximum_bytes: int) -> None:
+    encoded = _validate_utf8(value)
     if len(encoded) > maximum_bytes:
         raise ValueError("credential exceeds the UTF-8 byte limit")
 
 
+def _validate_utf8(value: str) -> bytes:
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("credential must be valid UTF-8") from error
+
+
 def _session_data(
-    request_session: RequestSession, settings: Settings
+    request_session: RequestSession, app_secret: AppSecret
 ) -> dict[str, object]:
     return {
         "username": request_session.authenticated.username,
@@ -91,7 +92,7 @@ def _session_data(
         "expires_at": request_session.authenticated.expires_at.isoformat(),
         "csrf_token": derive_csrf_token(
             request_session.raw_token,
-            settings.app_secret_key.get_secret_value(),
+            app_secret.value,
         ),
     }
 
@@ -103,6 +104,7 @@ def login(
     response: Response,
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     settings: Annotated[Settings, Depends(get_settings)],
+    app_secret: Annotated[AppSecret, Depends(get_app_secret)],
 ) -> ApiEnvelope[dict[str, object]]:
     client_ip = request.client.host if request.client is not None else ""
     try:
@@ -150,7 +152,7 @@ def login(
             "expires_at": result.expires_at.isoformat(),
             "csrf_token": derive_csrf_token(
                 result.raw_token,
-                settings.app_secret_key.get_secret_value(),
+                app_secret.value,
             ),
         },
     )
@@ -159,11 +161,11 @@ def login(
 @router.get("/session", response_model=ApiEnvelope[dict[str, object]])
 def session(
     request_session: Annotated[RequestSession, Depends(require_session_status)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    app_secret: Annotated[AppSecret, Depends(get_app_secret)],
 ) -> ApiEnvelope[dict[str, object]]:
     return ApiEnvelope(
         success=True,
-        data=_session_data(request_session, settings),
+        data=_session_data(request_session, app_secret),
     )
 
 
@@ -172,7 +174,7 @@ def change_password(
     payload: ChangePasswordRequest,
     request_session: Annotated[RequestSession, Depends(require_session_status_csrf)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    app_secret: Annotated[AppSecret, Depends(get_app_secret)],
 ) -> ApiEnvelope[dict[str, object]]:
     try:
         authenticated = auth_service.change_password(
@@ -193,12 +195,6 @@ def change_password(
             code="authentication_required",
             message="Authentication is required.",
         ) from error
-    except PasswordUnchangedError as error:
-        raise ApiError(
-            status_code=422,
-            code="password_unchanged",
-            message="The new password must be different.",
-        ) from error
     except AuthenticationBusyError as error:
         raise ApiError(
             status_code=503,
@@ -213,7 +209,7 @@ def change_password(
     )
     return ApiEnvelope(
         success=True,
-        data=_session_data(updated_session, settings),
+        data=_session_data(updated_session, app_secret),
     )
 
 

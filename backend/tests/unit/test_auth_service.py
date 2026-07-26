@@ -32,7 +32,7 @@ def make_auth_service(
         sessions=WebSessionRepository(session_factory),
         throttle=LoginThrottle(
             repository=LoginFailureRepository(session_factory),
-            hmac_secret=test_settings.app_secret_key.get_secret_value(),
+            hmac_secret="a" * 32,
         ),
         passwords=passwords,
     )
@@ -90,6 +90,16 @@ class BusyPasswordService(PasswordService):
         raise PasswordServiceBusyError
 
 
+class RecordingPasswordService(PasswordService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.verified_password: str | None = None
+
+    def verify(self, hash_value: str, password: str) -> bool:
+        self.verified_password = password
+        return False
+
+
 def test_login_overload_releases_admission_reservation(
     session_factory, test_settings
 ) -> None:
@@ -116,18 +126,24 @@ def test_login_overload_releases_admission_reservation(
     assert reservations == 0
 
 
-def test_direct_login_rejects_overbyte_password_before_argon2(
+def test_direct_login_sends_long_password_to_argon2_verification(
     session_factory, test_settings
 ) -> None:
-    service = build_auth_service(session_factory, test_settings)
+    run_migrations(test_settings)
+    bootstrap_admin(session_factory, test_settings, PasswordService())
+    passwords = RecordingPasswordService()
+    service = make_auth_service(session_factory, test_settings, passwords)
+    submitted_password = "界" * 342
 
     with pytest.raises(InvalidCredentialsError):
         service.login(
             "owner",
-            "界" * 342,
+            submitted_password,
             "203.0.113.7",
             datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
         )
+
+    assert passwords.verified_password == submitted_password
 
 
 def test_login_creates_seven_day_session_without_exposing_token_in_repr(
@@ -204,7 +220,7 @@ def test_session_revoked_during_last_seen_refresh_is_rejected(
         sessions=sessions,
         throttle=LoginThrottle(
             repository=LoginFailureRepository(session_factory),
-            hmac_secret=test_settings.app_secret_key.get_secret_value(),
+            hmac_secret="a" * 32,
         ),
         passwords=passwords,
     )
@@ -503,7 +519,7 @@ def test_password_change_revalidates_retained_session_inside_write_transaction(
         sessions=sessions,
         throttle=LoginThrottle(
             repository=LoginFailureRepository(session_factory),
-            hmac_secret=test_settings.app_secret_key.get_secret_value(),
+            hmac_secret="a" * 32,
         ),
         passwords=passwords,
     )

@@ -14,17 +14,10 @@
    cp .env.example .env
    ```
 
-2. 產生不可預測的應用程式密鑰，將輸出填入 `.env` 的
-   `IW_APP_SECRET_KEY`。服務會拒絕少於 32 個字元的密鑰：
+2. 設定 `IW_ADMIN_USERNAME` 與初始的 `IW_ADMIN_PASSWORD`。密碼沒有長度或
+   複雜度限制，也可以是空字串。首次登入後必須在 WebUI 確認管理員密碼。
 
-   ```sh
-   python -c "import secrets; print(secrets.token_urlsafe(48))"
-   ```
-
-3. 設定 `IW_ADMIN_USERNAME`，並將 `IW_ADMIN_PASSWORD` 改為僅此服務使用、
-   至少 16 個字元的初始密碼。首次登入後必須在 WebUI 變更密碼。
-
-4. 將 `IW_DATA_ROOT_HOST` 設為你要保存資料的主機目錄；該目錄會掛載到
+3. 將 `IW_DATA_ROOT_HOST` 設為你要保存資料的主機目錄；該目錄會掛載到
    container 的 `/data`，SQLite 位於 `/data/database/app.sqlite3`。
    Linux 主機需事先建立目錄，並確保 container 的非 root 使用者
    （固定 UID/GID `10001:10001`）可讀寫：
@@ -34,7 +27,7 @@
    sudo chown 10001:10001 /your/chosen/path
    ```
 
-5. 建置並啟動：
+4. 建置並啟動：
 
    ```sh
    docker compose up -d --build

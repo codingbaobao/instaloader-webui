@@ -78,7 +78,7 @@ export function ChangePasswordPage({
         <p className="eyebrow">First sign-in</p>
         <h1 id="password-title">Change your password</h1>
         <p className="auth-intro">
-          Choose a unique administrator password with at least 16 characters.
+          Enter the administrator password you want to use.
         </p>
         <form onSubmit={handleSubmit}>
           <label htmlFor="current-password">Current password</label>
@@ -86,7 +86,6 @@ export function ChangePasswordPage({
             id="current-password"
             type="password"
             autoComplete="current-password"
-            required
             value={currentPassword}
             onChange={(event) => setCurrentPassword(event.target.value)}
           />
@@ -95,8 +94,6 @@ export function ChangePasswordPage({
             id="new-password"
             type="password"
             autoComplete="new-password"
-            minLength={16}
-            required
             value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)}
           />
@@ -105,8 +102,6 @@ export function ChangePasswordPage({
             id="confirm-password"
             type="password"
             autoComplete="new-password"
-            minLength={16}
-            required
             value={confirmation}
             onChange={(event) => setConfirmation(event.target.value)}
           />

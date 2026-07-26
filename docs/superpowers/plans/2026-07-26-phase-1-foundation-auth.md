@@ -150,7 +150,6 @@ from instaloader_webui.config import Settings
 def test_settings_keep_runtime_paths_under_data_root(tmp_path: Path) -> None:
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password="correct-horse-battery-staple",
     )
@@ -170,7 +169,6 @@ from instaloader_webui.config import Settings
 def test_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password="correct-horse-battery-staple",
     )
@@ -229,7 +227,6 @@ class Settings(BaseSettings):
 
     data_root: Path = Path("/data")
     static_root: Path = Path("/app/static")
-    app_secret_key: SecretStr
     admin_username: str
     admin_password: SecretStr | None = None
     admin_password_file: Path | None = None
@@ -897,7 +894,7 @@ response.set_cookie(
 )
 ```
 
-For every state-changing authenticated endpoint, compare `X-CSRF-Token` against `derive_csrf_token(raw_cookie, settings.app_secret_key.get_secret_value())` using `hmac.compare_digest`.
+For every state-changing authenticated endpoint, compare `X-CSRF-Token` against a token derived from the persisted internal application secret using `hmac.compare_digest`.
 
 Return stable errors such as:
 
@@ -1194,7 +1191,6 @@ def test_compose_web_health_survives_restart(tmp_path) -> None:
     env = {
         **os.environ,
         "IW_DATA_ROOT_HOST": str(tmp_path / "data"),
-        "IW_APP_SECRET_KEY": "s" * 32,
         "IW_ADMIN_USERNAME": "owner",
         "IW_ADMIN_PASSWORD": "correct-horse-battery-staple",
     }
@@ -1269,7 +1265,6 @@ services:
       - "${IW_HTTP_PORT:-8080}:8080"
     environment:
       IW_DATA_ROOT: /data
-      IW_APP_SECRET_KEY: ${IW_APP_SECRET_KEY}
       IW_ADMIN_USERNAME: ${IW_ADMIN_USERNAME}
       IW_ADMIN_PASSWORD: ${IW_ADMIN_PASSWORD}
       IW_SESSION_COOKIE_SECURE: ${IW_SESSION_COOKIE_SECURE:-false}
@@ -1290,8 +1285,8 @@ Do not add HTTPS or a proxy service. Phase 2 adds the `worker` service using the
 `README.md` must include:
 
 - Copy `.env.example` to `.env`.
-- Generate `IW_APP_SECRET_KEY` with a cryptographically secure command.
-- Set a unique initial password of at least 16 characters.
+- Do not expose the internally generated application secret as user-facing configuration.
+- Set the initial administrator password, which may be empty.
 - Mount a chosen host directory to `/data`.
 - Run `docker compose up -d --build`.
 - Explain that direct public HTTP is unsafe and TLS is the user's responsibility.

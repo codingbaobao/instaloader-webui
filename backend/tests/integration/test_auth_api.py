@@ -52,6 +52,25 @@ async def test_login_sets_http_only_cookie_and_requires_password_change(client) 
     assert response.json()["data"]["csrf_token"]
 
 
+async def test_login_accepts_an_empty_password(
+    test_client_factory,
+    tmp_path,
+) -> None:
+    settings = Settings(
+        data_root=tmp_path,
+        admin_username="owner",
+        admin_password="",
+    )
+    async with test_client_factory(settings) as empty_password_client:
+        response = await empty_password_client.post(
+            "/api/auth/login",
+            json={"username": "owner", "password": ""},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["must_change_password"] is True
+
+
 async def test_login_persists_only_the_session_digest(client, session_factory) -> None:
     response = await client.post(
         "/api/auth/login",
@@ -153,7 +172,7 @@ async def test_excessive_request_frame_count_returns_stable_413(client) -> None:
     )
 
 
-async def test_login_password_rejects_more_than_1024_utf8_bytes(client) -> None:
+async def test_login_password_accepts_more_than_1024_utf8_bytes(client) -> None:
     submitted_password = "密" * 342
 
     response = await client.post(
@@ -161,8 +180,8 @@ async def test_login_password_rejects_more_than_1024_utf8_bytes(client) -> None:
         json={"username": "owner", "password": submitted_password},
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_credentials"
     assert submitted_password not in response.text
 
 
@@ -336,7 +355,7 @@ async def test_password_change_rejects_incorrect_current_password(
     )
 
 
-async def test_password_change_rejects_short_new_password(
+async def test_password_change_accepts_empty_new_password(
     authenticated_client,
 ) -> None:
     session_response = await authenticated_client.get("/api/auth/session")
@@ -345,42 +364,35 @@ async def test_password_change_rejects_short_new_password(
     response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
-        json={"current_password": BOOTSTRAP_PASSWORD, "new_password": "too-short"},
+        json={"current_password": BOOTSTRAP_PASSWORD, "new_password": ""},
     )
 
-    assert response.status_code == 422
-    assert response.json()["success"] is False
-    assert response.json()["data"] is None
-    assert response.json()["error"]["code"] == "validation_error"
-    assert "too-short" not in response.text
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["data"]["must_change_password"] is False
 
 
-@pytest.mark.parametrize("oversized_field", ["current_password", "new_password"])
-async def test_password_change_rejects_credentials_over_1024_utf8_bytes(
+async def test_password_change_accepts_new_password_over_1024_utf8_bytes(
     authenticated_client,
-    oversized_field: str,
 ) -> None:
     session_response = await authenticated_client.get("/api/auth/session")
     csrf = session_response.json()["data"]["csrf_token"]
     submitted_password = "密" * 342
-    payload = {
-        "current_password": BOOTSTRAP_PASSWORD,
-        "new_password": CHANGED_PASSWORD,
-        oversized_field: submitted_password,
-    }
-
     response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
-        json=payload,
+        json={
+            "current_password": BOOTSTRAP_PASSWORD,
+            "new_password": submitted_password,
+        },
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
+    assert response.status_code == 200
+    assert response.json()["success"] is True
     assert submitted_password not in response.text
 
 
-async def test_password_change_rejects_reusing_current_password(
+async def test_password_change_accepts_reusing_current_password(
     authenticated_client,
 ) -> None:
     session_response = await authenticated_client.get("/api/auth/session")
@@ -395,12 +407,9 @@ async def test_password_change_rejects_reusing_current_password(
         },
     )
 
-    assert_error_envelope(
-        response,
-        status_code=422,
-        code="password_unchanged",
-        message="The new password must be different.",
-    )
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    assert response.json()["data"]["must_change_password"] is False
 
 
 async def test_password_change_revokes_other_sessions(

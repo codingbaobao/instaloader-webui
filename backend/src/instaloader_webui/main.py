@@ -18,6 +18,7 @@ from instaloader_webui.api.routes.auth import (
     router as auth_router,
 )
 from instaloader_webui.api.routes.health import router as health_router
+from instaloader_webui.auth.app_secret import load_or_create_app_secret
 from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.config import Settings
@@ -39,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_migrations(resolved)
+        app_secret = load_or_create_app_secret(resolved.data_root)
         engine = build_engine(resolved.database_path)
         session_factory = build_session_factory(engine)
         passwords = PasswordService()
@@ -48,10 +50,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sessions=WebSessionRepository(session_factory),
             throttle=LoginThrottle(
                 repository=LoginFailureRepository(session_factory),
-                hmac_secret=resolved.app_secret_key.get_secret_value(),
+                hmac_secret=app_secret.value,
             ),
             passwords=passwords,
         )
+        app.state.app_secret = app_secret
         try:
             yield
         finally:

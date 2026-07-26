@@ -10,9 +10,7 @@ from instaloader_webui.auth.session_tokens import (
 )
 from instaloader_webui.auth.throttle import LoginAttemptKey, LoginThrottle
 from instaloader_webui.config import (
-    MAXIMUM_CREDENTIAL_BYTES,
     MAXIMUM_USERNAME_BYTES,
-    MINIMUM_ADMIN_PASSWORD_LENGTH,
 )
 from instaloader_webui.db.repositories import (
     AdminRepository,
@@ -32,10 +30,6 @@ class InvalidCurrentPasswordError(Exception):
 
 
 class InvalidNewPasswordError(Exception):
-    pass
-
-
-class PasswordUnchangedError(Exception):
     pass
 
 
@@ -70,11 +64,16 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _valid_utf8_bytes(value: str, *, maximum_bytes: int) -> bool:
+def _valid_utf8(value: str) -> bool:
     try:
-        return len(value.encode("utf-8")) <= maximum_bytes
+        value.encode("utf-8")
     except UnicodeEncodeError:
         return False
+    return True
+
+
+def _valid_utf8_bytes(value: str, *, maximum_bytes: int) -> bool:
+    return _valid_utf8(value) and len(value.encode("utf-8")) <= maximum_bytes
 
 
 class AuthService:
@@ -97,7 +96,7 @@ class AuthService:
         canonical_username = normalize("NFKC", username).strip().casefold()
         if not _valid_utf8_bytes(
             canonical_username, maximum_bytes=MAXIMUM_USERNAME_BYTES
-        ) or not _valid_utf8_bytes(password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES):
+        ):
             raise InvalidCredentialsError
         current_time = _as_utc(now)
         attempt = LoginAttemptKey(username=canonical_username, client_ip=client_ip)
@@ -179,11 +178,9 @@ class AuthService:
         new_password: str,
         now: datetime,
     ) -> AuthenticatedSession:
-        if not _valid_utf8_bytes(
-            current_password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES
-        ):
+        if not _valid_utf8(current_password):
             raise InvalidCurrentPasswordError
-        if not _valid_utf8_bytes(new_password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES):
+        if not _valid_utf8(new_password):
             raise InvalidNewPasswordError
         current_time = _as_utc(now)
         authenticated = self.authenticate_session(raw_token, current_time)
@@ -200,13 +197,6 @@ class AuthService:
                 raise InvalidCurrentPasswordError
         except PasswordServiceBusyError as error:
             raise AuthenticationBusyError from error
-        if len(new_password) < MINIMUM_ADMIN_PASSWORD_LENGTH:
-            raise InvalidNewPasswordError
-        if hmac.compare_digest(
-            current_password.encode("utf-8"), new_password.encode("utf-8")
-        ):
-            raise PasswordUnchangedError
-
         try:
             replacement_password_hash = self._passwords.hash(new_password)
         except PasswordServiceBusyError as error:

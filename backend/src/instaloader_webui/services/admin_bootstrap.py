@@ -7,9 +7,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.config import (
     ADMIN_USERNAME_PATTERN,
-    MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES,
-    MAXIMUM_CREDENTIAL_BYTES,
-    MINIMUM_ADMIN_PASSWORD_LENGTH,
     Settings,
 )
 from instaloader_webui.db.repositories import AdminRepository, AdminSnapshot
@@ -28,9 +25,7 @@ def resolve_bootstrap_password(settings: Settings) -> str:
     password_file = settings.admin_password_file
     assert password_file is not None
     with password_file.open("rb") as source:
-        password_bytes = source.read(MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES + 1)
-    if len(password_bytes) > MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES:
-        raise ValueError("bootstrap password file must not exceed 4 KiB")
+        password_bytes = source.read()
 
     try:
         password = password_bytes.decode("utf-8")
@@ -49,13 +44,9 @@ def _validate_bootstrap_credentials(settings: Settings) -> str:
 
     password = resolve_bootstrap_password(settings)
     try:
-        password_bytes = password.encode("utf-8")
+        password.encode("utf-8")
     except UnicodeEncodeError as error:
         raise ValueError("bootstrap password must be valid UTF-8") from error
-    if len(password_bytes) > MAXIMUM_CREDENTIAL_BYTES:
-        raise ValueError("bootstrap password must not exceed 1,024 UTF-8 bytes")
-    if len(password) < MINIMUM_ADMIN_PASSWORD_LENGTH:
-        raise ValueError("bootstrap password must be at least 16 characters")
     return password
 
 

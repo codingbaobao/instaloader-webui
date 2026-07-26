@@ -1,12 +1,9 @@
 from pathlib import Path
 
-from pydantic import Field, SecretStr, computed_field
+from pydantic import SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ADMIN_USERNAME_PATTERN = r"^[A-Za-z0-9._-]{3,64}$"
-MINIMUM_ADMIN_PASSWORD_LENGTH = 16
-MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES = 4 * 1024
-MAXIMUM_CREDENTIAL_BYTES = 1024
 MAXIMUM_USERNAME_BYTES = 64
 
 
@@ -21,7 +18,6 @@ class Settings(BaseSettings):
 
     data_root: Path = Path("/data")
     static_root: Path = Path("/app/static")
-    app_secret_key: SecretStr = Field(min_length=32)
     admin_username: str
     admin_password: SecretStr | None = None
     admin_password_file: Path | None = None

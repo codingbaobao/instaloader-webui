@@ -40,7 +40,6 @@ def test_bootstrap_ignores_invalid_password_sources_after_admin_exists(
     created = bootstrap_admin(session_factory, test_settings)
     settings_without_a_password = Settings(
         data_root=test_settings.data_root,
-        app_secret_key="a" * 32,
         admin_username="owner",
     )
 
@@ -55,20 +54,17 @@ def test_bootstrap_race_creates_only_one_admin_for_different_usernames(
     run_migrations(
         Settings(
             data_root=tmp_path,
-            app_secret_key="a" * 32,
             admin_username="owner-one",
             admin_password="correct-horse-battery-staple",
         )
     )
     first_settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner-one",
         admin_password="correct-horse-battery-staple",
     )
     second_settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner-two",
         admin_password="correct-horse-battery-staple",
     )
@@ -116,7 +112,6 @@ def test_resolve_bootstrap_password_rejects_missing_or_conflicting_sources(
         password_file.write_text("correct-horse-battery-staple", encoding="utf-8")
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password=inline_password,
         admin_password_file=password_file,
@@ -133,7 +128,6 @@ def test_resolve_bootstrap_password_reads_secret_file_and_strips_one_newline(
     password_file.write_bytes(b"correct-horse-battery-staple\r\n")
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password_file=password_file,
     )
@@ -143,50 +137,48 @@ def test_resolve_bootstrap_password_reads_secret_file_and_strips_one_newline(
     assert password == "correct-horse-battery-staple"
 
 
-def test_resolve_bootstrap_password_rejects_files_larger_than_four_kib(
+def test_resolve_bootstrap_password_accepts_files_larger_than_four_kib(
     tmp_path: Path,
 ) -> None:
     password_file = tmp_path / "bootstrap-password.txt"
     password_file.write_bytes(b"a" * 4097)
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password_file=password_file,
     )
 
-    with pytest.raises(ValueError, match="4 KiB"):
-        resolve_bootstrap_password(settings)
+    assert resolve_bootstrap_password(settings) == "a" * 4097
 
 
-def test_bootstrap_rejects_password_over_utf8_credential_limit(
+def test_bootstrap_accepts_long_unicode_password(
     session_factory, tmp_path: Path
 ) -> None:
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password="界" * 342,
     )
     run_migrations(settings)
 
-    with pytest.raises(ValueError, match="1,024 UTF-8 bytes"):
-        bootstrap_admin(session_factory, settings)
+    created = bootstrap_admin(session_factory, settings)
+
+    assert created.username == "owner"
 
 
-def test_bootstrap_rejects_password_shorter_than_sixteen_characters(
+def test_bootstrap_accepts_empty_password(
     session_factory, tmp_path: Path
 ) -> None:
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
-        admin_password="too-short",
+        admin_password="",
     )
     run_migrations(settings)
 
-    with pytest.raises(ValueError, match="at least 16"):
-        bootstrap_admin(session_factory, settings)
+    created = bootstrap_admin(session_factory, settings)
+
+    assert created.username == "owner"
 
 
 def test_bootstrap_rejects_username_outside_the_allowed_pattern(
@@ -194,7 +186,6 @@ def test_bootstrap_rejects_username_outside_the_allowed_pattern(
 ) -> None:
     settings = Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="not an owner",
         admin_password="correct-horse-battery-staple",
     )

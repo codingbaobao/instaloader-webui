@@ -64,7 +64,6 @@ def test_compose_ignores_conflicting_control_environment(tmp_path: Path) -> None
         "COMPOSE_ENV_FILES": str(unintended_env),
         "COMPOSE_PATH_SEPARATOR": ";",
         "COMPOSE_PROJECT_NAME": "unintended-project",
-        "IW_APP_SECRET_KEY": "a" * 32,
         "IW_ADMIN_USERNAME": "smoke-owner",
     }
 
@@ -144,49 +143,6 @@ def cleanup_project(project_name: str, env: dict[str, str]) -> None:
     )
 
 
-def test_container_rejects_one_character_app_secret(tmp_path: Path) -> None:
-    project_name = f"iw-short-secret-{uuid.uuid4().hex}"
-    data_root = tmp_path / "short-secret-data"
-    prepare_data_root(data_root)
-    env = {
-        **os.environ,
-        "IW_DATA_ROOT_HOST": str(data_root),
-        "IW_HTTP_BIND": "127.0.0.1",
-        "IW_HTTP_PORT": "0",
-        "IW_APP_SECRET_KEY": "Z",
-        "IW_ADMIN_USERNAME": "smoke-owner",
-        "IW_ADMIN_PASSWORD": "test-only-" + uuid.uuid4().hex,
-        "IW_SESSION_COOKIE_SECURE": "false",
-    }
-
-    try:
-        startup = compose(
-            project_name,
-            env,
-            "up",
-            "-d",
-            "--build",
-            "--wait",
-            "--wait-timeout",
-            "15",
-            check=False,
-        )
-        assert startup.returncode != 0
-
-        logs = compose(
-            project_name,
-            env,
-            "logs",
-            "--no-color",
-            "web",
-            check=False,
-        )
-        assert "app_secret_key" in logs.stdout
-        assert "input_value" not in logs.stdout
-    finally:
-        cleanup_project(project_name, env)
-
-
 def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
     project_name = f"iw-smoke-{uuid.uuid4().hex}"
     data_root = tmp_path / "data"
@@ -196,9 +152,8 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
         "IW_DATA_ROOT_HOST": str(data_root),
         "IW_HTTP_BIND": "127.0.0.1",
         "IW_HTTP_PORT": "0",
-        "IW_APP_SECRET_KEY": "test-only-" + uuid.uuid4().hex,
         "IW_ADMIN_USERNAME": "smoke-owner",
-        "IW_ADMIN_PASSWORD": "test-only-" + uuid.uuid4().hex,
+        "IW_ADMIN_PASSWORD": "",
         "IW_SESSION_COOKIE_SECURE": "false",
     }
 
@@ -221,7 +176,7 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
             "python",
             "-c",
             (
-                "import importlib.metadata, json, os, pathlib, shutil; "
+                "import hashlib, importlib.metadata, json, os, pathlib, shutil; "
                 "app_process = next(path for path in pathlib.Path('/proc').iterdir() "
                 "if path.name.isdigit() and (path / 'cmdline').is_file() "
                 "and any(token.endswith(b'/uvicorn') for token in "
@@ -240,6 +195,12 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
                 ".stat().st_mode & 0o777), "
                 "'database_directory_mode': oct(pathlib.Path('/data/database')"
                 ".stat().st_mode & 0o777), "
+                "'app_secret': pathlib.Path('/data/secrets/app_secret_key')"
+                ".is_file(), "
+                "'app_secret_mode': oct(pathlib.Path('/data/secrets/app_secret_key')"
+                ".stat().st_mode & 0o777), "
+                "'app_secret_digest': hashlib.sha256("
+                "pathlib.Path('/data/secrets/app_secret_key').read_bytes()).hexdigest(), "
                 "'umask': status['Umask'].strip(), "
                 "'no_new_privileges': status['NoNewPrivs'].strip(), "
                 "'effective_capabilities': status['CapEff'].strip(), "
@@ -251,6 +212,7 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
             ),
         )
         runtime = json.loads(inspect.stdout)
+        app_secret_digest = runtime.pop("app_secret_digest")
         assert runtime | {"pip": None} == {
             "uid": 10001,
             "gid": 10001,
@@ -260,6 +222,8 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
             "database": True,
             "database_mode": "0o600",
             "database_directory_mode": "0o700",
+            "app_secret": True,
+            "app_secret_mode": "0o600",
             "umask": "0077",
             "no_new_privileges": "1",
             "effective_capabilities": "0000000000000000",
@@ -296,6 +260,21 @@ def test_compose_web_health_survives_restart(tmp_path: Path) -> None:
         compose(project_name, post_bootstrap_env, "restart", "web")
         health_url = published_health_url(project_name, post_bootstrap_env)
         assert wait_for_ok(health_url, timeout=60)["data"] == {"status": "ok"}
+        restarted_secret_digest = compose(
+            project_name,
+            post_bootstrap_env,
+            "exec",
+            "-T",
+            "web",
+            "python",
+            "-c",
+            (
+                "import hashlib, pathlib; "
+                "print(hashlib.sha256(pathlib.Path("
+                "'/data/secrets/app_secret_key').read_bytes()).hexdigest())"
+            ),
+        ).stdout.strip()
+        assert restarted_secret_digest == app_secret_digest
         assert (data_root / "database" / "app.sqlite3").is_file()
     finally:
         cleanup_project(project_name, env)

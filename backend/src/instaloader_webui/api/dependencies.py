@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import Cookie, Depends, Header, Request
 
+from instaloader_webui.auth.app_secret import AppSecret
 from instaloader_webui.auth.session_tokens import derive_csrf_token
 from instaloader_webui.config import Settings
 from instaloader_webui.services.auth_service import (
@@ -34,6 +35,10 @@ def get_settings(request: Request) -> Settings:
 
 def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
+
+
+def get_app_secret(request: Request) -> AppSecret:
+    return request.app.state.app_secret
 
 
 def require_session_status(
@@ -70,12 +75,12 @@ def require_authenticated_session(
 
 def _validate_csrf(
     request_session: RequestSession,
-    settings: Settings,
+    app_secret: AppSecret,
     submitted_token: str | None,
 ) -> RequestSession:
     expected_token = derive_csrf_token(
         request_session.raw_token,
-        settings.app_secret_key.get_secret_value(),
+        app_secret.value,
     )
     submitted_bytes = (
         submitted_token.encode("ascii")
@@ -96,18 +101,18 @@ def _validate_csrf(
 
 def require_csrf(
     request_session: Annotated[RequestSession, Depends(require_authenticated_session)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    app_secret: Annotated[AppSecret, Depends(get_app_secret)],
     submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
 ) -> RequestSession:
-    return _validate_csrf(request_session, settings, submitted_token)
+    return _validate_csrf(request_session, app_secret, submitted_token)
 
 
 def require_session_status_csrf(
     request_session: Annotated[RequestSession, Depends(require_session_status)],
-    settings: Annotated[Settings, Depends(get_settings)],
+    app_secret: Annotated[AppSecret, Depends(get_app_secret)],
     submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
 ) -> RequestSession:
-    return _validate_csrf(request_session, settings, submitted_token)
+    return _validate_csrf(request_session, app_secret, submitted_token)
 
 
 def require_password_change_complete(

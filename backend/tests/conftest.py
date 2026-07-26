@@ -13,6 +13,8 @@ from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import LoginFailureRepository
 from instaloader_webui.main import create_app
 
+TEST_APP_SECRET = "a" * 32
+
 
 class AppClient(AsyncClient):
     def __init__(
@@ -65,7 +67,6 @@ def test_client_factory():
 def test_settings(tmp_path: Path) -> Settings:
     return Settings(
         data_root=tmp_path,
-        app_secret_key="a" * 32,
         admin_username="owner",
         admin_password="correct-horse-battery-staple",
     )
@@ -100,7 +101,7 @@ def throttle(
 ) -> LoginThrottle:
     return LoginThrottle(
         repository=login_failure_repository,
-        hmac_secret=test_settings.app_secret_key.get_secret_value(),
+        hmac_secret=TEST_APP_SECRET,
     )
 
 

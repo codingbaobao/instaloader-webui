@@ -11,9 +11,12 @@ const CSRF_TOKEN = "c".repeat(64);
 
 describe("LoginPage", () => {
   it("submits credentials and routes a bootstrap admin to password change", async () => {
+    let submittedPassword: unknown;
     server.use(
-      http.post("/api/auth/login", () =>
-        HttpResponse.json({
+      http.post("/api/auth/login", async ({ request }) => {
+        const body = (await request.json()) as { password?: unknown };
+        submittedPassword = body.password;
+        return HttpResponse.json({
           success: true,
           data: {
             username: "owner",
@@ -23,22 +26,19 @@ describe("LoginPage", () => {
           },
           error: null,
           meta: {},
-        }),
-      ),
+        });
+      }),
     );
     render(<TestRouter initialPath="/login" />);
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Username"), "owner");
-    await user.type(
-      screen.getByLabelText("Password"),
-      "correct-horse-battery-staple",
-    );
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(
       await screen.findByRole("heading", { name: "Change your password" }),
     ).toBeVisible();
+    expect(submittedPassword).toBe("");
   });
 
   it("shows a safe error and re-enables submission after rejected credentials", async () => {

@@ -17,9 +17,11 @@ const CSRF_TOKEN = "c".repeat(64);
 describe("ChangePasswordPage", () => {
   it("sends the csrf token and enters the authenticated shell", async () => {
     let csrfHeader = "";
+    let submittedPasswords: unknown;
     server.use(
-      http.post("/api/auth/change-password", ({ request }) => {
+      http.post("/api/auth/change-password", async ({ request }) => {
         csrfHeader = request.headers.get("X-CSRF-Token") ?? "";
+        submittedPasswords = await request.json();
         return HttpResponse.json({
           success: true,
           data: {
@@ -46,18 +48,6 @@ describe("ChangePasswordPage", () => {
       />,
     );
     const user = userEvent.setup();
-    await user.type(
-      screen.getByLabelText("Current password"),
-      "initial-password-value",
-    );
-    await user.type(
-      screen.getByLabelText("New password"),
-      "different-long-owner-password",
-    );
-    await user.type(
-      screen.getByLabelText("Confirm new password"),
-      "different-long-owner-password",
-    );
     await user.click(screen.getByRole("button", { name: "Change password" }));
 
     expect(
@@ -65,6 +55,10 @@ describe("ChangePasswordPage", () => {
     ).toBeVisible();
     expect(screen.getAllByText("Profiles").length).toBeGreaterThan(0);
     expect(csrfHeader).toBe(CSRF_TOKEN);
+    expect(submittedPasswords).toEqual({
+      current_password: "",
+      new_password: "",
+    });
   });
 
   it("validates password confirmation before sending credentials", async () => {
