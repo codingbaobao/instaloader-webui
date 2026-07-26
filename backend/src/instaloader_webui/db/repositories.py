@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from instaloader_webui.db.models import AdminUser, WebSession
 
+SINGLE_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
+
 
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
@@ -72,7 +74,7 @@ class AdminRepository:
     ) -> AdminSnapshot:
         created_at = _as_utc(now)
         model = AdminUser(
-            id=str(uuid4()),
+            id=SINGLE_ADMIN_ID,
             username=username,
             password_hash=password_hash,
             must_change_password=must_change_password,

@@ -3,6 +3,10 @@ from pathlib import Path
 from pydantic import SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ADMIN_USERNAME_PATTERN = r"^[A-Za-z0-9._-]{3,64}$"
+MINIMUM_ADMIN_PASSWORD_LENGTH = 16
+MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES = 4 * 1024
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
