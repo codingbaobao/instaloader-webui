@@ -136,6 +136,23 @@ button:disabled {
   line-height: 1.45;
 }
 
+.auth-secondary-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #e5e5e5;
+  color: #737373;
+  font-size: 13px;
+}
+
+.logout-control {
+  display: grid;
+  gap: 6px;
+}
+
 .app-frame {
   min-height: 100vh;
   padding-bottom: 72px;
@@ -173,6 +190,21 @@ button:disabled {
   background: #f1f1f1;
   font-size: 13px;
   font-weight: 750;
+}
+
+.mobile-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mobile-logout-button {
+  padding: 8px;
+  border: 0;
+  color: #0077c8;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 700;
 }
 
 .content-area {

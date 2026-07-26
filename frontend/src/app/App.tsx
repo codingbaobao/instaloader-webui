@@ -1,16 +1,14 @@
-import { useState } from "react";
 import {
   BrowserRouter,
   Navigate,
   NavLink,
   Route,
   Routes,
-  useNavigate,
 } from "react-router-dom";
 
-import { ApiError, apiRequest } from "./api";
 import { ChangePasswordPage } from "../auth/ChangePasswordPage";
 import { LoginPage } from "../auth/LoginPage";
+import { LogoutButton } from "../auth/LogoutButton";
 import {
   SessionProvider,
   type SessionData,
@@ -64,38 +62,10 @@ function PlaceholderPage({
 }
 
 function AuthenticatedShell() {
-  const navigate = useNavigate();
-  const { session, clearSession } = useSession();
-  const [logoutError, setLogoutError] = useState("");
-  const [loggingOut, setLoggingOut] = useState(false);
+  const { session } = useSession();
 
   if (session === null) {
     return <Navigate replace to="/login" />;
-  }
-  const sessionCsrfToken = session.csrf_token;
-
-  async function logout() {
-    if (loggingOut) {
-      return;
-    }
-    setLoggingOut(true);
-    setLogoutError("");
-    try {
-      await apiRequest<{ logged_out: boolean }>("/api/auth/logout", {
-        method: "POST",
-        csrfToken: sessionCsrfToken,
-      });
-      clearSession();
-      navigate("/login", { replace: true });
-    } catch (error) {
-      setLogoutError(
-        error instanceof ApiError
-          ? error.message
-          : "Sign out could not be completed.",
-      );
-    } finally {
-      setLoggingOut(false);
-    }
   }
 
   return (
@@ -107,28 +77,25 @@ function AuthenticatedShell() {
         <nav aria-label="Desktop" className="desktop-navigation">
           <NavigationItems />
         </nav>
-        <div className="account-actions">
+        <div className="account-actions" aria-label="Desktop account controls">
           <span>@{session.username}</span>
-          <button
-            className="text-button"
-            type="button"
-            disabled={loggingOut}
-            onClick={() => void logout()}
-          >
-            {loggingOut ? "Signing out…" : "Sign out"}
-          </button>
-          {logoutError ? (
-            <p className="form-error" role="alert">
-              {logoutError}
-            </p>
-          ) : null}
+          <LogoutButton />
         </div>
       </aside>
       <main className="content-area">
         <header className="mobile-header">
           <span className="wordmark">Instaloader</span>
-          <span className="avatar" aria-label={`Signed in as ${session.username}`}>
-            {session.username.slice(0, 1).toUpperCase()}
+          <span
+            className="mobile-account-actions"
+            aria-label="Mobile account controls"
+          >
+            <span
+              className="avatar"
+              aria-label={`Signed in as ${session.username}`}
+            >
+              {session.username.slice(0, 1).toUpperCase()}
+            </span>
+            <LogoutButton className="mobile-logout-button" />
           </span>
         </header>
         <Routes>
@@ -188,16 +155,36 @@ function AuthenticatedShell() {
 }
 
 export function AppRoutes() {
-  const { session, loading } = useSession();
+  const { session, status, errorMessage, refreshSession } = useSession();
 
-  if (loading) {
+  if (status === "loading") {
     return (
       <main className="loading-screen" aria-live="polite">
         Loading…
       </main>
     );
   }
-  if (session === null) {
+  if (status === "error") {
+    return (
+      <main className="auth-layout">
+        <section className="auth-card" aria-labelledby="session-error-title">
+          <p className="eyebrow">Session unavailable</p>
+          <h1 id="session-error-title">Unable to restore your session</h1>
+          <p className="auth-intro" role="alert">
+            {errorMessage ?? "The session could not be restored."}
+          </p>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => void refreshSession()}
+          >
+            Retry
+          </button>
+        </section>
+      </main>
+    );
+  }
+  if (status === "unauthenticated" || session === null) {
     return (
       <Routes>
         <Route path="/login" element={<LoginPage />} />

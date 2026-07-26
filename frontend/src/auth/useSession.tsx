@@ -5,24 +5,37 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
-import { apiRequest } from "../app/api";
+import { ApiError, apiRequest } from "../app/api";
+import {
+  parseSessionData,
+  requestSession,
+  type SessionData,
+} from "./sessionData";
 
-export type SessionData = {
-  username: string;
-  must_change_password: boolean;
-  expires_at: string;
-  csrf_token: string;
+export type { SessionData } from "./sessionData";
+
+export type SessionStatus =
+  | "loading"
+  | "authenticated"
+  | "unauthenticated"
+  | "error";
+
+type SessionState = {
+  status: SessionStatus;
+  session: SessionData | null;
+  errorMessage: string | null;
 };
 
-type SessionContextValue = {
-  session: SessionData | null;
-  loading: boolean;
+type SessionContextValue = SessionState & {
+  logoutPending: boolean;
   setSession: (session: SessionData) => void;
   clearSession: () => void;
   refreshSession: () => Promise<void>;
+  logout: () => Promise<void>;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -32,54 +45,160 @@ type SessionProviderProps = {
   initialSession?: SessionData | null;
 };
 
+const unauthenticatedState: SessionState = {
+  status: "unauthenticated",
+  session: null,
+  errorMessage: null,
+};
+
+function errorState(error: unknown): SessionState {
+  if (error instanceof ApiError && error.code === "authentication_required") {
+    return unauthenticatedState;
+  }
+  return {
+    status: "error",
+    session: null,
+    errorMessage:
+      error instanceof ApiError
+        ? error.message
+        : "The session could not be restored.",
+  };
+}
+
+function initialState(initialSession: SessionData | null | undefined): SessionState {
+  if (initialSession === undefined) {
+    return { status: "loading", session: null, errorMessage: null };
+  }
+  if (initialSession === null) {
+    return unauthenticatedState;
+  }
+  try {
+    return {
+      status: "authenticated",
+      session: parseSessionData(initialSession),
+      errorMessage: null,
+    };
+  } catch (error) {
+    return errorState(error);
+  }
+}
+
 export function SessionProvider({
   children,
   initialSession,
 }: SessionProviderProps) {
-  const [session, updateSession] = useState<SessionData | null>(
-    initialSession ?? null,
+  const [state, setState] = useState<SessionState>(() =>
+    initialState(initialSession),
   );
-  const [loading, setLoading] = useState(initialSession === undefined);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const logoutOperation = useRef<Promise<void> | null>(null);
+  const sessionRef = useRef<SessionData | null>(state.session);
 
-  const fetchSession = useCallback(async (): Promise<SessionData | null> => {
+  useEffect(() => {
+    sessionRef.current = state.session;
+  }, [state.session]);
+
+  const loadSession = useCallback(async (): Promise<SessionState> => {
     try {
-      return await apiRequest<SessionData>("/api/auth/session");
-    } catch {
-      return null;
+      return {
+        status: "authenticated",
+        session: await requestSession("/api/auth/session"),
+        errorMessage: null,
+      };
+    } catch (error) {
+      return errorState(error);
     }
   }, []);
 
   const refreshSession = useCallback(async () => {
-    setLoading(true);
-    updateSession(await fetchSession());
-    setLoading(false);
-  }, [fetchSession]);
+    setState({ status: "loading", session: null, errorMessage: null });
+    setState(await loadSession());
+  }, [loadSession]);
 
   useEffect(() => {
     if (initialSession !== undefined) {
       return;
     }
     let active = true;
-    void fetchSession().then((loadedSession) => {
+    void loadSession().then((loadedState) => {
       if (active) {
-        updateSession(loadedSession);
-        setLoading(false);
+        setState(loadedState);
       }
     });
     return () => {
       active = false;
     };
-  }, [fetchSession, initialSession]);
+  }, [initialSession, loadSession]);
+
+  const clearSession = useCallback(() => {
+    sessionRef.current = null;
+    setState(unauthenticatedState);
+  }, []);
+
+  const setSession = useCallback((session: SessionData) => {
+    try {
+      setState({
+        status: "authenticated",
+        session: parseSessionData(session),
+        errorMessage: null,
+      });
+    } catch (error) {
+      setState(errorState(error));
+    }
+  }, []);
+
+  const logout = useCallback((): Promise<void> => {
+    if (logoutOperation.current !== null) {
+      return logoutOperation.current;
+    }
+    const currentSession = sessionRef.current;
+    if (currentSession === null) {
+      clearSession();
+      return Promise.resolve();
+    }
+    const operation = (async () => {
+      setLogoutPending(true);
+      try {
+        await apiRequest<{ logged_out: boolean }>("/api/auth/logout", {
+          method: "POST",
+          csrfToken: currentSession.csrf_token,
+        });
+        clearSession();
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.code === "authentication_required"
+        ) {
+          clearSession();
+          return;
+        }
+        throw error;
+      } finally {
+        setLogoutPending(false);
+        logoutOperation.current = null;
+      }
+    })();
+    logoutOperation.current = operation;
+    return operation;
+  }, [clearSession]);
 
   const value = useMemo<SessionContextValue>(
     () => ({
-      session,
-      loading,
-      setSession: updateSession,
-      clearSession: () => updateSession(null),
+      ...state,
+      logoutPending,
+      setSession,
+      clearSession,
       refreshSession,
+      logout,
     }),
-    [loading, refreshSession, session],
+    [
+      clearSession,
+      logout,
+      logoutPending,
+      refreshSession,
+      setSession,
+      state,
+    ],
   );
 
   return (

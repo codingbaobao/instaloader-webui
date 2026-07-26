@@ -7,11 +7,14 @@ import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
 import { useSession } from "./useSession";
 
+const CSRF_TOKEN = "c".repeat(64);
+const RENEWED_CSRF_TOKEN = "d".repeat(64);
+
 function SessionProbe() {
-  const { session, loading, refreshSession } = useSession();
+  const { session, status, refreshSession } = useSession();
   return (
     <div>
-      <span>{loading ? "Refreshing" : session?.username}</span>
+      <span>{status === "loading" ? "Refreshing" : session?.username}</span>
       <button type="button" onClick={() => void refreshSession()}>
         Refresh session
       </button>
@@ -28,7 +31,7 @@ it("refreshes the in-memory csrf-bearing session on demand", async () => {
           username: "renewed-owner",
           must_change_password: false,
           expires_at: "2026-08-03T00:00:00Z",
-          csrf_token: "renewed-csrf",
+          csrf_token: RENEWED_CSRF_TOKEN,
         },
         error: null,
         meta: {},
@@ -41,7 +44,7 @@ it("refreshes the in-memory csrf-bearing session on demand", async () => {
         username: "owner",
         must_change_password: false,
         expires_at: "2026-08-02T00:00:00Z",
-        csrf_token: "csrf",
+        csrf_token: CSRF_TOKEN,
       }}
     >
       <SessionProbe />

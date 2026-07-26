@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
 
+const CSRF_TOKEN = "c".repeat(64);
+
 describe("ChangePasswordPage", () => {
   it("sends the csrf token and enters the authenticated shell", async () => {
     let csrfHeader = "";
@@ -18,7 +20,7 @@ describe("ChangePasswordPage", () => {
             username: "owner",
             must_change_password: false,
             expires_at: "2026-08-02T00:00:00Z",
-            csrf_token: "csrf-value",
+            csrf_token: CSRF_TOKEN,
           },
           error: null,
           meta: {},
@@ -33,7 +35,7 @@ describe("ChangePasswordPage", () => {
           username: "owner",
           must_change_password: true,
           expires_at: "2026-08-02T00:00:00Z",
-          csrf_token: "csrf-value",
+          csrf_token: CSRF_TOKEN,
         }}
       />,
     );
@@ -56,7 +58,7 @@ describe("ChangePasswordPage", () => {
       await screen.findByRole("navigation", { name: "Desktop" }),
     ).toBeVisible();
     expect(screen.getAllByText("Profiles").length).toBeGreaterThan(0);
-    expect(csrfHeader).toBe("csrf-value");
+    expect(csrfHeader).toBe(CSRF_TOKEN);
   });
 
   it("validates password confirmation before sending credentials", async () => {
@@ -74,7 +76,7 @@ describe("ChangePasswordPage", () => {
           username: "owner",
           must_change_password: true,
           expires_at: "2026-08-02T00:00:00Z",
-          csrf_token: "csrf-value",
+          csrf_token: CSRF_TOKEN,
         }}
       />,
     );
@@ -119,7 +121,7 @@ describe("ChangePasswordPage", () => {
           username: "owner",
           must_change_password: true,
           expires_at: "2026-08-02T00:00:00Z",
-          csrf_token: "csrf-value",
+          csrf_token: CSRF_TOKEN,
         }}
       />,
     );
@@ -146,5 +148,51 @@ describe("ChangePasswordPage", () => {
       screen.getByRole("button", { name: "Change password" }),
     ).toBeEnabled();
     expect(screen.getByLabelText("Current password")).toHaveValue("");
+  });
+
+  it("offers duplicate-safe csrf-protected logout during forced password change", async () => {
+    let csrfHeader = "";
+    let requestCount = 0;
+    let releaseResponse: (() => void) | undefined;
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    server.use(
+      http.post("/api/auth/logout", async ({ request }) => {
+        requestCount += 1;
+        csrfHeader = request.headers.get("X-CSRF-Token") ?? "";
+        await responseGate;
+        return HttpResponse.json({
+          success: true,
+          data: { logged_out: true },
+          error: null,
+          meta: {},
+        });
+      }),
+    );
+    render(
+      <TestRouter
+        initialPath="/change-password"
+        initialSession={{
+          username: "owner",
+          must_change_password: true,
+          expires_at: "2026-08-02T00:00:00Z",
+          csrf_token: CSRF_TOKEN,
+        }}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Signing out…" }),
+    ).toBeDisabled();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Signing out…" }),
+    );
+    expect(requestCount).toBe(1);
+    releaseResponse?.();
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeVisible();
+    expect(csrfHeader).toBe(CSRF_TOKEN);
   });
 });

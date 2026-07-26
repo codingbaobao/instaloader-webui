@@ -76,6 +76,38 @@ describe("apiRequest", () => {
     );
   });
 
+  it.each([
+    {
+      success: false,
+      data: null,
+      error: { code: 401, message: "not stable" },
+      meta: {},
+    },
+    {
+      success: true,
+      data: { accepted: true },
+      error: null,
+      meta: [],
+    },
+    {
+      success: true,
+      data: { accepted: true },
+      error: { code: "unexpected", message: "Unexpected error." },
+      meta: {},
+    },
+  ])("rejects an envelope with malformed nested fields", async (payload) => {
+    server.use(
+      http.get("/api/example", () => HttpResponse.json(payload, { status: 200 })),
+    );
+
+    await expect(apiRequest("/api/example")).rejects.toEqual(
+      new ApiError(
+        "invalid_response",
+        "The service returned an invalid response.",
+      ),
+    );
+  });
+
   it("normalizes non-JSON service responses", async () => {
     server.use(
       http.get(

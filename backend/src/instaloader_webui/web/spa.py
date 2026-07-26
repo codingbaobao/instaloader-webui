@@ -12,13 +12,17 @@ def _is_within(path: Path, parent: Path) -> bool:
     return path == parent or parent in path.parents
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return _is_within(first, second) or _is_within(second, first)
+
+
 def install_spa(app: FastAPI, static_root: Path, data_root: Path) -> None:
     resolved_data_root = data_root.resolve()
     resolved_static_root = static_root.resolve()
     assets_root = static_root / "assets"
     index_path = static_root / "index.html"
     static_overlaps_data = any(
-        _is_within(candidate.resolve(), resolved_data_root)
+        _paths_overlap(candidate.resolve(), resolved_data_root)
         for candidate in (resolved_static_root, assets_root, index_path)
     )
 

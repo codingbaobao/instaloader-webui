@@ -23,14 +23,32 @@ export class ApiError extends Error {
 }
 
 function isEnvelope<T>(value: unknown): value is ApiEnvelope<T> {
-  return (
+  const errorIsValid =
     typeof value === "object" &&
     value !== null &&
+    "error" in value &&
+    (value.error === null ||
+      (isRecord(value.error) &&
+        typeof value.error.code === "string" &&
+        /^[a-z0-9_]+$/.test(value.error.code) &&
+        typeof value.error.message === "string" &&
+        value.error.message.length > 0));
+  return (
+    isRecord(value) &&
     "success" in value &&
     typeof value.success === "boolean" &&
     "data" in value &&
-    "error" in value
+    errorIsValid &&
+    "meta" in value &&
+    isRecord(value.meta) &&
+    (value.success
+      ? value.data !== null && value.error === null
+      : value.data === null && value.error !== null)
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export async function apiRequest<T>(

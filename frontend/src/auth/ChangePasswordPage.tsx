@@ -1,8 +1,10 @@
 import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 
-import { ApiError, apiRequest } from "../app/api";
-import { type SessionData, useSession } from "./useSession";
+import { ApiError } from "../app/api";
+import { LogoutButton } from "./LogoutButton";
+import { requestSession } from "./sessionData";
+import { useSession } from "./useSession";
 
 type ChangePasswordPageProps = {
   csrfToken?: string;
@@ -39,7 +41,7 @@ export function ChangePasswordPage({
     setSubmitting(true);
     setErrorMessage("");
     try {
-      const updated = await apiRequest<SessionData>(
+      const updated = await requestSession(
         "/api/auth/change-password",
         {
           method: "POST",
@@ -116,6 +118,10 @@ export function ChangePasswordPage({
             {submitting ? "Changing password…" : "Change password"}
           </button>
         </form>
+        <div className="auth-secondary-action">
+          <span>Not ready to change it?</span>
+          <LogoutButton />
+        </div>
       </section>
     </main>
   );

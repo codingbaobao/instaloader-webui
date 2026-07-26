@@ -1,8 +1,9 @@
 import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 
-import { ApiError, apiRequest } from "../app/api";
-import { type SessionData, useSession } from "./useSession";
+import { ApiError } from "../app/api";
+import { requestSession } from "./sessionData";
+import { useSession } from "./useSession";
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -29,7 +30,7 @@ export function LoginPage() {
     setSubmitting(true);
     setErrorMessage("");
     try {
-      const authenticated = await apiRequest<SessionData>("/api/auth/login", {
+      const authenticated = await requestSession("/api/auth/login", {
         method: "POST",
         body: { username, password },
       });
