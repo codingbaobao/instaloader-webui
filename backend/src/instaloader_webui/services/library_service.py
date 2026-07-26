@@ -58,12 +58,8 @@ class LibraryService:
         profile = self._library.get_profile(profile_id)
         if profile is None:
             raise ProfileNotFoundError(profile_id)
-        active_job = self._active_profile_sync(profile_id)
-        if active_job is not None:
-            return active_job
-        return self._jobs.enqueue(
-            job_type="profile_sync",
-            payload={"profile_id": profile.id},
+        return self._jobs.enqueue_profile_sync(
+            profile_id=profile.id,
             status_text="Queued profile synchronization.",
             now=now,
         )
@@ -96,13 +92,3 @@ class LibraryService:
             status_text="Queued media deletion.",
             now=now,
         )
-
-    def _active_profile_sync(self, profile_id: str) -> JobSnapshot | None:
-        for job in self._jobs.list():
-            if (
-                job.type == "profile_sync"
-                and job.state in {"pending", "running"}
-                and job.payload.get("profile_id") == profile_id
-            ):
-                return job
-        return None

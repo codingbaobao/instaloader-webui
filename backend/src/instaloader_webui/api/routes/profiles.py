@@ -26,7 +26,6 @@ from instaloader_webui.services.library_service import (
 )
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
-_PROFILE_MEDIA_COUNT_LIMIT = 10_000
 
 
 class InstagramInputRequest(BaseModel):
@@ -50,7 +49,7 @@ def list_profiles(
     profiles = library.list_profiles()
     return ApiEnvelope(
         success=True,
-        data=tuple(_serialize_profile(library, profile.id, profile) for profile in profiles),
+        data=tuple(_serialize_profile(library, profile) for profile in profiles),
     )
 
 
@@ -68,7 +67,7 @@ def add_profile(
     return ApiEnvelope(
         success=True,
         data=ProfileCreateResponse(
-            profile=_serialize_profile(library, profile.id, profile),
+            profile=_serialize_profile(library, profile),
             job=serialize_job(job),
         ),
     )
@@ -83,7 +82,7 @@ def get_profile(
     profile = library.get_profile(profile_id)
     if profile is None:
         raise _profile_not_found(profile_id)
-    return ApiEnvelope(success=True, data=_serialize_profile(library, profile_id, profile))
+    return ApiEnvelope(success=True, data=_serialize_profile(library, profile))
 
 
 @router.post("/{profile_id}/sync", response_model=ApiEnvelope[JobResponse])
@@ -113,14 +112,9 @@ def delete_profile(
 
 
 def _serialize_profile(
-    library: LibraryRepository, profile_id: str, profile: ProfileSnapshot
+    library: LibraryRepository, profile: ProfileSnapshot
 ) -> ProfileResponse:
-    # Task 1 intentionally exposes snapshots rather than ORM/session details.
-    # A bounded POC library makes this route-level aggregation sufficient until
-    # a dedicated aggregate repository query is introduced.
-    media_count = len(
-        library.list_media(profile_id=profile_id, limit=_PROFILE_MEDIA_COUNT_LIMIT)
-    )
+    media_count = library.count_media(profile_id=profile.id)
     return serialize_profile(profile, media_count=media_count)
 
 

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from uuid import uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from instaloader_webui.db.models import (
@@ -362,6 +362,20 @@ class LibraryRepository:
             media_items = session.scalars(query).all()
             return self._media_snapshots(session, media_items)
 
+    def count_media(
+        self,
+        *,
+        profile_id: str | None = None,
+        kind: str | None = None,
+    ) -> int:
+        query = select(func.count(MediaItem.id))
+        if profile_id is not None:
+            query = query.where(MediaItem.owner_profile_id == profile_id)
+        if kind is not None:
+            query = query.where(MediaItem.kind == kind)
+        with self._session_factory() as session:
+            return int(session.scalar(query) or 0)
+
     def get_media(self, media_id: str) -> MediaSnapshot | None:
         with self._session_factory() as session:
             model = session.get(MediaItem, media_id)
@@ -505,6 +519,53 @@ class JobRepository:
             session.add(model)
             session.flush()
             return _job_snapshot(model)
+
+    def enqueue_profile_sync(
+        self,
+        *,
+        profile_id: str,
+        status_text: str,
+        now: datetime,
+    ) -> JobSnapshot:
+        """Return the active sync job for a profile or atomically enqueue one."""
+        current_time = _as_utc(now)
+        payload = {"profile_id": profile_id}
+        payload_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            existing = session.scalar(
+                select(Job)
+                .where(
+                    Job.type == "profile_sync",
+                    Job.state.in_(("pending", "running")),
+                    Job.payload_text == payload_text,
+                )
+                .order_by(Job.created_at, Job.id)
+                .limit(1)
+            )
+            if existing is not None:
+                snapshot = _job_snapshot(existing)
+                session.commit()
+                return snapshot
+            model = Job(
+                id=str(uuid4()),
+                type="profile_sync",
+                state="pending",
+                payload_text=payload_text,
+                progress_current=0,
+                progress_total=None,
+                status_text=status_text,
+                error=None,
+                created_at=current_time,
+                started_at=None,
+                completed_at=None,
+                updated_at=current_time,
+            )
+            session.add(model)
+            session.flush()
+            snapshot = _job_snapshot(model)
+            session.commit()
+            return snapshot
 
     def list(self, limit: int = 100) -> tuple[JobSnapshot, ...]:
         with self._session_factory() as session:
