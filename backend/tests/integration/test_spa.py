@@ -8,6 +8,12 @@ async def test_non_api_route_returns_react_index(client_with_static_build) -> No
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert "cache-control" not in response.headers
+    assert "strict-transport-security" not in response.headers
     assert '<div id="root"></div>' in response.text
 
 
@@ -62,9 +68,7 @@ async def test_static_build_is_disabled_when_data_root_is_nested_beneath_it(
     data_root = static_root / "stored-data"
     assets_root.mkdir(parents=True)
     data_root.mkdir()
-    (static_root / "index.html").write_text(
-        '<div id="root"></div>', encoding="utf-8"
-    )
+    (static_root / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
     (assets_root / "app.js").write_text("public-app", encoding="utf-8")
     (data_root / "private.txt").write_text("private-data", encoding="utf-8")
     unsafe_settings = test_settings.model_copy(
@@ -87,18 +91,14 @@ async def test_static_build_is_disabled_when_data_root_is_nested_under_assets(
     static_root = tmp_path / "static-assets-parent"
     data_root = static_root / "assets" / "stored-data"
     data_root.mkdir(parents=True)
-    (static_root / "index.html").write_text(
-        '<div id="root"></div>', encoding="utf-8"
-    )
+    (static_root / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
     (data_root / "private.txt").write_text("private-data", encoding="utf-8")
     unsafe_settings = test_settings.model_copy(
         update={"static_root": static_root, "data_root": data_root}
     )
 
     async with test_client_factory(unsafe_settings) as unsafe_client:
-        private_response = await unsafe_client.get(
-            "/assets/stored-data/private.txt"
-        )
+        private_response = await unsafe_client.get("/assets/stored-data/private.txt")
 
     assert private_response.status_code == 404
     assert "private-data" not in private_response.text

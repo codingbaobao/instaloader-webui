@@ -1,14 +1,19 @@
 import hmac
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from unicodedata import normalize
 
-from instaloader_webui.auth.passwords import PasswordService
+from instaloader_webui.auth.passwords import PasswordService, PasswordServiceBusyError
 from instaloader_webui.auth.session_tokens import (
     digest_session_token,
     issue_session_token,
 )
 from instaloader_webui.auth.throttle import LoginAttemptKey, LoginThrottle
-from instaloader_webui.config import MINIMUM_ADMIN_PASSWORD_LENGTH
+from instaloader_webui.config import (
+    MAXIMUM_CREDENTIAL_BYTES,
+    MAXIMUM_USERNAME_BYTES,
+    MINIMUM_ADMIN_PASSWORD_LENGTH,
+)
 from instaloader_webui.db.repositories import (
     AdminRepository,
     WebSessionRepository,
@@ -31,6 +36,10 @@ class InvalidNewPasswordError(Exception):
 
 
 class PasswordUnchangedError(Exception):
+    pass
+
+
+class AuthenticationBusyError(Exception):
     pass
 
 
@@ -61,6 +70,13 @@ def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def _valid_utf8_bytes(value: str, *, maximum_bytes: int) -> bool:
+    try:
+        return len(value.encode("utf-8")) <= maximum_bytes
+    except UnicodeEncodeError:
+        return False
+
+
 class AuthService:
     def __init__(
         self,
@@ -78,25 +94,33 @@ class AuthService:
     def login(
         self, username: str, password: str, client_ip: str, now: datetime
     ) -> LoginResult:
+        canonical_username = normalize("NFKC", username).strip().casefold()
+        if not _valid_utf8_bytes(
+            canonical_username, maximum_bytes=MAXIMUM_USERNAME_BYTES
+        ) or not _valid_utf8_bytes(password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES):
+            raise InvalidCredentialsError
         current_time = _as_utc(now)
-        attempt = LoginAttemptKey(username=username, client_ip=client_ip)
+        attempt = LoginAttemptKey(username=canonical_username, client_ip=client_ip)
         admission = self._throttle.reserve(attempt, current_time)
         if not admission.allowed:
             raise LoginThrottledError(admission.retry_after_seconds)
         assert admission.reservation_id is not None
 
         administrator = self._administrators.get_single()
-        username_matches = (
-            administrator is not None
-            and hmac.compare_digest(
-                username.strip().casefold().encode("utf-8"),
-                administrator.username.casefold().encode("utf-8"),
-            )
+        username_matches = administrator is not None and hmac.compare_digest(
+            canonical_username.encode("utf-8"),
+            administrator.username.casefold().encode("utf-8"),
         )
-        password_matches = (
-            administrator is not None
-            and self._passwords.verify(administrator.password_hash, password)
+        password_hash = (
+            administrator.password_hash
+            if administrator is not None
+            else self._passwords.dummy_hash
         )
+        try:
+            password_matches = self._passwords.verify(password_hash, password)
+        except PasswordServiceBusyError as error:
+            self._throttle.cancel(admission)
+            raise AuthenticationBusyError from error
         if not username_matches or not password_matches or administrator is None:
             self._throttle.record_reserved_failure(admission, current_time)
             raise InvalidCredentialsError
@@ -107,7 +131,9 @@ class AuthService:
             administrator_id=administrator.id,
             expected_password_hash=administrator.password_hash,
             reservation_id=admission.reservation_id,
-            bucket_digest=admission.bucket_digest,
+            account_bucket_digest=admission.account_bucket_digest,
+            ip_bucket_digest=admission.ip_bucket_digest,
+            global_bucket_digest=admission.global_bucket_digest,
             token_digest=issued.digest,
             now=current_time,
             expires_at=expires_at,
@@ -153,18 +179,27 @@ class AuthService:
         new_password: str,
         now: datetime,
     ) -> AuthenticatedSession:
+        if not _valid_utf8_bytes(
+            current_password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES
+        ):
+            raise InvalidCurrentPasswordError
+        if not _valid_utf8_bytes(new_password, maximum_bytes=MAXIMUM_CREDENTIAL_BYTES):
+            raise InvalidNewPasswordError
         current_time = _as_utc(now)
         authenticated = self.authenticate_session(raw_token, current_time)
         if authenticated is None:
             raise InvalidCredentialsError
 
-        administrator = self._administrators.get_by_id(
-            authenticated.administrator_id
-        )
+        administrator = self._administrators.get_by_id(authenticated.administrator_id)
         if administrator is None:
             raise InvalidCredentialsError
-        if not self._passwords.verify(administrator.password_hash, current_password):
-            raise InvalidCurrentPasswordError
+        try:
+            if not self._passwords.verify(
+                administrator.password_hash, current_password
+            ):
+                raise InvalidCurrentPasswordError
+        except PasswordServiceBusyError as error:
+            raise AuthenticationBusyError from error
         if len(new_password) < MINIMUM_ADMIN_PASSWORD_LENGTH:
             raise InvalidNewPasswordError
         if hmac.compare_digest(
@@ -172,10 +207,14 @@ class AuthService:
         ):
             raise PasswordUnchangedError
 
+        try:
+            replacement_password_hash = self._passwords.hash(new_password)
+        except PasswordServiceBusyError as error:
+            raise AuthenticationBusyError from error
         updated = self._administrators.change_password_and_revoke_other_sessions(
             administrator_id=administrator.id,
             expected_password_hash=administrator.password_hash,
-            password_hash=self._passwords.hash(new_password),
+            password_hash=replacement_password_hash,
             must_change_password=False,
             retained_token_digest=digest_session_token(raw_token),
             now=current_time,

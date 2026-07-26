@@ -15,10 +15,19 @@ from instaloader_webui.main import create_app
 
 
 class AppClient(AsyncClient):
-    def __init__(self, app: FastAPI, *, base_url: str = "http://test") -> None:
+    def __init__(
+        self,
+        app: FastAPI,
+        *,
+        base_url: str = "http://test",
+        raise_app_exceptions: bool = True,
+    ) -> None:
         self.app = app
         super().__init__(
-            transport=ASGITransport(app=app),
+            transport=ASGITransport(
+                app=app,
+                raise_app_exceptions=raise_app_exceptions,
+            ),
             base_url=base_url,
         )
 
@@ -28,11 +37,16 @@ async def open_test_client(
     settings: Settings,
     *,
     base_url: str = "http://test",
+    raise_app_exceptions: bool = True,
 ) -> AsyncIterator[AppClient]:
     app = create_app(settings)
     async with (
         app.router.lifespan_context(app),
-        AppClient(app, base_url=base_url) as test_client,
+        AppClient(
+            app,
+            base_url=base_url,
+            raise_app_exceptions=raise_app_exceptions,
+        ) as test_client,
     ):
         yield test_client
 
@@ -73,7 +87,9 @@ def session_factory(engine):
 
 
 @pytest.fixture
-def login_failure_repository(session_factory, test_settings: Settings) -> LoginFailureRepository:
+def login_failure_repository(
+    session_factory, test_settings: Settings
+) -> LoginFailureRepository:
     run_migrations(test_settings)
     return LoginFailureRepository(session_factory)
 

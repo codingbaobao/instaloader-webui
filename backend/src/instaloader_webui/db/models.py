@@ -15,8 +15,12 @@ class AdminUser(Base):
     must_change_password: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class WebSession(Base):
@@ -27,9 +31,15 @@ class WebSession(Base):
         ForeignKey("admin_users.id"), nullable=False
     )
     token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -51,13 +61,34 @@ class LoginAttemptReservation(Base):
     __tablename__ = "login_attempt_reservations"
     __table_args__ = (
         Index(
-            "ix_login_attempt_reservations_bucket_digest",
-            "bucket_digest",
+            "ix_login_attempt_reservations_account_active",
+            "account_bucket_digest",
+            "failure_valid",
+            "expires_at",
         ),
+        Index(
+            "ix_login_attempt_reservations_ip_active",
+            "ip_bucket_digest",
+            "failure_valid",
+            "expires_at",
+        ),
+        Index(
+            "ix_login_attempt_reservations_global_active",
+            "global_bucket_digest",
+            "failure_valid",
+            "expires_at",
+        ),
+        Index("ix_login_attempt_reservations_expires_at", "expires_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    account_bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ip_bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    global_bucket_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     failure_valid: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

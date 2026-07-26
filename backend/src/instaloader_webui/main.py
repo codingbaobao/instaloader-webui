@@ -6,7 +6,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from instaloader_webui.api.dependencies import ApiError
-from instaloader_webui.api.routes.auth import router as auth_router
+from instaloader_webui.api.middleware import (
+    RequestBodyLimitMiddleware,
+    SafeExceptionMiddleware,
+    SecurityHeadersMiddleware,
+)
+from instaloader_webui.api.routes.auth import (
+    SESSION_COOKIE_NAME,
+)
+from instaloader_webui.api.routes.auth import (
+    router as auth_router,
+)
 from instaloader_webui.api.routes.health import router as health_router
 from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.auth.throttle import LoginThrottle
@@ -51,8 +61,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = resolved
 
     @app.exception_handler(ApiError)
-    async def handle_api_error(_request: Request, error: ApiError) -> JSONResponse:
-        return JSONResponse(
+    async def handle_api_error(request: Request, error: ApiError) -> JSONResponse:
+        response = JSONResponse(
             status_code=error.status_code,
             headers=error.headers,
             content={
@@ -62,6 +72,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "meta": {},
             },
         )
+        if (
+            error.code == "authentication_required"
+            and SESSION_COOKIE_NAME in request.cookies
+        ):
+            response.delete_cookie(
+                key=SESSION_COOKIE_NAME,
+                path="/",
+                secure=resolved.session_cookie_secure,
+                httponly=True,
+                samesite="lax",
+            )
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
@@ -83,4 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
     install_spa(app, resolved.static_root, resolved.data_root)
+    app.add_middleware(RequestBodyLimitMiddleware)
+    app.add_middleware(SafeExceptionMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
     return app

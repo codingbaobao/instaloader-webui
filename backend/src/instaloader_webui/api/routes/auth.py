@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
 from typing import Annotated
+from unicodedata import normalize
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from instaloader_webui.api.dependencies import (
     ApiError,
@@ -14,8 +15,14 @@ from instaloader_webui.api.dependencies import (
 )
 from instaloader_webui.api.envelope import ApiEnvelope
 from instaloader_webui.auth.session_tokens import derive_csrf_token
-from instaloader_webui.config import MINIMUM_ADMIN_PASSWORD_LENGTH, Settings
+from instaloader_webui.config import (
+    MAXIMUM_CREDENTIAL_BYTES,
+    MAXIMUM_USERNAME_BYTES,
+    MINIMUM_ADMIN_PASSWORD_LENGTH,
+    Settings,
+)
 from instaloader_webui.services.auth_service import (
+    AuthenticationBusyError,
     AuthService,
     InvalidCredentialsError,
     InvalidCurrentPasswordError,
@@ -35,12 +42,44 @@ class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: SecretStr = Field(min_length=1)
 
+    @field_validator("username", mode="before")
+    @classmethod
+    def canonicalize_username(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        canonical = normalize("NFKC", value).strip().casefold()
+        _validate_utf8_bytes(canonical, maximum_bytes=MAXIMUM_USERNAME_BYTES)
+        return canonical
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_bytes(cls, value: SecretStr) -> SecretStr:
+        _validate_utf8_bytes(value.get_secret_value())
+        return value
+
 
 class ChangePasswordRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     current_password: SecretStr = Field(min_length=1)
     new_password: SecretStr = Field(min_length=MINIMUM_ADMIN_PASSWORD_LENGTH)
+
+    @field_validator("current_password", "new_password")
+    @classmethod
+    def validate_password_bytes(cls, value: SecretStr) -> SecretStr:
+        _validate_utf8_bytes(value.get_secret_value())
+        return value
+
+
+def _validate_utf8_bytes(
+    value: str, *, maximum_bytes: int = MAXIMUM_CREDENTIAL_BYTES
+) -> None:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("credential must be valid UTF-8") from error
+    if len(encoded) > maximum_bytes:
+        raise ValueError("credential exceeds the UTF-8 byte limit")
 
 
 def _session_data(
@@ -80,6 +119,13 @@ def login(
             message="Too many login attempts. Try again later.",
             headers={"Retry-After": str(error.retry_after_seconds)},
         ) from error
+    except AuthenticationBusyError as error:
+        raise ApiError(
+            status_code=503,
+            code="authentication_busy",
+            message="Authentication is temporarily busy. Try again shortly.",
+            headers={"Retry-After": "1"},
+        ) from error
     except InvalidCredentialsError as error:
         raise ApiError(
             status_code=401,
@@ -112,9 +158,7 @@ def login(
 
 @router.get("/session", response_model=ApiEnvelope[dict[str, object]])
 def session(
-    request_session: Annotated[
-        RequestSession, Depends(require_session_status)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_session_status)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, object]]:
     return ApiEnvelope(
@@ -126,9 +170,7 @@ def session(
 @router.post("/change-password", response_model=ApiEnvelope[dict[str, object]])
 def change_password(
     payload: ChangePasswordRequest,
-    request_session: Annotated[
-        RequestSession, Depends(require_session_status_csrf)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_session_status_csrf)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, object]]:
@@ -157,6 +199,13 @@ def change_password(
             code="password_unchanged",
             message="The new password must be different.",
         ) from error
+    except AuthenticationBusyError as error:
+        raise ApiError(
+            status_code=503,
+            code="authentication_busy",
+            message="Authentication is temporarily busy. Try again shortly.",
+            headers={"Retry-After": "1"},
+        ) from error
 
     updated_session = RequestSession(
         raw_token=request_session.raw_token,
@@ -171,9 +220,7 @@ def change_password(
 @router.post("/logout", response_model=ApiEnvelope[dict[str, bool]])
 def logout(
     response: Response,
-    request_session: Annotated[
-        RequestSession, Depends(require_session_status_csrf)
-    ],
+    request_session: Annotated[RequestSession, Depends(require_session_status_csrf)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, bool]]:

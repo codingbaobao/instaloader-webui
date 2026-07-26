@@ -159,6 +159,21 @@ def test_resolve_bootstrap_password_rejects_files_larger_than_four_kib(
         resolve_bootstrap_password(settings)
 
 
+def test_bootstrap_rejects_password_over_utf8_credential_limit(
+    session_factory, tmp_path: Path
+) -> None:
+    settings = Settings(
+        data_root=tmp_path,
+        app_secret_key="a" * 32,
+        admin_username="owner",
+        admin_password="界" * 342,
+    )
+    run_migrations(settings)
+
+    with pytest.raises(ValueError, match="1,024 UTF-8 bytes"):
+        bootstrap_admin(session_factory, settings)
+
+
 def test_bootstrap_rejects_password_shorter_than_sixteen_characters(
     session_factory, tmp_path: Path
 ) -> None:

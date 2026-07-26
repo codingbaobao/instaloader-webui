@@ -92,12 +92,13 @@ def test_initial_migration_matches_auth_model_schema(test_settings) -> None:
 
 
 def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
-    test_settings
+    test_settings,
 ) -> None:
     run_migrations(test_settings)
     config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
     config.set_main_option(
-        "sqlalchemy.url", f"sqlite:///{test_settings.database_path.resolve().as_posix()}"
+        "sqlalchemy.url",
+        f"sqlite:///{test_settings.database_path.resolve().as_posix()}",
     )
 
     inspector = inspect(build_engine(test_settings.database_path))
@@ -112,23 +113,26 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
         "bucket_digest"
     ]
     assert {
-        column["name"]
-        for column in inspector.get_columns("login_attempt_reservations")
+        column["name"] for column in inspector.get_columns("login_attempt_reservations")
     } == {
         "id",
-        "bucket_digest",
+        "account_bucket_digest",
+        "ip_bucket_digest",
+        "global_bucket_digest",
         "created_at",
         "expires_at",
         "failure_valid",
     }
 
     command.downgrade(config, "0001_admin_and_sessions")
-    assert "login_failures" not in inspect(
-        build_engine(test_settings.database_path)
-    ).get_table_names()
-    assert "login_attempt_reservations" not in inspect(
-        build_engine(test_settings.database_path)
-    ).get_table_names()
+    assert (
+        "login_failures"
+        not in inspect(build_engine(test_settings.database_path)).get_table_names()
+    )
+    assert (
+        "login_attempt_reservations"
+        not in inspect(build_engine(test_settings.database_path)).get_table_names()
+    )
 
     command.upgrade(config, "head")
     upgraded_columns = {
@@ -151,7 +155,9 @@ def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
         for column in upgraded_inspector.get_columns("login_attempt_reservations")
     } == {
         "id",
-        "bucket_digest",
+        "account_bucket_digest",
+        "ip_bucket_digest",
+        "global_bucket_digest",
         "created_at",
         "expires_at",
         "failure_valid",

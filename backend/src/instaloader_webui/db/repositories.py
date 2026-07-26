@@ -55,7 +55,9 @@ class LoginAdmissionSnapshot:
     allowed: bool
     retry_after_seconds: int
     reservation_id: str | None
-    bucket_digest: str
+    account_bucket_digest: str
+    ip_bucket_digest: str
+    global_bucket_digest: str
 
 
 def _admin_snapshot(model: AdminUser) -> AdminSnapshot:
@@ -137,7 +139,9 @@ class AdminRepository:
         administrator_id: str,
         expected_password_hash: str,
         reservation_id: str,
-        bucket_digest: str,
+        account_bucket_digest: str,
+        ip_bucket_digest: str,
+        global_bucket_digest: str,
         token_digest: str,
         now: datetime,
         expires_at: datetime,
@@ -149,7 +153,9 @@ class AdminRepository:
             administrator = session.get(AdminUser, administrator_id)
             if (
                 reservation is None
-                or reservation.bucket_digest != bucket_digest
+                or reservation.account_bucket_digest != account_bucket_digest
+                or reservation.ip_bucket_digest != ip_bucket_digest
+                or reservation.global_bucket_digest != global_bucket_digest
                 or _as_utc(reservation.expires_at) <= current_time
                 or administrator is None
                 or administrator.password_hash != expected_password_hash
@@ -168,13 +174,15 @@ class AdminRepository:
                 expires_at=_as_utc(expires_at),
                 revoked_at=None,
             )
-            failure = session.get(LoginFailure, bucket_digest)
+            failure = session.get(LoginFailure, account_bucket_digest)
             if failure is not None:
                 session.delete(failure)
             session.execute(
                 update(LoginAttemptReservation)
                 .where(
-                    LoginAttemptReservation.bucket_digest == bucket_digest,
+                    LoginAttemptReservation.account_bucket_digest
+                    == account_bucket_digest,
+                    LoginAttemptReservation.ip_bucket_digest == ip_bucket_digest,
                     LoginAttemptReservation.id != reservation_id,
                 )
                 .values(failure_valid=False)
@@ -321,6 +329,7 @@ class WebSessionRepository:
             session.flush()
             return _web_session_snapshot(model)
 
+
 class LoginFailureRepository:
     """Persist digest-only login-failure buckets behind immutable snapshots."""
 
@@ -335,11 +344,16 @@ class LoginFailureRepository:
     def reserve_attempt(
         self,
         *,
-        bucket_digest: str,
+        account_bucket_digest: str,
+        ip_bucket_digest: str,
+        global_bucket_digest: str,
         now: datetime,
         failure_window: timedelta,
-        maximum_failures: int,
+        account_maximum_failures: int,
+        ip_maximum_failures: int,
+        global_maximum_failures: int,
         reservation_lease: timedelta,
+        cardinality_cap: int,
     ) -> LoginAdmissionSnapshot:
         current_time = _as_utc(now)
         with self._session_factory() as session:
@@ -349,65 +363,127 @@ class LoginFailureRepository:
                     LoginAttemptReservation.expires_at <= current_time
                 )
             )
-            bucket = session.get(LoginFailure, bucket_digest)
-            failure_count = 0
-            if (
-                bucket is not None
-                and current_time - _as_utc(bucket.first_failure_at) < failure_window
-            ):
-                failure_count = bucket.failure_count
-            if (
-                bucket is not None
-                and bucket.blocked_until is not None
-                and _as_utc(bucket.blocked_until) > current_time
-            ):
-                retry_after = math.ceil(
-                    (_as_utc(bucket.blocked_until) - current_time).total_seconds()
-                )
-                session.commit()
-                return LoginAdmissionSnapshot(
-                    allowed=False,
-                    retry_after_seconds=max(1, retry_after),
-                    reservation_id=None,
-                    bucket_digest=bucket_digest,
-                )
-
-            active_reservations = session.scalar(
-                select(func.count(LoginAttemptReservation.id)).where(
-                    LoginAttemptReservation.bucket_digest == bucket_digest,
-                    LoginAttemptReservation.expires_at > current_time,
-                    LoginAttemptReservation.failure_valid.is_(True),
+            session.execute(
+                delete(LoginFailure).where(
+                    LoginFailure.first_failure_at <= current_time - failure_window,
+                    (
+                        LoginFailure.blocked_until.is_(None)
+                        | (LoginFailure.blocked_until <= current_time)
+                    ),
                 )
             )
-            assert active_reservations is not None
-            if failure_count + active_reservations >= maximum_failures:
-                earliest_expiry = session.scalar(
-                    select(func.min(LoginAttemptReservation.expires_at)).where(
-                        LoginAttemptReservation.bucket_digest == bucket_digest,
+
+            scope_specs = (
+                (
+                    account_bucket_digest,
+                    LoginAttemptReservation.account_bucket_digest,
+                    account_maximum_failures,
+                ),
+                (
+                    ip_bucket_digest,
+                    LoginAttemptReservation.ip_bucket_digest,
+                    ip_maximum_failures,
+                ),
+                (
+                    global_bucket_digest,
+                    LoginAttemptReservation.global_bucket_digest,
+                    global_maximum_failures,
+                ),
+            )
+            retry_after_seconds = 0
+            for bucket_digest, reservation_column, maximum_failures in scope_specs:
+                bucket = session.get(LoginFailure, bucket_digest)
+                failure_count = bucket.failure_count if bucket is not None else 0
+                if (
+                    bucket is not None
+                    and bucket.blocked_until is not None
+                    and _as_utc(bucket.blocked_until) > current_time
+                ):
+                    retry_after_seconds = max(
+                        retry_after_seconds,
+                        math.ceil(
+                            (
+                                _as_utc(bucket.blocked_until) - current_time
+                            ).total_seconds()
+                        ),
+                    )
+
+                active_reservations = session.scalar(
+                    select(func.count(LoginAttemptReservation.id)).where(
+                        reservation_column == bucket_digest,
                         LoginAttemptReservation.expires_at > current_time,
                         LoginAttemptReservation.failure_valid.is_(True),
                     )
                 )
-                retry_after = (
-                    math.ceil(
-                        (_as_utc(earliest_expiry) - current_time).total_seconds()
+                assert active_reservations is not None
+                if failure_count + active_reservations >= maximum_failures:
+                    earliest_expiry = session.scalar(
+                        select(func.min(LoginAttemptReservation.expires_at)).where(
+                            reservation_column == bucket_digest,
+                            LoginAttemptReservation.expires_at > current_time,
+                            LoginAttemptReservation.failure_valid.is_(True),
+                        )
                     )
-                    if earliest_expiry is not None
-                    else 1
-                )
+                    if earliest_expiry is not None:
+                        retry_after_seconds = max(
+                            retry_after_seconds,
+                            math.ceil(
+                                (
+                                    _as_utc(earliest_expiry) - current_time
+                                ).total_seconds()
+                            ),
+                        )
+                    elif bucket is not None:
+                        retry_after_seconds = max(
+                            retry_after_seconds,
+                            math.ceil(
+                                (
+                                    _as_utc(bucket.first_failure_at)
+                                    + failure_window
+                                    - current_time
+                                ).total_seconds()
+                            ),
+                        )
+
+            if retry_after_seconds > 0:
                 session.commit()
                 return LoginAdmissionSnapshot(
                     allowed=False,
-                    retry_after_seconds=max(1, retry_after),
+                    retry_after_seconds=max(1, retry_after_seconds),
                     reservation_id=None,
-                    bucket_digest=bucket_digest,
+                    account_bucket_digest=account_bucket_digest,
+                    ip_bucket_digest=ip_bucket_digest,
+                    global_bucket_digest=global_bucket_digest,
+                )
+
+            failure_rows = session.scalar(
+                select(func.count(LoginFailure.bucket_digest))
+            )
+            live_reservations = session.scalar(
+                select(func.count(LoginAttemptReservation.id)).where(
+                    LoginAttemptReservation.expires_at > current_time
+                )
+            )
+            assert failure_rows is not None
+            assert live_reservations is not None
+            if failure_rows + 3 * live_reservations + 3 > cardinality_cap:
+                session.commit()
+                return LoginAdmissionSnapshot(
+                    allowed=False,
+                    retry_after_seconds=1,
+                    reservation_id=None,
+                    account_bucket_digest=account_bucket_digest,
+                    ip_bucket_digest=ip_bucket_digest,
+                    global_bucket_digest=global_bucket_digest,
                 )
 
             reservation_id = str(uuid4())
             session.add(
                 LoginAttemptReservation(
                     id=reservation_id,
-                    bucket_digest=bucket_digest,
+                    account_bucket_digest=account_bucket_digest,
+                    ip_bucket_digest=ip_bucket_digest,
+                    global_bucket_digest=global_bucket_digest,
                     created_at=current_time,
                     expires_at=current_time + reservation_lease,
                     failure_valid=True,
@@ -418,7 +494,9 @@ class LoginFailureRepository:
                 allowed=True,
                 retry_after_seconds=0,
                 reservation_id=reservation_id,
-                bucket_digest=bucket_digest,
+                account_bucket_digest=account_bucket_digest,
+                ip_bucket_digest=ip_bucket_digest,
+                global_bucket_digest=global_bucket_digest,
             )
 
     def complete_reserved_failure(
@@ -427,7 +505,9 @@ class LoginFailureRepository:
         reservation_id: str,
         now: datetime,
         failure_window: timedelta,
-        maximum_failures: int,
+        account_maximum_failures: int,
+        ip_maximum_failures: int,
+        global_maximum_failures: int,
         block_duration: timedelta,
     ) -> None:
         current_time = _as_utc(now)
@@ -443,15 +523,75 @@ class LoginFailureRepository:
                     session.delete(reservation)
                 session.commit()
                 return
-            bucket_digest = reservation.bucket_digest
+            scope_specs = (
+                (
+                    reservation.account_bucket_digest,
+                    account_maximum_failures,
+                ),
+                (reservation.ip_bucket_digest, ip_maximum_failures),
+                (
+                    reservation.global_bucket_digest,
+                    global_maximum_failures,
+                ),
+            )
             session.delete(reservation)
-            self._record_failure_locked(
-                session=session,
-                bucket_digest=bucket_digest,
-                now=current_time,
-                failure_window=failure_window,
-                maximum_failures=maximum_failures,
-                block_duration=block_duration,
+            for bucket_digest, maximum_failures in scope_specs:
+                self._record_failure_locked(
+                    session=session,
+                    bucket_digest=bucket_digest,
+                    now=current_time,
+                    failure_window=failure_window,
+                    maximum_failures=maximum_failures,
+                    block_duration=block_duration,
+                )
+            session.commit()
+
+    def cancel_reservation(self, reservation_id: str) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(
+                delete(LoginAttemptReservation).where(
+                    LoginAttemptReservation.id == reservation_id
+                )
+            )
+
+    def record_scoped_failures(
+        self,
+        *,
+        scope_limits: tuple[tuple[str, int], ...],
+        now: datetime,
+        failure_window: timedelta,
+        block_duration: timedelta,
+    ) -> None:
+        current_time = _as_utc(now)
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            for bucket_digest, maximum_failures in scope_limits:
+                self._record_failure_locked(
+                    session=session,
+                    bucket_digest=bucket_digest,
+                    now=current_time,
+                    failure_window=failure_window,
+                    maximum_failures=maximum_failures,
+                    block_duration=block_duration,
+                )
+            session.commit()
+
+    def clear_account_and_invalidate_tuple(
+        self, *, account_bucket_digest: str, ip_bucket_digest: str
+    ) -> None:
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            failure = session.get(LoginFailure, account_bucket_digest)
+            if failure is not None:
+                session.delete(failure)
+            session.execute(
+                update(LoginAttemptReservation)
+                .where(
+                    LoginAttemptReservation.account_bucket_digest
+                    == account_bucket_digest,
+                    LoginAttemptReservation.ip_bucket_digest == ip_bucket_digest,
+                )
+                .values(failure_valid=False)
             )
             session.commit()
 
@@ -534,9 +674,7 @@ class LoginFailureRepository:
                 first_failure_at=_as_utc(model.first_failure_at),
                 last_failure_at=now,
                 blocked_until=(
-                    now + block_duration
-                    if failure_count >= maximum_failures
-                    else None
+                    now + block_duration if failure_count >= maximum_failures else None
                 ),
             )
         if model is None:
@@ -554,16 +692,3 @@ class LoginFailureRepository:
         model.first_failure_at = snapshot.first_failure_at
         model.last_failure_at = snapshot.last_failure_at
         model.blocked_until = snapshot.blocked_until
-
-    def delete(self, bucket_digest: str) -> None:
-        with self._session_factory() as session:
-            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-            model = session.get(LoginFailure, bucket_digest)
-            if model is not None:
-                session.delete(model)
-            session.execute(
-                update(LoginAttemptReservation)
-                .where(LoginAttemptReservation.bucket_digest == bucket_digest)
-                .values(failure_valid=False)
-            )
-            session.commit()

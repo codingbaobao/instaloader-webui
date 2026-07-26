@@ -19,6 +19,7 @@ from instaloader_webui.auth.session_tokens import (
 )
 from instaloader_webui.config import Settings
 from instaloader_webui.db.repositories import AdminRepository, WebSessionRepository
+from instaloader_webui.services.auth_service import AuthenticationBusyError
 
 BOOTSTRAP_PASSWORD = "correct-horse-battery-staple"
 CHANGED_PASSWORD = "different-long-owner-password"
@@ -46,13 +47,12 @@ async def test_login_sets_http_only_cookie_and_requires_password_change(client) 
     assert response.status_code == 200
     assert "HttpOnly" in response.headers["set-cookie"]
     assert "SameSite=lax" in response.headers["set-cookie"]
+    assert response.headers["cache-control"] == "no-store"
     assert response.json()["data"]["must_change_password"] is True
     assert response.json()["data"]["csrf_token"]
 
 
-async def test_login_persists_only_the_session_digest(
-    client, session_factory
-) -> None:
+async def test_login_persists_only_the_session_digest(client, session_factory) -> None:
     response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
@@ -85,6 +85,87 @@ async def test_invalid_credentials_return_safe_error_and_do_not_set_cookie(
     assert "set-cookie" not in response.headers
 
 
+async def test_declared_oversized_login_body_returns_stable_413(client) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        content=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": "16385",
+        },
+    )
+
+    assert_error_envelope(
+        response,
+        status_code=413,
+        code="request_too_large",
+        message="The request body is too large.",
+    )
+
+
+async def test_streamed_oversized_login_body_returns_stable_413(client) -> None:
+    async def oversized_chunks():
+        yield b'{"username":"owner","password":"'
+        yield b"x" * 16_384
+        yield b'"}'
+
+    response = await client.post(
+        "/api/auth/login",
+        content=oversized_chunks(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert_error_envelope(
+        response,
+        status_code=413,
+        code="request_too_large",
+        message="The request body is too large.",
+    )
+
+
+async def test_exact_request_body_limit_reaches_fastapi(client) -> None:
+    response = await client.post(
+        "/api/auth/login",
+        content=b"{" + (b" " * 16_383),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_excessive_request_frame_count_returns_stable_413(client) -> None:
+    async def excessive_frames():
+        for _offset in range(129):
+            yield b"x"
+
+    response = await client.post(
+        "/api/auth/login",
+        content=excessive_frames(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert_error_envelope(
+        response,
+        status_code=413,
+        code="request_too_large",
+        message="The request body is too large.",
+    )
+
+
+async def test_login_password_rejects_more_than_1024_utf8_bytes(client) -> None:
+    submitted_password = "密" * 342
+
+    response = await client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": submitted_password},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert submitted_password not in response.text
+
+
 async def test_non_ascii_username_returns_safe_invalid_credentials(client) -> None:
     response = await client.post(
         "/api/auth/login",
@@ -97,6 +178,19 @@ async def test_non_ascii_username_returns_safe_invalid_credentials(client) -> No
         code="invalid_credentials",
         message="The username or password is incorrect.",
     )
+
+
+async def test_login_username_rejects_more_than_64_utf8_bytes(client) -> None:
+    submitted_username = "界" * 22
+
+    response = await client.post(
+        "/api/auth/login",
+        json={"username": submitted_username, "password": BOOTSTRAP_PASSWORD},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert submitted_username not in response.text
 
 
 async def test_login_throttle_returns_retry_after_header(client) -> None:
@@ -259,6 +353,31 @@ async def test_password_change_rejects_short_new_password(
     assert response.json()["data"] is None
     assert response.json()["error"]["code"] == "validation_error"
     assert "too-short" not in response.text
+
+
+@pytest.mark.parametrize("oversized_field", ["current_password", "new_password"])
+async def test_password_change_rejects_credentials_over_1024_utf8_bytes(
+    authenticated_client,
+    oversized_field: str,
+) -> None:
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
+    submitted_password = "密" * 342
+    payload = {
+        "current_password": BOOTSTRAP_PASSWORD,
+        "new_password": CHANGED_PASSWORD,
+        oversized_field: submitted_password,
+    }
+
+    response = await authenticated_client.post(
+        "/api/auth/change-password",
+        headers={"X-CSRF-Token": csrf},
+        json=payload,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert submitted_password not in response.text
 
 
 async def test_password_change_rejects_reusing_current_password(
@@ -485,6 +604,89 @@ async def test_secure_cookie_configuration_is_honored(
     assert "Secure" in response.headers["set-cookie"]
 
 
+async def test_stale_secure_session_cookie_is_deleted_with_configured_flags(
+    secure_test_settings: Settings,
+    test_client_factory,
+) -> None:
+    async with test_client_factory(
+        secure_test_settings,
+        base_url="https://testserver",
+    ) as secure_client:
+        secure_client.cookies.set("iw_session", "stale-token")
+        response = await secure_client.get("/api/auth/session")
+
+    assert response.status_code == 401
+    deletion = response.headers["set-cookie"]
+    assert "iw_session=" in deletion
+    assert "Max-Age=0" in deletion
+    assert "HttpOnly" in deletion
+    assert "SameSite=lax" in deletion
+    assert "Secure" in deletion
+
+
+async def test_unexpected_auth_error_returns_safe_envelope_without_secret_logging(
+    test_settings: Settings,
+    test_client_factory,
+    monkeypatch,
+    caplog,
+) -> None:
+    submitted_password = "secret-that-must-not-escape"
+
+    async with test_client_factory(
+        test_settings,
+        raise_app_exceptions=False,
+    ) as failing_client:
+
+        def fail_login(*_args, **_kwargs):
+            raise RuntimeError(submitted_password)
+
+        monkeypatch.setattr(failing_client.app.state.auth_service, "login", fail_login)
+        with caplog.at_level(logging.ERROR):
+            response = await failing_client.post(
+                "/api/auth/login",
+                json={"username": "owner", "password": submitted_password},
+            )
+
+    assert_error_envelope(
+        response,
+        status_code=500,
+        code="internal_error",
+        message="An internal server error occurred.",
+    )
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    assert response.headers["permissions-policy"]
+    assert submitted_password not in response.text
+    assert submitted_password not in caplog.text
+    assert "traceback" not in response.text.casefold()
+
+
+async def test_argon2_overload_returns_stable_retryable_response(
+    client, monkeypatch
+) -> None:
+    def reject_busy(*_args, **_kwargs):
+        raise AuthenticationBusyError
+
+    monkeypatch.setattr(client.app.state.auth_service, "login", reject_busy)
+    response = await client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
+    )
+
+    assert_error_envelope(
+        response,
+        status_code=503,
+        code="authentication_busy",
+        message="Authentication is temporarily busy. Try again shortly.",
+    )
+    assert response.headers["Retry-After"] == "1"
+    assert response.headers["Cache-Control"] == "no-store"
+
+
 async def test_lifespan_migrations_are_independent_of_working_directory(
     test_settings: Settings, tmp_path, monkeypatch, test_client_factory
 ) -> None:
@@ -525,9 +727,7 @@ async def test_lifespan_uses_packaged_migration_assets(
     assert response.status_code == 200
 
 
-async def test_authentication_failures_do_not_log_passwords(
-    client, caplog
-) -> None:
+async def test_authentication_failures_do_not_log_passwords(client, caplog) -> None:
     submitted_password = "password-that-must-never-enter-logs"
     with caplog.at_level(logging.DEBUG):
         response = await client.post(

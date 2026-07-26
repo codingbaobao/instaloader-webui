@@ -8,6 +8,7 @@ from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.config import (
     ADMIN_USERNAME_PATTERN,
     MAXIMUM_BOOTSTRAP_PASSWORD_FILE_BYTES,
+    MAXIMUM_CREDENTIAL_BYTES,
     MINIMUM_ADMIN_PASSWORD_LENGTH,
     Settings,
 )
@@ -47,6 +48,12 @@ def _validate_bootstrap_credentials(settings: Settings) -> str:
         raise ValueError("bootstrap username has an invalid format")
 
     password = resolve_bootstrap_password(settings)
+    try:
+        password_bytes = password.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("bootstrap password must be valid UTF-8") from error
+    if len(password_bytes) > MAXIMUM_CREDENTIAL_BYTES:
+        raise ValueError("bootstrap password must not exceed 1,024 UTF-8 bytes")
     if len(password) < MINIMUM_ADMIN_PASSWORD_LENGTH:
         raise ValueError("bootstrap password must be at least 16 characters")
     return password

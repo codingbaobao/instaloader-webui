@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 
 from instaloader_webui.auth.throttle import LoginAttemptKey
 
@@ -29,6 +29,30 @@ def test_success_clears_previous_failures(throttle) -> None:
     assert throttle.check(key, now).allowed is True
 
 
+def test_success_clears_account_history_but_retains_ip_failure_history(
+    throttle,
+) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
+    for offset in range(4):
+        throttle.record_failure(key, now + timedelta(seconds=offset))
+
+    throttle.record_success(key)
+
+    assert throttle.check(
+        LoginAttemptKey(username="owner", client_ip="203.0.113.8"),
+        now + timedelta(seconds=4),
+    ).allowed
+    throttle.record_failure(
+        LoginAttemptKey(username="other", client_ip="203.0.113.7"),
+        now + timedelta(seconds=4),
+    )
+    assert not throttle.check(
+        LoginAttemptKey(username="third", client_ip="203.0.113.7"),
+        now + timedelta(seconds=5),
+    ).allowed
+
+
 def test_username_normalization_shares_a_failure_bucket(throttle) -> None:
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     stored_key = LoginAttemptKey(username=" Owner ", client_ip="203.0.113.7")
@@ -40,21 +64,34 @@ def test_username_normalization_shares_a_failure_bucket(throttle) -> None:
     assert throttle.check(equivalent_key, now + timedelta(seconds=5)).allowed is False
 
 
-def test_different_username_or_client_ip_uses_a_separate_bucket(throttle) -> None:
+def test_account_and_ip_scopes_are_independent(throttle) -> None:
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     blocked_key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
 
     for offset in range(5):
         throttle.record_failure(blocked_key, now + timedelta(seconds=offset))
 
-    assert throttle.check(
-        LoginAttemptKey(username="other", client_ip="203.0.113.7"),
-        now + timedelta(seconds=5),
-    ).allowed is True
-    assert throttle.check(
-        LoginAttemptKey(username="owner", client_ip="203.0.113.8"),
-        now + timedelta(seconds=5),
-    ).allowed is True
+    assert (
+        throttle.check(
+            LoginAttemptKey(username="other", client_ip="203.0.113.7"),
+            now + timedelta(seconds=5),
+        ).allowed
+        is False
+    )
+    assert (
+        throttle.check(
+            LoginAttemptKey(username="owner", client_ip="203.0.113.8"),
+            now + timedelta(seconds=5),
+        ).allowed
+        is False
+    )
+    assert (
+        throttle.check(
+            LoginAttemptKey(username="other", client_ip="203.0.113.8"),
+            now + timedelta(seconds=5),
+        ).allowed
+        is True
+    )
 
 
 def test_failures_expire_after_the_fifteen_minute_window(throttle) -> None:
@@ -82,9 +119,7 @@ def test_retry_after_is_never_negative_when_a_block_expires(throttle) -> None:
     assert decision.retry_after_seconds == 0
 
 
-def test_concurrent_failures_are_counted_atomically(
-    throttle, engine
-) -> None:
+def test_concurrent_failures_are_counted_atomically(throttle, engine) -> None:
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     key = LoginAttemptKey(username="owner", client_ip="203.0.113.7")
     workers_started = Barrier(5)
@@ -184,3 +219,149 @@ def test_concurrent_login_admission_reserves_only_five_attempts(throttle) -> Non
         for admission in admissions
         if not admission.allowed
     )
+
+
+def test_rotating_usernames_from_one_ip_hit_the_ip_scope(throttle) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+
+    for offset in range(5):
+        key = LoginAttemptKey(
+            username=f"owner-{offset}",
+            client_ip="203.0.113.7",
+        )
+        admission = throttle.reserve(key, now + timedelta(seconds=offset))
+        assert admission.allowed
+        throttle.record_reserved_failure(admission, now + timedelta(seconds=offset))
+
+    denied = throttle.reserve(
+        LoginAttemptKey(username="owner-next", client_ip="203.0.113.7"),
+        now + timedelta(seconds=5),
+    )
+
+    assert denied.allowed is False
+    assert denied.reservation_id is None
+
+
+def test_one_account_across_ips_hits_the_account_scope(throttle) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+
+    for offset in range(5):
+        key = LoginAttemptKey(
+            username=" Owner ",
+            client_ip=f"203.0.113.{offset + 1}",
+        )
+        admission = throttle.reserve(key, now + timedelta(seconds=offset))
+        assert admission.allowed
+        throttle.record_reserved_failure(admission, now + timedelta(seconds=offset))
+
+    denied = throttle.reserve(
+        LoginAttemptKey(username="owner", client_ip="198.51.100.8"),
+        now + timedelta(seconds=5),
+    )
+
+    assert denied.allowed is False
+
+
+def test_distributed_attempts_hit_the_service_global_scope(throttle) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+
+    for offset in range(20):
+        key = LoginAttemptKey(
+            username=f"owner-{offset}",
+            client_ip=f"2001:db8::{offset + 1}",
+        )
+        admission = throttle.reserve(key, now + timedelta(seconds=offset))
+        assert admission.allowed
+        throttle.record_reserved_failure(admission, now + timedelta(seconds=offset))
+
+    denied = throttle.reserve(
+        LoginAttemptKey(username="owner-next", client_ip="198.51.100.8"),
+        now + timedelta(seconds=20),
+    )
+
+    assert denied.allowed is False
+
+
+def test_ipv4_mapped_address_shares_the_canonical_ip_scope(throttle) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+
+    for offset in range(5):
+        key = LoginAttemptKey(
+            username=f"owner-{offset}",
+            client_ip="::ffff:203.0.113.7",
+        )
+        admission = throttle.reserve(key, now + timedelta(seconds=offset))
+        assert admission.allowed
+        throttle.record_reserved_failure(admission, now + timedelta(seconds=offset))
+
+    denied = throttle.reserve(
+        LoginAttemptKey(username="owner-next", client_ip="203.0.113.7"),
+        now + timedelta(seconds=5),
+    )
+
+    assert denied.allowed is False
+
+
+def test_reservation_prunes_expired_failure_rows_globally(
+    throttle, session_factory
+) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    for offset in range(3):
+        throttle.record_failure(
+            LoginAttemptKey(
+                username=f"owner-{offset}",
+                client_ip=f"203.0.113.{offset + 1}",
+            ),
+            now,
+        )
+
+    throttle.reserve(
+        LoginAttemptKey(username="fresh-owner", client_ip="198.51.100.9"),
+        now + timedelta(minutes=16),
+    )
+
+    with session_factory() as session:
+        failure_rows = session.scalar(text("SELECT COUNT(*) FROM login_failures"))
+    assert failure_rows == 0
+
+
+def test_hard_cardinality_denial_does_not_leak_a_reservation(
+    throttle, session_factory
+) -> None:
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    with session_factory.begin() as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO login_failures (
+                    bucket_digest,
+                    failure_count,
+                    first_failure_at,
+                    last_failure_at,
+                    blocked_until
+                )
+                VALUES (:digest, 1, :now, :now, NULL)
+                """
+            ),
+            [
+                {
+                    "digest": f"{offset:064x}",
+                    "now": now.replace(tzinfo=None).isoformat(sep=" "),
+                }
+                for offset in range(1_022)
+            ],
+        )
+
+    denied = throttle.reserve(
+        LoginAttemptKey(username="owner", client_ip="203.0.113.7"),
+        now,
+    )
+
+    with session_factory() as session:
+        reservation_rows = session.scalar(
+            text("SELECT COUNT(*) FROM login_attempt_reservations")
+        )
+        failure_rows = session.scalar(text("SELECT COUNT(*) FROM login_failures"))
+    assert denied.allowed is False
+    assert reservation_rows == 0
+    assert failure_rows == 1_022

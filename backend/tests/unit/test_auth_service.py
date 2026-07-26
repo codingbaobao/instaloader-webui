@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from instaloader_webui.auth.passwords import PasswordService
+from instaloader_webui.auth.passwords import PasswordService, PasswordServiceBusyError
 from instaloader_webui.auth.session_tokens import digest_session_token
 from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.db.migrations import run_migrations
@@ -17,6 +17,7 @@ from instaloader_webui.db.repositories import (
 )
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import (
+    AuthenticationBusyError,
     AuthService,
     InvalidCredentialsError,
     LoginThrottledError,
@@ -84,6 +85,51 @@ class PausingFailedPasswordService(PasswordService):
         return matches
 
 
+class BusyPasswordService(PasswordService):
+    def verify(self, hash_value: str, password: str) -> bool:
+        raise PasswordServiceBusyError
+
+
+def test_login_overload_releases_admission_reservation(
+    session_factory, test_settings
+) -> None:
+    run_migrations(test_settings)
+    bootstrap_admin(session_factory, test_settings, PasswordService())
+    service = make_auth_service(
+        session_factory,
+        test_settings,
+        BusyPasswordService(),
+    )
+
+    with pytest.raises(AuthenticationBusyError):
+        service.login(
+            "owner",
+            "correct-horse-battery-staple",
+            "203.0.113.7",
+            datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
+        )
+
+    with session_factory() as session:
+        reservations = session.scalar(
+            text("SELECT COUNT(*) FROM login_attempt_reservations")
+        )
+    assert reservations == 0
+
+
+def test_direct_login_rejects_overbyte_password_before_argon2(
+    session_factory, test_settings
+) -> None:
+    service = build_auth_service(session_factory, test_settings)
+
+    with pytest.raises(InvalidCredentialsError):
+        service.login(
+            "owner",
+            "界" * 342,
+            "203.0.113.7",
+            datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
+        )
+
+
 def test_login_creates_seven_day_session_without_exposing_token_in_repr(
     session_factory, test_settings
 ) -> None:
@@ -101,9 +147,29 @@ def test_login_creates_seven_day_session_without_exposing_token_in_repr(
     assert result.raw_token not in repr(result)
 
 
-def test_session_last_seen_refresh_is_bounded(
+def test_direct_login_rejects_overbyte_username_before_admission_or_argon2(
     session_factory, test_settings
 ) -> None:
+    run_migrations(test_settings)
+    bootstrap_admin(session_factory, test_settings, PasswordService())
+    service = make_auth_service(session_factory, test_settings, BusyPasswordService())
+
+    with pytest.raises(InvalidCredentialsError):
+        service.login(
+            "界" * 22,
+            "correct-horse-battery-staple",
+            "203.0.113.7",
+            datetime(2026, 7, 26, 8, 0, tzinfo=UTC),
+        )
+
+    with session_factory() as session:
+        reservations = session.scalar(
+            text("SELECT COUNT(*) FROM login_attempt_reservations")
+        )
+    assert reservations == 0
+
+
+def test_session_last_seen_refresh_is_bounded(session_factory, test_settings) -> None:
     service = build_auth_service(session_factory, test_settings)
     sessions = WebSessionRepository(session_factory)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
@@ -151,9 +217,7 @@ def test_session_revoked_during_last_seen_refresh_is_rejected(
     )
     original_touch = sessions.get_active_and_touch
 
-    def revoke_then_touch(
-        *, token_digest: str, now: datetime, cadence: timedelta
-    ):
+    def revoke_then_touch(*, token_digest: str, now: datetime, cadence: timedelta):
         sessions.revoke(token_digest=token_digest, now=now)
         return original_touch(
             token_digest=token_digest,
@@ -212,13 +276,9 @@ def test_password_change_rolls_back_if_other_session_revocation_fails(
         )
 
     administrator = administrators.get_single()
-    other_session = sessions.get_by_token_digest(
-        digest_session_token(other.raw_token)
-    )
+    other_session = sessions.get_by_token_digest(digest_session_token(other.raw_token))
     assert administrator is not None
-    assert passwords.verify(
-        administrator.password_hash, "correct-horse-battery-staple"
-    )
+    assert passwords.verify(administrator.password_hash, "correct-horse-battery-staple")
     assert other_session is not None
     assert other_session.revoked_at is None
 
@@ -229,9 +289,7 @@ def test_login_verified_before_password_change_cannot_create_session_afterward(
     run_migrations(test_settings)
     setup_passwords = PasswordService()
     bootstrap_admin(session_factory, test_settings, setup_passwords)
-    setup_service = make_auth_service(
-        session_factory, test_settings, setup_passwords
-    )
+    setup_service = make_auth_service(session_factory, test_settings, setup_passwords)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     retained = setup_service.login(
         "owner",
@@ -274,7 +332,7 @@ def test_success_invalidates_in_flight_failures_from_the_same_bucket(
 ) -> None:
     service = build_auth_service(session_factory, test_settings)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
-    failures_verified = Barrier(5)
+    failures_verified = Barrier(3)
     release_failures = Event()
     racing_failures = make_auth_service(
         session_factory,
@@ -282,7 +340,7 @@ def test_success_invalidates_in_flight_failures_from_the_same_bucket(
         PausingFailedPasswordService(failures_verified, release_failures),
     )
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
             executor.submit(
                 racing_failures.login,
@@ -291,7 +349,7 @@ def test_success_invalidates_in_flight_failures_from_the_same_bucket(
                 "203.0.113.7",
                 now,
             )
-            for _ in range(4)
+            for _ in range(2)
         ]
         failures_verified.wait(timeout=5)
         successful = service.login(
