@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -194,5 +194,83 @@ describe("ChangePasswordPage", () => {
     releaseResponse?.();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeVisible();
     expect(csrfHeader).toBe(CSRF_TOKEN);
+  });
+
+  it("does not restore a stale password-change session after logout", async () => {
+    let releaseChange: (() => void) | undefined;
+    let changeStarted = false;
+    let changeCompleted = false;
+    const changeGate = new Promise<void>((resolve) => {
+      releaseChange = resolve;
+    });
+    server.use(
+      http.post("/api/auth/change-password", async () => {
+        changeStarted = true;
+        await changeGate;
+        changeCompleted = true;
+        return HttpResponse.json({
+          success: true,
+          data: {
+            username: "owner",
+            must_change_password: false,
+            expires_at: "2026-08-03T00:00:00Z",
+            csrf_token: "d".repeat(64),
+          },
+          error: null,
+          meta: {},
+        });
+      }),
+      http.post("/api/auth/logout", () =>
+        HttpResponse.json({
+          success: true,
+          data: { logged_out: true },
+          error: null,
+          meta: {},
+        }),
+      ),
+    );
+    render(
+      <TestRouter
+        initialPath="/change-password"
+        initialSession={{
+          username: "owner",
+          must_change_password: true,
+          expires_at: "2026-08-02T00:00:00Z",
+          csrf_token: CSRF_TOKEN,
+        }}
+      />,
+    );
+
+    const user = userEvent.setup();
+    await user.type(
+      screen.getByLabelText("Current password"),
+      "initial-password-value",
+    );
+    await user.type(
+      screen.getByLabelText("New password"),
+      "different-long-owner-password",
+    );
+    await user.type(
+      screen.getByLabelText("Confirm new password"),
+      "different-long-owner-password",
+    );
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    await waitFor(() => expect(changeStarted).toBe(true));
+
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeVisible();
+
+    await act(async () => {
+      releaseChange?.();
+      await changeGate;
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(changeCompleted).toBe(true));
+
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Desktop" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("The password could not be changed."),
+    ).not.toBeInTheDocument();
   });
 });

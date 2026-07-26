@@ -35,7 +35,10 @@ type SessionContextValue = SessionState & {
   setSession: (session: SessionData) => void;
   clearSession: () => void;
   refreshSession: () => Promise<void>;
-  logout: () => Promise<void>;
+  applySessionOperation: (
+    operation: () => Promise<SessionData>,
+  ) => Promise<SessionData | null>;
+  logout: () => Promise<boolean>;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -65,7 +68,21 @@ function errorState(error: unknown): SessionState {
   };
 }
 
-function initialState(initialSession: SessionData | null | undefined): SessionState {
+async function loadRemoteSessionState(): Promise<SessionState> {
+  try {
+    return {
+      status: "authenticated",
+      session: await requestSession("/api/auth/session"),
+      errorMessage: null,
+    };
+  } catch (error) {
+    return errorState(error);
+  }
+}
+
+function initialState(
+  initialSession: SessionData | null | undefined,
+): SessionState {
   if (initialSession === undefined) {
     return { status: "loading", session: null, errorMessage: null };
   }
@@ -91,71 +108,107 @@ export function SessionProvider({
     initialState(initialSession),
   );
   const [logoutPending, setLogoutPending] = useState(false);
-  const logoutOperation = useRef<Promise<void> | null>(null);
+  const generation = useRef(0);
+  const logoutOperation = useRef<Promise<boolean> | null>(null);
   const sessionRef = useRef<SessionData | null>(state.session);
 
   useEffect(() => {
     sessionRef.current = state.session;
   }, [state.session]);
 
-  const loadSession = useCallback(async (): Promise<SessionState> => {
-    try {
-      return {
-        status: "authenticated",
-        session: await requestSession("/api/auth/session"),
-        errorMessage: null,
-      };
-    } catch (error) {
-      return errorState(error);
-    }
+  const beginSessionOperation = useCallback((): number => {
+    generation.current += 1;
+    return generation.current;
   }, []);
 
-  const refreshSession = useCallback(async () => {
-    setState({ status: "loading", session: null, errorMessage: null });
-    setState(await loadSession());
-  }, [loadSession]);
+  const commitSessionState = useCallback(
+    (operationGeneration: number, nextState: SessionState): boolean => {
+      if (generation.current !== operationGeneration) {
+        return false;
+      }
+      sessionRef.current = nextState.session;
+      setState(nextState);
+      return true;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (initialSession !== undefined) {
       return;
     }
-    let active = true;
-    void loadSession().then((loadedState) => {
-      if (active) {
-        setState(loadedState);
-      }
+    const operationGeneration = beginSessionOperation();
+    void loadRemoteSessionState().then((loadedState) => {
+      commitSessionState(operationGeneration, loadedState);
     });
     return () => {
-      active = false;
+      if (generation.current === operationGeneration) {
+        generation.current += 1;
+      }
     };
-  }, [initialSession, loadSession]);
+  }, [beginSessionOperation, commitSessionState, initialSession]);
+
+  const refreshSession = useCallback(async () => {
+    const operationGeneration = beginSessionOperation();
+    commitSessionState(operationGeneration, {
+      status: "loading",
+      session: null,
+      errorMessage: null,
+    });
+    commitSessionState(
+      operationGeneration,
+      await loadRemoteSessionState(),
+    );
+  }, [beginSessionOperation, commitSessionState]);
 
   const clearSession = useCallback(() => {
-    sessionRef.current = null;
-    setState(unauthenticatedState);
-  }, []);
+    const operationGeneration = beginSessionOperation();
+    commitSessionState(operationGeneration, unauthenticatedState);
+  }, [beginSessionOperation, commitSessionState]);
 
   const setSession = useCallback((session: SessionData) => {
+    const operationGeneration = beginSessionOperation();
     try {
-      setState({
+      commitSessionState(operationGeneration, {
         status: "authenticated",
         session: parseSessionData(session),
         errorMessage: null,
       });
     } catch (error) {
-      setState(errorState(error));
+      commitSessionState(operationGeneration, errorState(error));
     }
-  }, []);
+  }, [beginSessionOperation, commitSessionState]);
 
-  const logout = useCallback((): Promise<void> => {
+  const applySessionOperation = useCallback(
+    async (
+      operation: () => Promise<SessionData>,
+    ): Promise<SessionData | null> => {
+      const operationGeneration = beginSessionOperation();
+      const session = parseSessionData(await operation());
+      if (
+        !commitSessionState(operationGeneration, {
+          status: "authenticated",
+          session,
+          errorMessage: null,
+        })
+      ) {
+        return null;
+      }
+      return session;
+    },
+    [beginSessionOperation, commitSessionState],
+  );
+
+  const logout = useCallback((): Promise<boolean> => {
     if (logoutOperation.current !== null) {
       return logoutOperation.current;
     }
     const currentSession = sessionRef.current;
     if (currentSession === null) {
       clearSession();
-      return Promise.resolve();
+      return Promise.resolve(true);
     }
+    const operationGeneration = beginSessionOperation();
     const operation = (async () => {
       setLogoutPending(true);
       try {
@@ -163,14 +216,19 @@ export function SessionProvider({
           method: "POST",
           csrfToken: currentSession.csrf_token,
         });
-        clearSession();
+        return commitSessionState(
+          operationGeneration,
+          unauthenticatedState,
+        );
       } catch (error) {
         if (
           error instanceof ApiError &&
           error.code === "authentication_required"
         ) {
-          clearSession();
-          return;
+          return commitSessionState(
+            operationGeneration,
+            unauthenticatedState,
+          );
         }
         throw error;
       } finally {
@@ -180,7 +238,11 @@ export function SessionProvider({
     })();
     logoutOperation.current = operation;
     return operation;
-  }, [clearSession]);
+  }, [
+    beginSessionOperation,
+    clearSession,
+    commitSessionState,
+  ]);
 
   const value = useMemo<SessionContextValue>(
     () => ({
@@ -189,9 +251,11 @@ export function SessionProvider({
       setSession,
       clearSession,
       refreshSession,
+      applySessionOperation,
       logout,
     }),
     [
+      applySessionOperation,
       clearSession,
       logout,
       logoutPending,

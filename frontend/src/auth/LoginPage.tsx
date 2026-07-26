@@ -7,7 +7,7 @@ import { useSession } from "./useSession";
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { session, setSession } = useSession();
+  const { session, applySessionOperation } = useSession();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
@@ -30,12 +30,16 @@ export function LoginPage() {
     setSubmitting(true);
     setErrorMessage("");
     try {
-      const authenticated = await requestSession("/api/auth/login", {
-        method: "POST",
-        body: { username, password },
-      });
+      const authenticated = await applySessionOperation(() =>
+        requestSession("/api/auth/login", {
+          method: "POST",
+          body: { username, password },
+        }),
+      );
       setPassword("");
-      setSession(authenticated);
+      if (authenticated === null) {
+        return;
+      }
       navigate(
         authenticated.must_change_password ? "/change-password" : "/",
         { replace: true },

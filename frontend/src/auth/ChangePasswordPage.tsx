@@ -14,7 +14,7 @@ export function ChangePasswordPage({
   csrfToken,
 }: ChangePasswordPageProps = {}) {
   const navigate = useNavigate();
-  const { session, setSession } = useSession();
+  const { session, applySessionOperation } = useSession();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -41,21 +41,22 @@ export function ChangePasswordPage({
     setSubmitting(true);
     setErrorMessage("");
     try {
-      const updated = await requestSession(
-        "/api/auth/change-password",
-        {
+      const updated = await applySessionOperation(() =>
+        requestSession("/api/auth/change-password", {
           method: "POST",
           csrfToken: csrfToken ?? session?.csrf_token,
           body: {
             current_password: currentPassword,
             new_password: newPassword,
           },
-        },
+        }),
       );
+      if (updated === null) {
+        return;
+      }
       setCurrentPassword("");
       setNewPassword("");
       setConfirmation("");
-      setSession(updated);
       navigate("/", { replace: true });
     } catch (error) {
       setCurrentPassword("");

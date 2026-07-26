@@ -16,8 +16,9 @@ export function LogoutButton({ className = "text-button" }: LogoutButtonProps) {
   async function handleLogout() {
     setErrorMessage("");
     try {
-      await logout();
-      navigate("/login", { replace: true });
+      if (await logout()) {
+        navigate("/login", { replace: true });
+      }
     } catch (error) {
       setErrorMessage(
         error instanceof ApiError
