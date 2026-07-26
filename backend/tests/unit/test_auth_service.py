@@ -19,6 +19,7 @@ from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import (
     AuthService,
     InvalidCredentialsError,
+    LoginThrottledError,
 )
 
 
@@ -66,6 +67,20 @@ class BarrierPasswordService(PasswordService):
         matches = super().verify(hash_value, password)
         if matches:
             self._barrier.wait(timeout=5)
+        return matches
+
+
+class PausingFailedPasswordService(PasswordService):
+    def __init__(self, failures_verified: Barrier, release: Event) -> None:
+        super().__init__()
+        self._failures_verified = failures_verified
+        self._release = release
+
+    def verify(self, hash_value: str, password: str) -> bool:
+        matches = super().verify(hash_value, password)
+        if not matches:
+            self._failures_verified.wait(timeout=5)
+            assert self._release.wait(timeout=5)
         return matches
 
 
@@ -252,6 +267,60 @@ def test_login_verified_before_password_change_cannot_create_session_afterward(
             future.result(timeout=5)
 
     assert changed.must_change_password is False
+
+
+def test_success_invalidates_in_flight_failures_from_the_same_bucket(
+    session_factory, test_settings
+) -> None:
+    service = build_auth_service(session_factory, test_settings)
+    now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+    failures_verified = Barrier(5)
+    release_failures = Event()
+    racing_failures = make_auth_service(
+        session_factory,
+        test_settings,
+        PausingFailedPasswordService(failures_verified, release_failures),
+    )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(
+                racing_failures.login,
+                "owner",
+                "wrong-password-value",
+                "203.0.113.7",
+                now,
+            )
+            for _ in range(4)
+        ]
+        failures_verified.wait(timeout=5)
+        successful = service.login(
+            "owner",
+            "correct-horse-battery-staple",
+            "203.0.113.7",
+            now,
+        )
+        release_failures.set()
+        for future in futures:
+            with pytest.raises(InvalidCredentialsError):
+                future.result(timeout=5)
+
+    assert successful.raw_token
+    for offset in range(5):
+        with pytest.raises(InvalidCredentialsError):
+            service.login(
+                "owner",
+                "wrong-password-value",
+                "203.0.113.7",
+                now + timedelta(seconds=offset + 1),
+            )
+    with pytest.raises(LoginThrottledError):
+        service.login(
+            "owner",
+            "wrong-password-value",
+            "203.0.113.7",
+            now + timedelta(seconds=6),
+        )
 
 
 def test_concurrent_password_changes_allow_exactly_one_winner(

@@ -3,13 +3,14 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
+import pytest
 from fastapi import Depends
-from fastapi.testclient import TestClient
 
 import instaloader_webui.db.migrations as migration_module
 from instaloader_webui.api.dependencies import (
     RequestSession,
     require_authenticated_session,
+    require_csrf,
 )
 from instaloader_webui.api.envelope import ApiEnvelope
 from instaloader_webui.auth.session_tokens import (
@@ -18,10 +19,10 @@ from instaloader_webui.auth.session_tokens import (
 )
 from instaloader_webui.config import Settings
 from instaloader_webui.db.repositories import AdminRepository, WebSessionRepository
-from instaloader_webui.main import create_app
 
 BOOTSTRAP_PASSWORD = "correct-horse-battery-staple"
 CHANGED_PASSWORD = "different-long-owner-password"
+pytestmark = pytest.mark.anyio
 
 
 def assert_error_envelope(
@@ -36,8 +37,8 @@ def assert_error_envelope(
     }
 
 
-def test_login_sets_http_only_cookie_and_requires_password_change(client) -> None:
-    response = client.post(
+async def test_login_sets_http_only_cookie_and_requires_password_change(client) -> None:
+    response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
     )
@@ -49,8 +50,10 @@ def test_login_sets_http_only_cookie_and_requires_password_change(client) -> Non
     assert response.json()["data"]["csrf_token"]
 
 
-def test_login_persists_only_the_session_digest(client, session_factory) -> None:
-    response = client.post(
+async def test_login_persists_only_the_session_digest(
+    client, session_factory
+) -> None:
+    response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
     )
@@ -65,8 +68,10 @@ def test_login_persists_only_the_session_digest(client, session_factory) -> None
     assert raw_token not in persisted.token_digest
 
 
-def test_invalid_credentials_return_safe_error_and_do_not_set_cookie(client) -> None:
-    response = client.post(
+async def test_invalid_credentials_return_safe_error_and_do_not_set_cookie(
+    client,
+) -> None:
+    response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": "wrong-password-value"},
     )
@@ -80,8 +85,8 @@ def test_invalid_credentials_return_safe_error_and_do_not_set_cookie(client) -> 
     assert "set-cookie" not in response.headers
 
 
-def test_non_ascii_username_returns_safe_invalid_credentials(client) -> None:
-    response = client.post(
+async def test_non_ascii_username_returns_safe_invalid_credentials(client) -> None:
+    response = await client.post(
         "/api/auth/login",
         json={"username": "擁有者", "password": "wrong-password-value"},
     )
@@ -94,12 +99,13 @@ def test_non_ascii_username_returns_safe_invalid_credentials(client) -> None:
     )
 
 
-def test_login_throttle_returns_retry_after_header(client) -> None:
+async def test_login_throttle_returns_retry_after_header(client) -> None:
     credentials = {"username": "owner", "password": "wrong-password-value"}
     for _ in range(5):
-        assert client.post("/api/auth/login", json=credentials).status_code == 401
+        response = await client.post("/api/auth/login", json=credentials)
+        assert response.status_code == 401
 
-    response = client.post("/api/auth/login", json=credentials)
+    response = await client.post("/api/auth/login", json=credentials)
 
     assert_error_envelope(
         response,
@@ -110,8 +116,10 @@ def test_login_throttle_returns_retry_after_header(client) -> None:
     assert int(response.headers["Retry-After"]) > 0
 
 
-def test_session_returns_authenticated_administrator(authenticated_client) -> None:
-    response = authenticated_client.get("/api/auth/session")
+async def test_session_returns_authenticated_administrator(
+    authenticated_client,
+) -> None:
+    response = await authenticated_client.get("/api/auth/session")
 
     assert response.status_code == 200
     assert response.json()["data"]["username"] == "owner"
@@ -120,7 +128,7 @@ def test_session_returns_authenticated_administrator(authenticated_client) -> No
     assert "raw_token" not in response.text
 
 
-def test_expired_session_is_rejected(client, session_factory) -> None:
+async def test_expired_session_is_rejected(client, session_factory) -> None:
     issued = issue_session_token()
     admin = AdminRepository(session_factory).get_single()
     assert admin is not None
@@ -133,7 +141,7 @@ def test_expired_session_is_rejected(client, session_factory) -> None:
     )
     client.cookies.set("iw_session", issued.raw)
 
-    response = client.get("/api/auth/session")
+    response = await client.get("/api/auth/session")
 
     assert_error_envelope(
         response,
@@ -143,7 +151,7 @@ def test_expired_session_is_rejected(client, session_factory) -> None:
     )
 
 
-def test_revoked_session_is_rejected(
+async def test_revoked_session_is_rejected(
     authenticated_client, session_factory
 ) -> None:
     raw_token = authenticated_client.cookies["iw_session"]
@@ -152,7 +160,7 @@ def test_revoked_session_is_rejected(
         now=datetime.now(UTC),
     )
 
-    response = authenticated_client.get("/api/auth/session")
+    response = await authenticated_client.get("/api/auth/session")
 
     assert_error_envelope(
         response,
@@ -162,8 +170,8 @@ def test_revoked_session_is_rejected(
     )
 
 
-def test_state_change_rejects_missing_csrf(authenticated_client) -> None:
-    response = authenticated_client.post(
+async def test_state_change_rejects_missing_csrf(authenticated_client) -> None:
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         json={
             "current_password": BOOTSTRAP_PASSWORD,
@@ -179,8 +187,8 @@ def test_state_change_rejects_missing_csrf(authenticated_client) -> None:
     )
 
 
-def test_state_change_rejects_incorrect_csrf(authenticated_client) -> None:
-    response = authenticated_client.post(
+async def test_state_change_rejects_incorrect_csrf(authenticated_client) -> None:
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": "not-the-derived-token"},
         json={
@@ -193,8 +201,8 @@ def test_state_change_rejects_incorrect_csrf(authenticated_client) -> None:
     assert response.json()["error"]["code"] == "csrf_invalid"
 
 
-def test_state_change_rejects_non_ascii_csrf(authenticated_client) -> None:
-    response = authenticated_client.post(
+async def test_state_change_rejects_non_ascii_csrf(authenticated_client) -> None:
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         headers=[(b"X-CSRF-Token", b"\xff")],
         json={
@@ -211,12 +219,13 @@ def test_state_change_rejects_non_ascii_csrf(authenticated_client) -> None:
     )
 
 
-def test_password_change_rejects_incorrect_current_password(
+async def test_password_change_rejects_incorrect_current_password(
     authenticated_client,
 ) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
 
-    response = authenticated_client.post(
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -233,10 +242,13 @@ def test_password_change_rejects_incorrect_current_password(
     )
 
 
-def test_password_change_rejects_short_new_password(authenticated_client) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
+async def test_password_change_rejects_short_new_password(
+    authenticated_client,
+) -> None:
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
 
-    response = authenticated_client.post(
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={"current_password": BOOTSTRAP_PASSWORD, "new_password": "too-short"},
@@ -249,12 +261,13 @@ def test_password_change_rejects_short_new_password(authenticated_client) -> Non
     assert "too-short" not in response.text
 
 
-def test_password_change_rejects_reusing_current_password(
+async def test_password_change_rejects_reusing_current_password(
     authenticated_client,
 ) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
 
-    response = authenticated_client.post(
+    response = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -271,11 +284,12 @@ def test_password_change_rejects_reusing_current_password(
     )
 
 
-def test_password_change_revokes_other_sessions(
+async def test_password_change_revokes_other_sessions(
     authenticated_client, second_authenticated_client
 ) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
-    changed = authenticated_client.post(
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
+    changed = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -286,15 +300,18 @@ def test_password_change_revokes_other_sessions(
 
     assert changed.status_code == 200
     assert changed.json()["data"]["must_change_password"] is False
-    assert authenticated_client.get("/api/auth/session").status_code == 200
-    assert second_authenticated_client.get("/api/auth/session").status_code == 401
+    retained = await authenticated_client.get("/api/auth/session")
+    revoked = await second_authenticated_client.get("/api/auth/session")
+    assert retained.status_code == 200
+    assert revoked.status_code == 401
 
 
-def test_password_change_allows_login_with_new_password(
+async def test_password_change_allows_login_with_new_password(
     authenticated_client, client
 ) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
-    changed = authenticated_client.post(
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
+    changed = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -303,7 +320,7 @@ def test_password_change_allows_login_with_new_password(
         },
     )
 
-    response = client.post(
+    response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": CHANGED_PASSWORD},
     )
@@ -313,12 +330,13 @@ def test_password_change_allows_login_with_new_password(
     assert response.json()["data"]["must_change_password"] is False
 
 
-def test_password_change_accepts_long_unicode_password(
+async def test_password_change_accepts_long_unicode_password(
     authenticated_client, client
 ) -> None:
     unicode_password = "不同的管理員密碼" * 3
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
-    changed = authenticated_client.post(
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
+    changed = await authenticated_client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -327,7 +345,7 @@ def test_password_change_accepts_long_unicode_password(
         },
     )
 
-    response = client.post(
+    response = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": unicode_password},
     )
@@ -336,7 +354,7 @@ def test_password_change_accepts_long_unicode_password(
     assert response.status_code == 200
 
 
-def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
+async def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
     @client.app.get(
         "/api/protected-test",
         response_model=ApiEnvelope[dict[str, bool]],
@@ -348,13 +366,13 @@ def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
     ) -> ApiEnvelope[dict[str, bool]]:
         return ApiEnvelope(success=True, data={"allowed": True})
 
-    logged_in = client.post(
+    logged_in = await client.post(
         "/api/auth/login",
         json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
     )
-    blocked = client.get("/api/protected-test")
+    blocked = await client.get("/api/protected-test")
     csrf = logged_in.json()["data"]["csrf_token"]
-    changed = client.post(
+    changed = await client.post(
         "/api/auth/change-password",
         headers={"X-CSRF-Token": csrf},
         json={
@@ -362,7 +380,7 @@ def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
             "new_password": CHANGED_PASSWORD,
         },
     )
-    allowed = client.get("/api/protected-test")
+    allowed = await client.get("/api/protected-test")
 
     assert logged_in.status_code == 200
     assert_error_envelope(
@@ -376,10 +394,62 @@ def test_forced_password_change_blocks_normal_protected_routes(client) -> None:
     assert allowed.json()["data"] == {"allowed": True}
 
 
-def test_logout_revokes_session_and_clears_cookie(authenticated_client) -> None:
-    csrf = authenticated_client.get("/api/auth/session").json()["data"]["csrf_token"]
+async def test_forced_password_change_blocks_normal_csrf_but_allows_bootstrap_routes(
+    client,
+) -> None:
+    @client.app.post(
+        "/api/protected-state-change-test",
+        response_model=ApiEnvelope[dict[str, bool]],
+    )
+    def protected_state_change_test_route(
+        _request_session: Annotated[RequestSession, Depends(require_csrf)],
+    ) -> ApiEnvelope[dict[str, bool]]:
+        return ApiEnvelope(success=True, data={"allowed": True})
 
-    response = authenticated_client.post(
+    logged_in = await client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
+    )
+    csrf = logged_in.json()["data"]["csrf_token"]
+
+    blocked = await client.post(
+        "/api/protected-state-change-test",
+        headers={"X-CSRF-Token": csrf},
+    )
+    logged_out = await client.post(
+        "/api/auth/logout",
+        headers={"X-CSRF-Token": csrf},
+    )
+    logged_in_again = await client.post(
+        "/api/auth/login",
+        json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
+    )
+    changed = await client.post(
+        "/api/auth/change-password",
+        headers={"X-CSRF-Token": logged_in_again.json()["data"]["csrf_token"]},
+        json={
+            "current_password": BOOTSTRAP_PASSWORD,
+            "new_password": CHANGED_PASSWORD,
+        },
+    )
+
+    assert_error_envelope(
+        blocked,
+        status_code=403,
+        code="password_change_required",
+        message="The administrator password must be changed.",
+    )
+    assert logged_out.status_code == 200
+    assert changed.status_code == 200
+
+
+async def test_logout_revokes_session_and_clears_cookie(
+    authenticated_client,
+) -> None:
+    session_response = await authenticated_client.get("/api/auth/session")
+    csrf = session_response.json()["data"]["csrf_token"]
+
+    response = await authenticated_client.post(
         "/api/auth/logout", headers={"X-CSRF-Token": csrf}
     )
 
@@ -387,23 +457,26 @@ def test_logout_revokes_session_and_clears_cookie(authenticated_client) -> None:
     assert response.json()["success"] is True
     assert "iw_session=" in response.headers["set-cookie"]
     assert "Max-Age=0" in response.headers["set-cookie"]
-    assert authenticated_client.get("/api/auth/session").status_code == 401
+    rejected = await authenticated_client.get("/api/auth/session")
+    assert rejected.status_code == 401
 
 
-def test_logout_requires_csrf(authenticated_client) -> None:
-    response = authenticated_client.post("/api/auth/logout")
+async def test_logout_requires_csrf(authenticated_client) -> None:
+    response = await authenticated_client.post("/api/auth/logout")
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "csrf_invalid"
 
 
-def test_secure_cookie_configuration_is_honored(
+async def test_secure_cookie_configuration_is_honored(
     secure_test_settings: Settings,
+    test_client_factory,
 ) -> None:
-    with TestClient(
-        create_app(secure_test_settings), base_url="https://testserver"
+    async with test_client_factory(
+        secure_test_settings,
+        base_url="https://testserver",
     ) as secure_client:
-        response = secure_client.post(
+        response = await secure_client.post(
             "/api/auth/login",
             json={"username": "owner", "password": BOOTSTRAP_PASSWORD},
         )
@@ -412,21 +485,21 @@ def test_secure_cookie_configuration_is_honored(
     assert "Secure" in response.headers["set-cookie"]
 
 
-def test_lifespan_migrations_are_independent_of_working_directory(
-    test_settings: Settings, tmp_path, monkeypatch
+async def test_lifespan_migrations_are_independent_of_working_directory(
+    test_settings: Settings, tmp_path, monkeypatch, test_client_factory
 ) -> None:
     unrelated_directory = tmp_path / "unrelated"
     unrelated_directory.mkdir()
     monkeypatch.chdir(unrelated_directory)
 
-    with TestClient(create_app(test_settings)) as cwd_independent_client:
-        response = cwd_independent_client.get("/api/health")
+    async with test_client_factory(test_settings) as cwd_independent_client:
+        response = await cwd_independent_client.get("/api/health")
 
     assert response.status_code == 200
 
 
-def test_lifespan_uses_packaged_migration_assets(
-    test_settings: Settings, tmp_path, monkeypatch
+async def test_lifespan_uses_packaged_migration_assets(
+    test_settings: Settings, tmp_path, monkeypatch, test_client_factory
 ) -> None:
     packaged_root = tmp_path / "installed" / "instaloader_webui"
     packaged_migrations = packaged_root / "migrations"
@@ -446,18 +519,18 @@ def test_lifespan_uses_packaged_migration_assets(
         str(tmp_path / "unrelated" / "site-packages" / "module.py"),
     )
 
-    with TestClient(create_app(test_settings)) as packaged_client:
-        response = packaged_client.get("/api/health")
+    async with test_client_factory(test_settings) as packaged_client:
+        response = await packaged_client.get("/api/health")
 
     assert response.status_code == 200
 
 
-def test_authentication_failures_do_not_log_passwords(
+async def test_authentication_failures_do_not_log_passwords(
     client, caplog
 ) -> None:
     submitted_password = "password-that-must-never-enter-logs"
     with caplog.at_level(logging.DEBUG):
-        response = client.post(
+        response = await client.post(
             "/api/auth/login",
             json={"username": "owner", "password": submitted_password},
         )

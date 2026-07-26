@@ -9,8 +9,8 @@ from instaloader_webui.api.dependencies import (
     RequestSession,
     get_auth_service,
     get_settings,
-    require_csrf,
     require_session_status,
+    require_session_status_csrf,
 )
 from instaloader_webui.api.envelope import ApiEnvelope
 from instaloader_webui.auth.session_tokens import derive_csrf_token
@@ -126,7 +126,9 @@ def session(
 @router.post("/change-password", response_model=ApiEnvelope[dict[str, object]])
 def change_password(
     payload: ChangePasswordRequest,
-    request_session: Annotated[RequestSession, Depends(require_csrf)],
+    request_session: Annotated[
+        RequestSession, Depends(require_session_status_csrf)
+    ],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, object]]:
@@ -169,7 +171,9 @@ def change_password(
 @router.post("/logout", response_model=ApiEnvelope[dict[str, bool]])
 def logout(
     response: Response,
-    request_session: Annotated[RequestSession, Depends(require_csrf)],
+    request_session: Annotated[
+        RequestSession, Depends(require_session_status_csrf)
+    ],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> ApiEnvelope[dict[str, bool]]:

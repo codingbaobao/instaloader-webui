@@ -68,10 +68,10 @@ def require_authenticated_session(
     return request_session
 
 
-def require_csrf(
-    request_session: Annotated[RequestSession, Depends(require_session_status)],
-    settings: Annotated[Settings, Depends(get_settings)],
-    submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+def _validate_csrf(
+    request_session: RequestSession,
+    settings: Settings,
+    submitted_token: str | None,
 ) -> RequestSession:
     expected_token = derive_csrf_token(
         request_session.raw_token,
@@ -92,6 +92,24 @@ def require_csrf(
             message="The CSRF token is invalid.",
         )
     return request_session
+
+
+def require_csrf(
+    request_session: Annotated[
+        RequestSession, Depends(require_authenticated_session)
+    ],
+    settings: Annotated[Settings, Depends(get_settings)],
+    submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+) -> RequestSession:
+    return _validate_csrf(request_session, settings, submitted_token)
+
+
+def require_session_status_csrf(
+    request_session: Annotated[RequestSession, Depends(require_session_status)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    submitted_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+) -> RequestSession:
+    return _validate_csrf(request_session, settings, submitted_token)
 
 
 def require_password_change_complete(

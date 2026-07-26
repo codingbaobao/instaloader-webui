@@ -171,7 +171,11 @@ class AdminRepository:
             failure = session.get(LoginFailure, bucket_digest)
             if failure is not None:
                 session.delete(failure)
-            session.delete(reservation)
+            session.execute(
+                delete(LoginAttemptReservation).where(
+                    LoginAttemptReservation.bucket_digest == bucket_digest
+                )
+            )
             session.add(model)
             session.flush()
             snapshot = _web_session_snapshot(model)
