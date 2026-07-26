@@ -18,6 +18,10 @@ from instaloader_webui.api.routes.auth import (
     router as auth_router,
 )
 from instaloader_webui.api.routes.health import router as health_router
+from instaloader_webui.api.routes.jobs import router as jobs_router
+from instaloader_webui.api.routes.media import router as media_router
+from instaloader_webui.api.routes.profiles import router as profiles_router
+from instaloader_webui.api.routes.settings import router as settings_router
 from instaloader_webui.auth.app_secret import load_or_create_app_secret
 from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.auth.throttle import LoginThrottle
@@ -36,6 +40,7 @@ from instaloader_webui.db.repositories import (
 )
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import AuthService
+from instaloader_webui.services.library_service import LibraryService
 from instaloader_webui.web.spa import install_spa
 
 
@@ -64,6 +69,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.library_repository = LibraryRepository(session_factory)
         app.state.job_repository = JobRepository(session_factory)
         app.state.settings_repository = SettingsRepository(session_factory)
+        app.state.library_service = LibraryService(
+            library=app.state.library_repository,
+            jobs=app.state.job_repository,
+        )
         app.state.app_secret = app_secret
         try:
             yield
@@ -117,6 +126,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(profiles_router)
+    app.include_router(media_router)
+    app.include_router(jobs_router)
+    app.include_router(settings_router)
     install_spa(app, resolved.static_root, resolved.data_root)
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(SafeExceptionMiddleware)

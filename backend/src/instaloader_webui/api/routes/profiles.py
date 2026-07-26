@@ -1,0 +1,132 @@
+from datetime import UTC, datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, ConfigDict, Field
+
+from instaloader_webui.api.dependencies import (
+    ApiError,
+    get_library_repository,
+    get_library_service,
+    require_csrf,
+    require_password_change_complete,
+)
+from instaloader_webui.api.envelope import ApiEnvelope
+from instaloader_webui.api.library_dtos import (
+    JobResponse,
+    ProfileResponse,
+    serialize_job,
+    serialize_profile,
+)
+from instaloader_webui.db.library_repositories import LibraryRepository, ProfileSnapshot
+from instaloader_webui.services.instagram_inputs import InvalidInstagramInput
+from instaloader_webui.services.library_service import (
+    LibraryService,
+    ProfileNotFoundError,
+)
+
+router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+_PROFILE_MEDIA_COUNT_LIMIT = 10_000
+
+
+class InstagramInputRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    input: str = Field(min_length=1, max_length=2_048)
+
+
+class ProfileCreateResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    profile: ProfileResponse
+    job: JobResponse
+
+
+@router.get("", response_model=ApiEnvelope[tuple[ProfileResponse, ...]])
+def list_profiles(
+    library: Annotated[LibraryRepository, Depends(get_library_repository)],
+    _: Annotated[object, Depends(require_password_change_complete)],
+) -> ApiEnvelope[tuple[ProfileResponse, ...]]:
+    profiles = library.list_profiles()
+    return ApiEnvelope(
+        success=True,
+        data=tuple(_serialize_profile(library, profile.id, profile) for profile in profiles),
+    )
+
+
+@router.post("", response_model=ApiEnvelope[ProfileCreateResponse])
+def add_profile(
+    payload: InstagramInputRequest,
+    service: Annotated[LibraryService, Depends(get_library_service)],
+    library: Annotated[LibraryRepository, Depends(get_library_repository)],
+    _: Annotated[object, Depends(require_csrf)],
+) -> ApiEnvelope[ProfileCreateResponse]:
+    try:
+        profile, job = service.add_profile(payload.input, datetime.now(UTC))
+    except InvalidInstagramInput as error:
+        raise ApiError(422, "invalid_instagram_input", str(error)) from error
+    return ApiEnvelope(
+        success=True,
+        data=ProfileCreateResponse(
+            profile=_serialize_profile(library, profile.id, profile),
+            job=serialize_job(job),
+        ),
+    )
+
+
+@router.get("/{profile_id}", response_model=ApiEnvelope[ProfileResponse])
+def get_profile(
+    profile_id: str,
+    library: Annotated[LibraryRepository, Depends(get_library_repository)],
+    _: Annotated[object, Depends(require_password_change_complete)],
+) -> ApiEnvelope[ProfileResponse]:
+    profile = library.get_profile(profile_id)
+    if profile is None:
+        raise _profile_not_found(profile_id)
+    return ApiEnvelope(success=True, data=_serialize_profile(library, profile_id, profile))
+
+
+@router.post("/{profile_id}/sync", response_model=ApiEnvelope[JobResponse])
+def sync_profile(
+    profile_id: str,
+    service: Annotated[LibraryService, Depends(get_library_service)],
+    _: Annotated[object, Depends(require_csrf)],
+) -> ApiEnvelope[JobResponse]:
+    try:
+        job = service.sync_profile(profile_id, datetime.now(UTC))
+    except ProfileNotFoundError as error:
+        raise _profile_not_found(profile_id) from error
+    return ApiEnvelope(success=True, data=serialize_job(job))
+
+
+@router.delete("/{profile_id}", response_model=ApiEnvelope[JobResponse])
+def delete_profile(
+    profile_id: str,
+    service: Annotated[LibraryService, Depends(get_library_service)],
+    _: Annotated[object, Depends(require_csrf)],
+) -> ApiEnvelope[JobResponse]:
+    try:
+        job = service.delete_profile(profile_id, datetime.now(UTC))
+    except ProfileNotFoundError as error:
+        raise _profile_not_found(profile_id) from error
+    return ApiEnvelope(success=True, data=serialize_job(job))
+
+
+def _serialize_profile(
+    library: LibraryRepository, profile_id: str, profile: ProfileSnapshot
+) -> ProfileResponse:
+    # Task 1 intentionally exposes snapshots rather than ORM/session details.
+    # A bounded POC library makes this route-level aggregation sufficient until
+    # a dedicated aggregate repository query is introduced.
+    media_count = len(
+        library.list_media(profile_id=profile_id, limit=_PROFILE_MEDIA_COUNT_LIMIT)
+    )
+    return serialize_profile(profile, media_count=media_count)
+
+
+def _profile_not_found(profile_id: str) -> ApiError:
+    return ApiError(
+        status_code=404,
+        code="profile_not_found",
+        message=f"Profile {profile_id} was not found.",
+    )
