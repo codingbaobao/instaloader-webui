@@ -1,6 +1,8 @@
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from uuid import uuid4
 
 from sqlalchemy import delete, select, update
@@ -71,7 +73,7 @@ class JobSnapshot:
     id: str
     type: str
     state: str
-    payload: dict[str, object]
+    payload: Mapping[str, object]
     progress_current: int
     progress_total: int | None
     status_text: str
@@ -169,6 +171,22 @@ def _media_snapshot(model: MediaItem, assets: list[MediaAsset]) -> MediaSnapshot
     )
 
 
+def _freeze_json_value(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_json_value(nested_value) for key, nested_value in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json_value(item) for item in value)
+    return value
+
+
+def _freeze_job_payload(payload: dict[str, object]) -> Mapping[str, object]:
+    return MappingProxyType(
+        {key: _freeze_json_value(value) for key, value in payload.items()}
+    )
+
+
 def _job_snapshot(model: Job) -> JobSnapshot:
     payload = json.loads(model.payload_text)
     if not isinstance(payload, dict):
@@ -177,7 +195,7 @@ def _job_snapshot(model: Job) -> JobSnapshot:
         id=model.id,
         type=model.type,
         state=model.state,
-        payload=payload,
+        payload=_freeze_job_payload(payload),
         progress_current=model.progress_current,
         progress_total=model.progress_total,
         status_text=model.status_text,
@@ -636,7 +654,7 @@ class SettingsRepository:
             if _as_utc(model.next_sync_at) > current_time:
                 session.commit()
                 return False
-            model.next_sync_at = current_time + timedelta(
+            model.next_sync_at = _as_utc(model.next_sync_at) + timedelta(
                 minutes=model.profile_sync_interval_minutes
             )
             model.updated_at = current_time
