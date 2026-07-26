@@ -24,6 +24,11 @@ from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.config import Settings
 from instaloader_webui.db.engine import build_engine, build_session_factory
 from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.library_repositories import (
+    JobRepository,
+    LibraryRepository,
+    SettingsRepository,
+)
 from instaloader_webui.db.repositories import (
     AdminRepository,
     LoginFailureRepository,
@@ -40,6 +45,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         run_migrations(resolved)
+        resolved.media_root.mkdir(parents=True, exist_ok=True)
+        resolved.jobs_root.mkdir(parents=True, exist_ok=True)
         app_secret = load_or_create_app_secret(resolved.data_root)
         engine = build_engine(resolved.database_path)
         session_factory = build_session_factory(engine)
@@ -54,6 +61,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ),
             passwords=passwords,
         )
+        app.state.library_repository = LibraryRepository(session_factory)
+        app.state.job_repository = JobRepository(session_factory)
+        app.state.settings_repository = SettingsRepository(session_factory)
         app.state.app_secret = app_secret
         try:
             yield
