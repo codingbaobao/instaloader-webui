@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from instaloader_webui.db.models import AdminUser, WebSession
+from instaloader_webui.db.models import AdminUser, LoginFailure, WebSession
 
 SINGLE_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 
@@ -35,6 +35,15 @@ class WebSessionSnapshot:
     revoked_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class LoginFailureSnapshot:
+    bucket_digest: str
+    failure_count: int
+    first_failure_at: datetime
+    last_failure_at: datetime
+    blocked_until: datetime | None
+
+
 def _admin_snapshot(model: AdminUser) -> AdminSnapshot:
     return AdminSnapshot(
         id=model.id,
@@ -55,6 +64,18 @@ def _web_session_snapshot(model: WebSession) -> WebSessionSnapshot:
         last_seen_at=_as_utc(model.last_seen_at),
         expires_at=_as_utc(model.expires_at),
         revoked_at=_as_utc(model.revoked_at) if model.revoked_at is not None else None,
+    )
+
+
+def _login_failure_snapshot(model: LoginFailure) -> LoginFailureSnapshot:
+    return LoginFailureSnapshot(
+        bucket_digest=model.bucket_digest,
+        failure_count=model.failure_count,
+        first_failure_at=_as_utc(model.first_failure_at),
+        last_failure_at=_as_utc(model.last_failure_at),
+        blocked_until=(
+            _as_utc(model.blocked_until) if model.blocked_until is not None else None
+        ),
     )
 
 
@@ -149,3 +170,48 @@ class WebSessionRepository:
             model.revoked_at = _as_utc(now)
             session.flush()
             return _web_session_snapshot(model)
+
+
+class LoginFailureRepository:
+    """Persist digest-only login-failure buckets behind immutable snapshots."""
+
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self._session_factory = session_factory
+
+    def get(self, bucket_digest: str) -> LoginFailureSnapshot | None:
+        with self._session_factory() as session:
+            model = session.get(LoginFailure, bucket_digest)
+            return _login_failure_snapshot(model) if model is not None else None
+
+    def save(self, snapshot: LoginFailureSnapshot) -> None:
+        with self._session_factory.begin() as session:
+            model = session.get(LoginFailure, snapshot.bucket_digest)
+            if model is None:
+                session.add(
+                    LoginFailure(
+                        bucket_digest=snapshot.bucket_digest,
+                        failure_count=snapshot.failure_count,
+                        first_failure_at=_as_utc(snapshot.first_failure_at),
+                        last_failure_at=_as_utc(snapshot.last_failure_at),
+                        blocked_until=(
+                            _as_utc(snapshot.blocked_until)
+                            if snapshot.blocked_until is not None
+                            else None
+                        ),
+                    )
+                )
+                return
+            model.failure_count = snapshot.failure_count
+            model.first_failure_at = _as_utc(snapshot.first_failure_at)
+            model.last_failure_at = _as_utc(snapshot.last_failure_at)
+            model.blocked_until = (
+                _as_utc(snapshot.blocked_until)
+                if snapshot.blocked_until is not None
+                else None
+            )
+
+    def delete(self, bucket_digest: str) -> None:
+        with self._session_factory.begin() as session:
+            model = session.get(LoginFailure, bucket_digest)
+            if model is not None:
+                session.delete(model)

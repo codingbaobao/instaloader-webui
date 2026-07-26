@@ -2,8 +2,11 @@ from pathlib import Path
 
 import pytest
 
+from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.config import Settings
 from instaloader_webui.db.engine import build_engine, build_session_factory
+from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.repositories import LoginFailureRepository
 
 
 @pytest.fixture
@@ -24,3 +27,13 @@ def engine(test_settings: Settings):
 @pytest.fixture
 def session_factory(engine):
     return build_session_factory(engine)
+
+
+@pytest.fixture
+def throttle(session_factory, test_settings: Settings) -> LoginThrottle:
+    run_migrations(test_settings)
+    repository = LoginFailureRepository(session_factory)
+    return LoginThrottle(
+        repository=repository,
+        hmac_secret=test_settings.app_secret_key.get_secret_value(),
+    )
