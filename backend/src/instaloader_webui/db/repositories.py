@@ -112,6 +112,40 @@ class AdminRepository:
             model = session.scalar(select(AdminUser).order_by(AdminUser.created_at))
             return _admin_snapshot(model) if model is not None else None
 
+    def get_by_id(self, administrator_id: str) -> AdminSnapshot | None:
+        with self._session_factory() as session:
+            model = session.get(AdminUser, administrator_id)
+            return _admin_snapshot(model) if model is not None else None
+
+    def change_password_and_revoke_other_sessions(
+        self,
+        *,
+        administrator_id: str,
+        password_hash: str,
+        must_change_password: bool,
+        retained_token_digest: str,
+        now: datetime,
+    ) -> AdminSnapshot | None:
+        changed_at = _as_utc(now)
+        with self._session_factory.begin() as session:
+            administrator = session.get(AdminUser, administrator_id)
+            if administrator is None:
+                return None
+            other_sessions = session.scalars(
+                select(WebSession).where(
+                    WebSession.admin_user_id == administrator_id,
+                    WebSession.token_digest != retained_token_digest,
+                    WebSession.revoked_at.is_(None),
+                )
+            ).all()
+            administrator.password_hash = password_hash
+            administrator.must_change_password = must_change_password
+            administrator.updated_at = changed_at
+            for web_session in other_sessions:
+                web_session.revoked_at = changed_at
+            session.flush()
+            return _admin_snapshot(administrator)
+
 
 class WebSessionRepository:
     """Persist browser sessions using digest-only, immutable boundaries."""
@@ -170,7 +204,6 @@ class WebSessionRepository:
             model.revoked_at = _as_utc(now)
             session.flush()
             return _web_session_snapshot(model)
-
 
 class LoginFailureRepository:
     """Persist digest-only login-failure buckets behind immutable snapshots."""

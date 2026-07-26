@@ -12,6 +12,9 @@ def run_migrations(settings: Settings) -> None:
     config_path = Path(__file__).resolve().parents[3] / "alembic.ini"
     config = Config(str(config_path))
     config.set_main_option(
+        "script_location", str((config_path.parent / "migrations").resolve())
+    )
+    config.set_main_option(
         "sqlalchemy.url", f"sqlite:///{settings.database_path.resolve().as_posix()}"
     )
     command.upgrade(config, "head")
