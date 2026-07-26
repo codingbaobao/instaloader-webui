@@ -20,6 +20,7 @@ from instaloader_webui.db.repositories import (
 )
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import AuthService
+from instaloader_webui.web.spa import install_spa
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -81,4 +82,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    install_spa(app, resolved.static_root, resolved.data_root)
     return app

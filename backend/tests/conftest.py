@@ -95,6 +95,24 @@ async def client(test_settings: Settings):
 
 
 @pytest.fixture
+async def client_with_static_build(test_settings: Settings, tmp_path_factory):
+    static_root = tmp_path_factory.mktemp("compiled-spa")
+    assets_root = static_root / "assets"
+    assets_root.mkdir(parents=True)
+    (static_root / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div></body></html>',
+        encoding="utf-8",
+    )
+    (assets_root / "app-hash.js").write_text(
+        'document.querySelector("#root");',
+        encoding="utf-8",
+    )
+    settings = test_settings.model_copy(update={"static_root": static_root})
+    async with open_test_client(settings) as test_client:
+        yield test_client
+
+
+@pytest.fixture
 async def authenticated_client(test_settings: Settings):
     async with open_test_client(test_settings) as test_client:
         response = await test_client.post(

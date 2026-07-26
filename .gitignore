@@ -9,6 +9,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+coverage/
+*.tsbuildinfo
 node_modules/
 dist/
 playwright-report/

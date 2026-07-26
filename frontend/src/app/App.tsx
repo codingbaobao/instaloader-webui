@@ -1,0 +1,229 @@
+import { useState } from "react";
+import {
+  BrowserRouter,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useNavigate,
+} from "react-router-dom";
+
+import { ApiError, apiRequest } from "./api";
+import { ChangePasswordPage } from "../auth/ChangePasswordPage";
+import { LoginPage } from "../auth/LoginPage";
+import {
+  SessionProvider,
+  type SessionData,
+  useSession,
+} from "../auth/useSession";
+
+type AppProps = {
+  initialSession?: SessionData | null;
+};
+
+const destinations = [
+  { path: "/", label: "Home", symbol: "⌂", end: true },
+  { path: "/profiles", label: "Profiles", symbol: "◎" },
+  { path: "/add", label: "Add", symbol: "+" },
+  { path: "/activity", label: "Activity", symbol: "◷" },
+  { path: "/settings", label: "Settings", symbol: "⚙" },
+] as const;
+
+function NavigationItems() {
+  return destinations.map((destination) => (
+    <NavLink
+      className={({ isActive }) =>
+        isActive ? "nav-link nav-link-active" : "nav-link"
+      }
+      end={"end" in destination ? destination.end : false}
+      key={destination.path}
+      to={destination.path}
+    >
+      <span className="nav-symbol" aria-hidden="true">
+        {destination.symbol}
+      </span>
+      <span>{destination.label}</span>
+    </NavLink>
+  ));
+}
+
+function PlaceholderPage({
+  title,
+  detail,
+}: {
+  title: string;
+  detail: string;
+}) {
+  return (
+    <section className="page-panel" aria-labelledby={`${title}-title`}>
+      <p className="eyebrow">Library</p>
+      <h1 id={`${title}-title`}>{title}</h1>
+      <p>{detail}</p>
+    </section>
+  );
+}
+
+function AuthenticatedShell() {
+  const navigate = useNavigate();
+  const { session, clearSession } = useSession();
+  const [logoutError, setLogoutError] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  if (session === null) {
+    return <Navigate replace to="/login" />;
+  }
+  const sessionCsrfToken = session.csrf_token;
+
+  async function logout() {
+    if (loggingOut) {
+      return;
+    }
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      await apiRequest<{ logged_out: boolean }>("/api/auth/logout", {
+        method: "POST",
+        csrfToken: sessionCsrfToken,
+      });
+      clearSession();
+      navigate("/login", { replace: true });
+    } catch (error) {
+      setLogoutError(
+        error instanceof ApiError
+          ? error.message
+          : "Sign out could not be completed.",
+      );
+    } finally {
+      setLoggingOut(false);
+    }
+  }
+
+  return (
+    <div className="app-frame">
+      <aside className="desktop-sidebar">
+        <a className="wordmark" href="/" aria-label="Instaloader WebUI home">
+          Instaloader
+        </a>
+        <nav aria-label="Desktop" className="desktop-navigation">
+          <NavigationItems />
+        </nav>
+        <div className="account-actions">
+          <span>@{session.username}</span>
+          <button
+            className="text-button"
+            type="button"
+            disabled={loggingOut}
+            onClick={() => void logout()}
+          >
+            {loggingOut ? "Signing out…" : "Sign out"}
+          </button>
+          {logoutError ? (
+            <p className="form-error" role="alert">
+              {logoutError}
+            </p>
+          ) : null}
+        </div>
+      </aside>
+      <main className="content-area">
+        <header className="mobile-header">
+          <span className="wordmark">Instaloader</span>
+          <span className="avatar" aria-label={`Signed in as ${session.username}`}>
+            {session.username.slice(0, 1).toUpperCase()}
+          </span>
+        </header>
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <PlaceholderPage
+                title={`Welcome back, ${session.username}`}
+                detail="Recently downloaded media will appear here."
+              />
+            }
+          />
+          <Route
+            path="/profiles"
+            element={
+              <PlaceholderPage
+                title="Profiles"
+                detail="Downloaded profiles will be available in a later phase."
+              />
+            }
+          />
+          <Route
+            path="/add"
+            element={
+              <PlaceholderPage
+                title="Add"
+                detail="Profile and post capture controls are coming next."
+              />
+            }
+          />
+          <Route
+            path="/activity"
+            element={
+              <PlaceholderPage
+                title="Activity"
+                detail="Persistent download jobs will be shown here."
+              />
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <PlaceholderPage
+                title="Settings"
+                detail="Synchronization and account controls will live here."
+              />
+            }
+          />
+          <Route path="*" element={<Navigate replace to="/" />} />
+        </Routes>
+      </main>
+      <nav aria-label="Mobile" className="mobile-navigation">
+        <NavigationItems />
+      </nav>
+    </div>
+  );
+}
+
+export function AppRoutes() {
+  const { session, loading } = useSession();
+
+  if (loading) {
+    return (
+      <main className="loading-screen" aria-live="polite">
+        Loading…
+      </main>
+    );
+  }
+  if (session === null) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="*" element={<Navigate replace to="/login" />} />
+      </Routes>
+    );
+  }
+  if (session.must_change_password) {
+    return (
+      <Routes>
+        <Route path="/change-password" element={<ChangePasswordPage />} />
+        <Route path="*" element={<Navigate replace to="/change-password" />} />
+      </Routes>
+    );
+  }
+  return <AuthenticatedShell />;
+}
+
+export function App({ initialSession }: AppProps) {
+  return (
+    <BrowserRouter
+      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
+    >
+      <SessionProvider initialSession={initialSession}>
+        <AppRoutes />
+      </SessionProvider>
+    </BrowserRouter>
+  );
+}
