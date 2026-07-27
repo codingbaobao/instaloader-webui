@@ -96,6 +96,7 @@ export function InstagramSessionCard({ session }: InstagramSessionCardProps) {
       setRemoveOpen(false);
       setNotice("Instagram session removed. Future jobs will use anonymous access unless you import a new Cookie file.");
     } catch (cause) {
+      setRemoveOpen(false);
       setError(errorMessage(cause, "The Instagram session could not be removed."));
     } finally {
       setRemoving(false);
