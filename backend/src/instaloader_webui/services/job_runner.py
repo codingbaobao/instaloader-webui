@@ -44,6 +44,7 @@ class JobRunner:
         except Exception as error:
             try:
                 self._record_profile_sync_failure(job)
+                self._record_profile_deletion_failure(job)
             except Exception:
                 # The original operation failure remains the job's useful outcome.
                 pass
@@ -151,6 +152,17 @@ class JobRunner:
                 succeeded=False,
                 now=datetime.now(UTC),
             )
+
+    def _record_profile_deletion_failure(self, job: JobSnapshot) -> None:
+        if job.type != "delete_profile":
+            return
+        profile_id = job.payload.get("profile_id")
+        if not isinstance(profile_id, str) or not profile_id:
+            return
+        self._library.mark_profile_deletion_failed(
+            profile_id,
+            datetime.now(UTC),
+        )
 
 
 def enqueue_due_profile_syncs(

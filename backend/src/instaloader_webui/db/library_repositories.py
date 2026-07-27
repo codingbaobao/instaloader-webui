@@ -334,6 +334,19 @@ class LibraryRepository:
             session.flush()
             return _profile_snapshot(model)
 
+    def mark_profile_deletion_failed(
+        self, profile_id: str, now: datetime
+    ) -> ProfileSnapshot | None:
+        """Transition an existing profile after its deletion job fails."""
+        with self._session_factory.begin() as session:
+            model = session.get(Profile, profile_id)
+            if model is None:
+                return None
+            model.status = "deletion_failed"
+            model.updated_at = _as_utc(now)
+            session.flush()
+            return _profile_snapshot(model)
+
     def delete_profile_records(self, profile_id: str) -> tuple[str, ...]:
         with self._session_factory.begin() as session:
             media_ids = list(
@@ -754,7 +767,8 @@ class SettingsRepository:
             if _as_utc(model.next_sync_at) > current_time:
                 session.commit()
                 return False
-            model.next_sync_at = _as_utc(model.next_sync_at) + timedelta(
+            schedule_base = max(_as_utc(model.next_sync_at), current_time)
+            model.next_sync_at = schedule_base + timedelta(
                 minutes=model.profile_sync_interval_minutes
             )
             model.updated_at = current_time
