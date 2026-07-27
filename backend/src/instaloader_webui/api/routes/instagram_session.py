@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from instaloader_webui.api.dependencies import (
     ApiError,
@@ -54,7 +55,11 @@ async def import_instagram_session(
 ) -> ApiEnvelope[InstagramSessionStatusResponse]:
     payload = await _read_cookie_file(cookie_file)
     try:
-        status = service.import_netscape(payload, datetime.now(UTC))
+        status = await run_in_threadpool(
+            service.import_netscape,
+            payload,
+            datetime.now(UTC),
+        )
     except InstagramSessionImportError as error:
         raise ApiError(
             status_code=error.status_code,

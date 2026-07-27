@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from instaloader import (
     Instaloader,
     LoginRequiredException,
     QueryReturnedBadRequestException,
+    RateController,
     TooManyRequestsException,
 )
 
@@ -28,6 +30,7 @@ from instaloader_webui.instagram.session_store import (
 )
 
 _LOGIN_CHECK_QUERY_HASH = "d6f4427fbe92d846298cf93df0b937d3"
+_HTTP_AUTH_DENIAL = re.compile(r"(?<!\d)(?:401|403)(?!\d)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,13 @@ class InstagramSessionImportError(Exception):
     status_code: int
     code: str
     message: str
+
+
+class _ValidationRateController(RateController):
+    """Fail validation immediately when Instagram reports rate limiting."""
+
+    def handle_429(self, query_type: str) -> None:
+        raise TooManyRequestsException("Instagram validation was rate limited.")
 
 
 class InstagramSessionService:
@@ -83,7 +93,9 @@ class InstagramSessionService:
             quiet=True,
             max_connection_attempts=3,
             request_timeout=20,
+            rate_controller=_ValidationRateController,
         )
+        loader.context.error = _discard_validation_error
         try:
             loader.load_session("cookie-import", cookie_dict(cookies))
             response = loader.context.graphql_query(_LOGIN_CHECK_QUERY_HASH, {})
@@ -123,8 +135,10 @@ class InstagramSessionService:
             raise _classify_exception(error, invalid_session=True) from error
         except TooManyRequestsException as error:
             raise _classify_exception(error) from error
-        except (LoginRequiredException, QueryReturnedBadRequestException) as error:
+        except LoginRequiredException as error:
             raise _classify_exception(error, invalid_session=True) from error
+        except QueryReturnedBadRequestException as error:
+            raise _classify_exception(error) from error
         except ConnectionException as error:
             raise _classify_exception(error) from error
         finally:
@@ -155,6 +169,13 @@ def _is_rate_limited(error: BaseException) -> bool:
     )
 
 
+def _is_auth_denied(error: BaseException) -> bool:
+    return any(
+        _HTTP_AUTH_DENIAL.search(str(current)) is not None
+        for current in _exception_chain(error)
+    )
+
+
 def _classify_exception(
     error: BaseException, *, invalid_session: bool = False
 ) -> InstagramSessionImportError:
@@ -172,6 +193,12 @@ def _classify_exception(
             code="instagram_rate_limited",
             message="Instagram is temporarily rate limiting this server. Try again later.",
         )
+    if _is_auth_denied(error):
+        return InstagramSessionImportError(
+            status_code=422,
+            code="instagram_session_invalid",
+            message="The imported Instagram session is invalid or expired.",
+        )
     if invalid_session:
         return InstagramSessionImportError(
             status_code=422,
@@ -183,6 +210,10 @@ def _classify_exception(
         code="instagram_unavailable",
         message="Instagram is temporarily unavailable. Try again later.",
     )
+
+
+def _discard_validation_error(message: str, repeat_at_end: bool = True) -> None:
+    """Keep upstream request details out of application logs during validation."""
 
 
 def _unavailable_error() -> InstagramSessionImportError:
