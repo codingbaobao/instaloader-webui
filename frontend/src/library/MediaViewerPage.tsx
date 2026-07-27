@@ -5,7 +5,7 @@ import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { deleteMedia, getMedia, getProfile, mediaAssetUrl } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { formatDate } from "./MediaGrid";
+import { formatDateTime } from "./MediaGrid";
 import { usePolling } from "./usePolling";
 
 type MediaViewerPageProps = Readonly<{ session: SessionData }>;
@@ -91,7 +91,7 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
             <Link to={`/profiles/${encodeURIComponent(owner.id)}`}>@{owner.username}</Link>
           </div>
           <h1 id="viewer-title">{media.kind === "reel" ? "Reel" : "Post"}</h1>
-          <p className="viewer-meta">Published {formatDate(media.published_at)} · {media.kind}</p>
+          <p className="viewer-meta">Published {formatDateTime(media.published_at)} · {media.kind}</p>
           <p className="viewer-caption">{media.caption || media.accessibility_caption || "No caption was saved for this public item."}</p>
           <a className="text-link" href={media.original_url} rel="noreferrer" target="_blank">Open original on Instagram</a>
           <div className="viewer-actions">

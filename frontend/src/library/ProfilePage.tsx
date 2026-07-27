@@ -91,7 +91,7 @@ export function ProfilePage({ session }: ProfilePageProps) {
           {profile.biography ? <p className="profile-biography">{profile.biography}</p> : <p className="profile-biography muted-copy">No public biography saved yet.</p>}
           <div className="profile-stats">
             <span><strong>{profile.media_count}</strong> saved</span>
-            <span>Last sync {formatDate(profile.last_sync_succeeded_at)}</span>
+            <span>Last attempt {formatDate(profile.last_sync_attempted_at)}</span>
           </div>
           <div className="profile-actions">
             <button className="secondary-button" type="button" disabled={syncing} onClick={() => void requestSync()}>
