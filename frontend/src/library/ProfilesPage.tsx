@@ -6,7 +6,10 @@ import { formatDate } from "./MediaGrid";
 import { usePolling } from "./usePolling";
 
 export function ProfilesPage() {
-  const loadProfiles = useCallback(() => listProfiles(), []);
+  const loadProfiles = useCallback(
+    (signal: AbortSignal) => listProfiles(signal),
+    [],
+  );
   const { data: profiles, error, loading, reload } = usePolling(loadProfiles, 0, true);
 
   return (

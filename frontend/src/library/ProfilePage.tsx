@@ -21,13 +21,13 @@ export function ProfilePage({ session }: ProfilePageProps) {
   const [syncing, setSyncing] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const loadProfile = useCallback(async () => {
+  const loadProfile = useCallback(async (signal: AbortSignal) => {
     if (!profileId) {
       throw new Error("The profile was not found.");
     }
     const [profile, media] = await Promise.all([
-      getProfile(profileId),
-      listMedia({ profileId, kind: tab, limit: 200 }),
+      getProfile(profileId, signal),
+      listMedia({ profileId, kind: tab, limit: 200 }, signal),
     ]);
     return { profile, media };
   }, [profileId, tab]);

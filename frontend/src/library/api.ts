@@ -24,12 +24,19 @@ export function mediaAssetUrl(mediaId: string, assetId: string): string {
   return `/api/media/${pathSegment(mediaId)}/assets/${pathSegment(assetId)}`;
 }
 
-export function listProfiles(): Promise<readonly ProfileSummary[]> {
-  return apiRequest<readonly ProfileSummary[]>("/api/profiles");
+export function listProfiles(
+  signal?: AbortSignal,
+): Promise<readonly ProfileSummary[]> {
+  return apiRequest<readonly ProfileSummary[]>("/api/profiles", { signal });
 }
 
-export function getProfile(profileId: string): Promise<ProfileDetail> {
-  return apiRequest<ProfileDetail>(`/api/profiles/${pathSegment(profileId)}`);
+export function getProfile(
+  profileId: string,
+  signal?: AbortSignal,
+): Promise<ProfileDetail> {
+  return apiRequest<ProfileDetail>(`/api/profiles/${pathSegment(profileId)}`, {
+    signal,
+  });
 }
 
 export function addProfile(
@@ -62,6 +69,7 @@ export function deleteProfile(
 
 export function listMedia(
   options: MediaListOptions = {},
+  signal?: AbortSignal,
 ): Promise<readonly MediaSummary[]> {
   const query = new URLSearchParams();
   if (options.profileId) {
@@ -74,11 +82,16 @@ export function listMedia(
     query.set("limit", String(options.limit));
   }
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
-  return apiRequest<readonly MediaSummary[]>(`/api/media${suffix}`);
+  return apiRequest<readonly MediaSummary[]>(`/api/media${suffix}`, { signal });
 }
 
-export function getMedia(mediaId: string): Promise<MediaDetail> {
-  return apiRequest<MediaDetail>(`/api/media/${pathSegment(mediaId)}`);
+export function getMedia(
+  mediaId: string,
+  signal?: AbortSignal,
+): Promise<MediaDetail> {
+  return apiRequest<MediaDetail>(`/api/media/${pathSegment(mediaId)}`, {
+    signal,
+  });
 }
 
 export function addMedia(input: string, csrfToken: string): Promise<JobSummary> {
@@ -96,16 +109,16 @@ export function deleteMedia(mediaId: string, csrfToken: string): Promise<JobSumm
   });
 }
 
-export function listJobs(): Promise<readonly JobSummary[]> {
-  return apiRequest<readonly JobSummary[]>("/api/jobs");
+export function listJobs(signal?: AbortSignal): Promise<readonly JobSummary[]> {
+  return apiRequest<readonly JobSummary[]>("/api/jobs", { signal });
 }
 
-export function getJob(jobId: string): Promise<JobSummary> {
-  return apiRequest<JobSummary>(`/api/jobs/${pathSegment(jobId)}`);
+export function getJob(jobId: string, signal?: AbortSignal): Promise<JobSummary> {
+  return apiRequest<JobSummary>(`/api/jobs/${pathSegment(jobId)}`, { signal });
 }
 
-export function getLibrarySettings(): Promise<LibrarySettings> {
-  return apiRequest<LibrarySettings>("/api/settings");
+export function getLibrarySettings(signal?: AbortSignal): Promise<LibrarySettings> {
+  return apiRequest<LibrarySettings>("/api/settings", { signal });
 }
 
 export function updateLibrarySettings(

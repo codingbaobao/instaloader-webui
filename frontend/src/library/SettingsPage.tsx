@@ -11,7 +11,10 @@ import { usePolling } from "./usePolling";
 type SettingsPageProps = Readonly<{ session: SessionData }>;
 
 export function SettingsPage({ session }: SettingsPageProps) {
-  const loadSettings = useCallback(() => getLibrarySettings(), []);
+  const loadSettings = useCallback(
+    (signal: AbortSignal) => getLibrarySettings(signal),
+    [],
+  );
   const { data: settings, error, loading, reload } = usePolling(loadSettings, 0, true);
   const [interval, setInterval] = useState("15");
   const [saving, setSaving] = useState(false);

@@ -9,10 +9,10 @@ import { usePolling } from "./usePolling";
 type HomePageProps = Readonly<{ session: SessionData }>;
 
 export function HomePage({ session }: HomePageProps) {
-  const loadHome = useCallback(async () => {
+  const loadHome = useCallback(async (signal: AbortSignal) => {
     const [profiles, media] = await Promise.all([
-      listProfiles(),
-      listMedia({ limit: 18 }),
+      listProfiles(signal),
+      listMedia({ limit: 18 }, signal),
     ]);
     return { profiles, media };
   }, []);

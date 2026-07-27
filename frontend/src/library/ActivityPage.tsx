@@ -21,7 +21,7 @@ function progress(job: JobSummary): number {
 }
 
 export function ActivityPage() {
-  const loadJobs = useCallback(() => listJobs(), []);
+  const loadJobs = useCallback((signal: AbortSignal) => listJobs(signal), []);
   const [pollingActive, setPollingActive] = useState(false);
   const { data: jobs, error, loading, reload } = usePolling(
     loadJobs,

@@ -17,12 +17,12 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const loadMedia = useCallback(async () => {
+  const loadMedia = useCallback(async (signal: AbortSignal) => {
     if (!mediaId) {
       throw new Error("The media item was not found.");
     }
-    const media = await getMedia(mediaId);
-    const owner = await getProfile(media.owner_profile_id);
+    const media = await getMedia(mediaId, signal);
+    const owner = await getProfile(media.owner_profile_id, signal);
     return { media, owner };
   }, [mediaId]);
   const { data, error, loading, reload } = usePolling(loadMedia, 0, true);

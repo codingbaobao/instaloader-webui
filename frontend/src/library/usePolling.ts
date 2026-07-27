@@ -13,6 +13,7 @@ type PollController = {
   version: number;
   cancelled: boolean;
   timeoutId: number | null;
+  abortController: AbortController | null;
   inFlight: boolean;
   reloadQueued: boolean;
   reloadWaiters: Array<() => void>;
@@ -25,13 +26,20 @@ function resolveReloadWaiters(controller: PollController): void {
   waiters.forEach((resolve) => resolve());
 }
 
+function wasAborted(cause: unknown, signal: AbortSignal): boolean {
+  return (
+    signal.aborted ||
+    (cause instanceof Error && cause.name === "AbortError")
+  );
+}
+
 /**
  * Loads data immediately and, when requested, only schedules the next poll
  * after the current request settles. Each effect owns a versioned controller,
  * so stale responses cannot update state after a route or load callback change.
  */
 export function usePolling<T>(
-  load: () => Promise<T>,
+  load: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
   enabled: boolean,
 ): PollingState<T> {
@@ -73,6 +81,7 @@ export function usePolling<T>(
       version,
       cancelled: false,
       timeoutId: null,
+      abortController: null,
       inFlight: false,
       reloadQueued: false,
       reloadWaiters: [],
@@ -90,15 +99,17 @@ export function usePolling<T>(
       const reloadRun = controller.reloadQueued;
       controller.reloadQueued = false;
       controller.inFlight = true;
+      const requestController = new AbortController();
+      controller.abortController = requestController;
       setLoading(true);
       setError(null);
       try {
-        const result = await load();
+        const result = await load(requestController.signal);
         if (isCurrent()) {
           setData(result);
         }
       } catch (cause) {
-        if (isCurrent()) {
+        if (!wasAborted(cause, requestController.signal) && isCurrent()) {
           setError(
             cause instanceof ApiError
               ? cause.message
@@ -106,6 +117,9 @@ export function usePolling<T>(
           );
         }
       } finally {
+        if (controller.abortController === requestController) {
+          controller.abortController = null;
+        }
         controller.inFlight = false;
         if (controller.cancelled) {
           resolveReloadWaiters(controller);
@@ -137,6 +151,7 @@ export function usePolling<T>(
 
     return () => {
       controller.cancelled = true;
+      controller.abortController?.abort();
       if (controller.timeoutId !== null) {
         window.clearTimeout(controller.timeoutId);
       }
