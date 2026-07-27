@@ -24,7 +24,7 @@ export function BrandLockup({ className }: BrandLockupProps) {
   const classes = ["brand-lockup", className].filter(Boolean).join(" ");
 
   return (
-    <span aria-label={PRODUCT_NAME} className={classes}>
+    <span aria-label={PRODUCT_NAME} className={classes} role="img">
       <BrandMark className="brand-lockup-mark" />
       <span aria-hidden="true" className="brand-lockup-name">
         Instaloader
