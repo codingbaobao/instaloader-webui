@@ -140,10 +140,12 @@ browser session; do not share Cookie contents. After deployment:
 1. Open **Settings** and import the extension-produced Instagram `cookies.txt`.
 2. Confirm that Settings displays `Connected as @<username>`, then delete the
    exported local file.
-3. Choose **Sync all profiles now**.
-4. Verify that `https://www.instagram.com/oioo712/` advances through
-   **Activity** and produces saved media.
-5. If shown, report any challenge, rate-limit, or expired-session message
+3. If `https://www.instagram.com/oioo712/` is not already tracked, add it
+   through **Add** first.
+4. Choose **Sync all profiles now**.
+5. Verify that the `oioo712` profile advances through **Activity** and
+   produces saved media.
+6. If shown, report any challenge, rate-limit, or expired-session message
    exactly as displayed, without including Cookie contents.
 
 ## Security notes
