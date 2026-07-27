@@ -7,6 +7,7 @@ import type {
   ProfileCreateResult,
   ProfileDetail,
   ProfileSummary,
+  InstagramSessionStatus,
   SyncAllResult,
 } from "./types";
 
@@ -135,6 +136,36 @@ export function updateLibrarySettings(
 export function syncAllProfiles(csrfToken: string): Promise<SyncAllResult> {
   return apiRequest<SyncAllResult>("/api/settings/sync-all", {
     method: "POST",
+    csrfToken,
+  });
+}
+
+export function getInstagramSession(
+  signal?: AbortSignal,
+): Promise<InstagramSessionStatus> {
+  return apiRequest<InstagramSessionStatus>("/api/settings/instagram-session", {
+    signal,
+  });
+}
+
+export function importInstagramSession(
+  file: File,
+  csrfToken: string,
+): Promise<InstagramSessionStatus> {
+  const body = new FormData();
+  body.append("cookie_file", file);
+  return apiRequest<InstagramSessionStatus>("/api/settings/instagram-session", {
+    method: "POST",
+    body,
+    csrfToken,
+  });
+}
+
+export function removeInstagramSession(
+  csrfToken: string,
+): Promise<InstagramSessionStatus> {
+  return apiRequest<InstagramSessionStatus>("/api/settings/instagram-session", {
+    method: "DELETE",
     csrfToken,
   });
 }

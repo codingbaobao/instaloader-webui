@@ -82,3 +82,10 @@ export type ProfileCreateResult = Readonly<{
 export type SyncAllResult = Readonly<{
   jobs: readonly JobSummary[];
 }>;
+
+export type InstagramSessionStatus = Readonly<{
+  configured: boolean;
+  username: string | null;
+  imported_at: string | null;
+  last_validated_at: string | null;
+}>;

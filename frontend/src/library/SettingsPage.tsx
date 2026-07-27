@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { getLibrarySettings, syncAllProfiles, updateLibrarySettings } from "./api";
+import { InstagramSessionCard } from "./InstagramSessionCard";
 import { formatDate } from "./MediaGrid";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
@@ -102,6 +103,7 @@ export function SettingsPage({ session }: SettingsPageProps) {
           </section>
         </>
       ) : null}
+      <InstagramSessionCard session={session} />
       {notice ? (
         <p className="success-note" aria-live="polite">
           {notice} <Link to="/activity">Open activity</Link>

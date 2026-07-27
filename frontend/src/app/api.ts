@@ -56,12 +56,18 @@ export async function apiRequest<T>(
   options: ApiRequestOptions = {},
 ): Promise<T> {
   const headers = new Headers();
-  if (options.body !== undefined) {
+  const formData = options.body instanceof FormData;
+  if (options.body !== undefined && !formData) {
     headers.set("Content-Type", "application/json");
   }
   if (options.csrfToken) {
     headers.set("X-CSRF-Token", options.csrfToken);
   }
+  const body: BodyInit | undefined = formData
+    ? options.body as FormData
+    : options.body === undefined
+      ? undefined
+      : JSON.stringify(options.body);
 
   let response: Response;
   try {
@@ -69,8 +75,7 @@ export async function apiRequest<T>(
       method: options.method ?? "GET",
       credentials: "include",
       headers,
-      body:
-        options.body === undefined ? undefined : JSON.stringify(options.body),
+      body,
       signal: options.signal,
     });
   } catch {
