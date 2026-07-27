@@ -63,18 +63,19 @@ class LibraryService:
         )
 
     def sync_profile(self, profile_id: str, now: datetime) -> JobSnapshot:
-        profile = self._library.get_profile(profile_id)
+        profile, job = self._jobs.enqueue_active_profile_sync(
+            profile_id=profile_id,
+            status_text="Queued profile synchronization.",
+            now=now,
+        )
         if profile is None:
             raise ProfileNotFoundError(profile_id)
         if profile.status != "active":
             raise ProfileNotActiveError(profile_id)
         if not profile.tracked:
             raise ProfileSyncStoppedError(profile_id)
-        return self._jobs.enqueue_profile_sync(
-            profile_id=profile.id,
-            status_text="Queued profile synchronization.",
-            now=now,
-        )
+        assert job is not None
+        return job
 
     def set_profile_sync_enabled(
         self, profile_id: str, enabled: bool, now: datetime

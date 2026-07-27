@@ -633,6 +633,61 @@ class JobRepository:
             session.commit()
             return snapshot
 
+    def enqueue_active_profile_sync(
+        self,
+        *,
+        profile_id: str,
+        status_text: str,
+        now: datetime,
+    ) -> tuple[ProfileSnapshot | None, JobSnapshot | None]:
+        """Atomically validate a profile's sync state and coalesce its sync job."""
+        current_time = _as_utc(now)
+        payload = {"profile_id": profile_id}
+        payload_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        with self._session_factory() as session:
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            profile = session.get(Profile, profile_id)
+            if profile is None:
+                session.commit()
+                return None, None
+            profile_snapshot = _profile_snapshot(profile)
+            if profile.status != "active" or not profile.tracked:
+                session.commit()
+                return profile_snapshot, None
+            existing = session.scalar(
+                select(Job)
+                .where(
+                    Job.type == "profile_sync",
+                    Job.state.in_(("pending", "running")),
+                    Job.payload_text == payload_text,
+                )
+                .order_by(Job.created_at, Job.id)
+                .limit(1)
+            )
+            if existing is not None:
+                snapshot = _job_snapshot(existing)
+                session.commit()
+                return profile_snapshot, snapshot
+            model = Job(
+                id=str(uuid4()),
+                type="profile_sync",
+                state="pending",
+                payload_text=payload_text,
+                progress_current=0,
+                progress_total=None,
+                status_text=status_text,
+                error=None,
+                created_at=current_time,
+                started_at=None,
+                completed_at=None,
+                updated_at=current_time,
+            )
+            session.add(model)
+            session.flush()
+            snapshot = _job_snapshot(model)
+            session.commit()
+            return profile_snapshot, snapshot
+
     def list(self, limit: int = 100) -> tuple[JobSnapshot, ...]:
         with self._session_factory() as session:
             jobs = session.scalars(
