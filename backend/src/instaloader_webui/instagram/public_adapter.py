@@ -93,9 +93,26 @@ class PublicInstaloaderAdapter:
         original_url: str | None = None,
     ) -> MediaSnapshot:
         """Download one public media item and persist its finalized local assets."""
+        kind = self._normalize_kind(expected_kind)
+        existing = self._library.find_media_by_shortcode(shortcode)
+        if existing is not None and self._has_local_assets(existing):
+            if kind == "reel" and existing.kind != "reel":
+                updated = self._library.set_media_kind(
+                    shortcode=shortcode,
+                    kind="reel",
+                    now=datetime.now(UTC),
+                )
+                if updated is not None:
+                    existing = updated
+            self._report(
+                len(existing.assets),
+                len(existing.assets),
+                "Media is already saved; skipped duplicate download.",
+            )
+            return existing
+
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
-        kind = self._normalize_kind(expected_kind)
         try:
             loader, session_configured = self._new_loader(staging_directory)
             self._report(0, None, "Loading public Instagram media.")
@@ -124,7 +141,7 @@ class PublicInstaloaderAdapter:
         if stored_profile is None:
             raise PublicInstagramAdapterError("The requested profile no longer exists.")
         if not stored_profile.tracked or stored_profile.status != "active":
-            self._report(0, 0, "Profile synchronization is no longer active.")
+            self._report(0, 0, "Profile synchronization is stopped.")
             return 0
 
         staging_directory = self._staging_directory(job_id)
@@ -181,9 +198,21 @@ class PublicInstaloaderAdapter:
             ("reel", profile.get_reels),
         ):
             if not self._profile_is_syncable(profile_id):
+                self._report(
+                    inspected,
+                    inspected,
+                    "Profile synchronization stopped before the next media item.",
+                )
                 return inspected
             iterator = iter(iterator_factory())
-            while self._profile_is_syncable(profile_id):
+            while True:
+                if not self._profile_is_syncable(profile_id):
+                    self._report(
+                        inspected,
+                        inspected,
+                        "Profile synchronization stopped before the next media item.",
+                    )
+                    return inspected
                 try:
                     post = next(iterator)
                 except StopIteration:

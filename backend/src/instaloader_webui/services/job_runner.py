@@ -57,9 +57,15 @@ class JobRunner:
                 now=datetime.now(UTC),
             )
         else:
+            completed = self._jobs.get(job.id)
+            status_text = (
+                completed.status_text
+                if completed is not None and completed.status_text
+                else "Worker job completed."
+            )
             self._jobs.succeed(
                 job_id=job.id,
-                status_text="Worker job completed.",
+                status_text=status_text,
                 now=datetime.now(UTC),
             )
 
