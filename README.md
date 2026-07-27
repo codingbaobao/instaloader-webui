@@ -74,11 +74,26 @@ the POC database.
    profile and queues its first sync.
 3. Open **Activity** to follow queued and running work. It reports the current
    progress message and reaches **succeeded** or **failed** when the worker has
-   finished.
+   finished. Activity refreshes automatically every ten seconds; select
+   **Refresh** to poll immediately.
 4. Open **Profiles** to browse a tracked account's saved posts and reels, or
    open an item to view its downloaded assets, caption, and original link.
 5. In **Settings**, set the profile sync interval in minutes or queue an
    immediate sync of all active profiles. The default is 360 minutes.
+
+### Managing profile sync
+
+- **Stop Sync** excludes a profile from scheduled syncs, **Sync All**, and
+  **Sync Now**. If its sync is already running, the worker completes the
+  current post or reel before it stops and does not start another item.
+- **Resume Sync** makes the profile eligible for future scheduled syncs again,
+  but does not queue work immediately. Use **Sync Now** after resuming when an
+  immediate sync is wanted.
+- A profile first discovered through a single-media URL starts with sync
+  stopped by default.
+- Re-adding a complete post or reel shortcode skips its download. If any saved
+  asset is missing, the worker repairs the item by downloading the missing
+  files instead.
 
 ### Import an Instagram browser session
 
@@ -147,6 +162,18 @@ browser session; do not share Cookie contents. After deployment:
    produces saved media.
 6. If shown, report any challenge, rate-limit, or expired-session message
    exactly as displayed, without including Cookie contents.
+7. Open **Activity** and confirm persisted jobs replace Loading activity.
+8. Confirm automatic refresh occurs after ten seconds and **Refresh** updates
+   immediately.
+9. Start a profile sync, choose **Stop Sync** during one media download, and
+   confirm the current media finishes but no next item starts.
+10. Confirm **Sync Now** and **Sync All** ignore the stopped profile.
+11. Resume the profile, then explicitly choose **Sync Now** and confirm work
+    queues.
+12. Submit a new single-media URL and confirm its newly created owner profile
+    shows sync stopped.
+13. Submit the same URL again and confirm Activity reports a successful
+    duplicate skip without rewriting its saved files.
 
 ## Security notes
 
