@@ -5,10 +5,12 @@ single-administrator FastAPI and React application plus a persistent worker that
 downloads public Instagram media through the unmodified local Instaloader
 source checkout.
 
-This POC is public-only: private accounts, private media, Stories, and content
-that requires an Instagram login are not supported. A later milestone may add
-an explicitly configured Instagram session; this deployment does not accept or
-store Instagram credentials.
+This POC downloads public Instagram content only. Instagram can nevertheless
+require an authenticated session to access public profiles or media. An
+administrator can import one browser session through the WebUI; it is encrypted
+at rest and used by new worker jobs without a container restart. This milestone
+does not support Instagram password entry, two-factor authentication, private
+profiles or media, Stories, or Tagged content.
 
 ## Docker Compose deployment
 
@@ -63,7 +65,7 @@ Both services are non-root, read-only outside `/data`, drop Linux capabilities,
 and use a small writable `/tmp`. Do not run multiple worker replicas against
 the POC database.
 
-## Using the public library
+## Using the public library and Instagram session
 
 1. Sign in with the bootstrap administrator and complete the initial password
    confirmation.
@@ -78,8 +80,34 @@ the POC database.
 5. In **Settings**, set the profile sync interval in minutes or queue an
    immediate sync of all active profiles. The default is 360 minutes.
 
-Instagram can rate-limit, restrict, remove, or make public content unavailable;
-those conditions appear as failed Activity jobs and can be retried after the
+### Import an Instagram browser session
+
+Import a session only through **Settings**. Do not paste Cookie values into a
+terminal, configuration file, support request, or chat.
+
+1. In Chrome or Edge, install [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc). It is open source at [kairi003/Get-cookies.txt-LOCALLY](https://github.com/kairi003/Get-cookies.txt-LOCALLY); Edge can install this Chrome Web Store extension.
+2. Sign in to [instagram.com](https://www.instagram.com/) in that browser and
+   keep an Instagram tab active.
+3. Use the extension to export only the current Instagram domain in **Netscape**
+   format, producing a `cookies.txt`/`.txt` file.
+4. In **Settings**, choose the exported `.txt` file and select **Validate and
+   import**. The server validates it before storing it; a successful import
+   displays `Connected as @<username>`.
+5. Delete the exported local file after a successful import. It is equivalent
+   to an account credential.
+
+The WebUI stores one encrypted session at
+`/data/secrets/instagram_session.enc`. Each new worker job reads the current
+stored session, so a successful import or replacement applies to subsequent
+jobs without restarting containers. Importing another valid file replaces the
+existing session only after validation. **Remove session** deletes the stored
+session; future jobs then use anonymous access and may be denied by Instagram.
+
+If Instagram logout, session expiry, a challenge/checkpoint, or rejection is
+reported, resolve the issue in the browser, re-export a fresh Netscape Cookie
+file, and replace the imported session in **Settings**. Instagram can also
+rate-limit, restrict, remove, or make public content unavailable; those
+conditions appear as failed Activity jobs and can be retried after the
 underlying content is available again.
 
 ## Persistent storage and backup
@@ -95,9 +123,28 @@ both services:
 └── tmp/jobs/                # worker staging files
 ```
 
-Stopping or recreating containers does not remove this directory. Back it up
-while the services are stopped, and restore the whole directory together so the
-database, downloaded media, and application secret remain consistent.
+The encrypted imported session, when configured, is stored at
+`/data/secrets/instagram_session.enc`. Stopping or recreating containers does
+not remove this directory. Back it up while the services are stopped, and
+restore the whole directory together so the database, downloaded media, and
+application secret remain consistent. In particular,
+`secrets/instagram_session.enc` and `secrets/app_secret_key` must be backed up
+and restored together: the session is encrypted from the application secret and
+cannot be recovered with a different one.
+
+## Administrator manual acceptance
+
+Live Instagram access must be accepted by an administrator with their own valid
+browser session; do not share Cookie contents. After deployment:
+
+1. Open **Settings** and import the extension-produced Instagram `cookies.txt`.
+2. Confirm that Settings displays `Connected as @<username>`, then delete the
+   exported local file.
+3. Choose **Sync all profiles now**.
+4. Verify that `https://www.instagram.com/oioo712/` advances through
+   **Activity** and produces saved media.
+5. If shown, report any challenge, rate-limit, or expired-session message
+   exactly as displayed, without including Cookie contents.
 
 ## Security notes
 
