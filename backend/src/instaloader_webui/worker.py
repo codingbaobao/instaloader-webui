@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import time
 
 from instaloader_webui.config import Settings
+from instaloader_webui.auth.app_secret import load_or_create_app_secret
 from instaloader_webui.db.engine import build_engine, build_session_factory
 from instaloader_webui.db.library_repositories import (
     JobRepository,
@@ -11,6 +12,7 @@ from instaloader_webui.db.library_repositories import (
     SettingsRepository,
 )
 from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.services.job_runner import JobRunner, enqueue_due_profile_syncs
 
 
@@ -27,12 +29,15 @@ def main() -> None:
     library = LibraryRepository(session_factory)
     jobs = JobRepository(session_factory)
     scheduling = SettingsRepository(session_factory)
+    app_secret = load_or_create_app_secret(settings.data_root)
+    instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
     runner = JobRunner(
         data_root=settings.data_root,
         media_root=settings.media_root,
         jobs_root=settings.jobs_root,
         library=library,
         jobs=jobs,
+        instagram_sessions=instagram_sessions,
     )
     jobs.recover_interrupted(datetime.now(UTC))
 

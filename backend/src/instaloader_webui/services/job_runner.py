@@ -14,6 +14,7 @@ from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
 )
+from instaloader_webui.instagram.session_store import InstagramSessionStore
 
 _MAXIMUM_ERROR_LENGTH = 240
 
@@ -29,12 +30,14 @@ class JobRunner:
         jobs_root: Path,
         library: LibraryRepository,
         jobs: JobRepository,
+        instagram_sessions: InstagramSessionStore,
     ) -> None:
         self._data_root = data_root
         self._media_root = media_root.resolve()
         self._jobs_root = jobs_root
         self._library = library
         self._jobs = jobs
+        self._instagram_sessions = instagram_sessions
 
     def run(self, job: JobSnapshot) -> None:
         """Dispatch a claimed job and persist success or a concise failure."""
@@ -89,6 +92,7 @@ class JobRunner:
             media_root=self._media_root,
             jobs_root=self._jobs_root,
             library=self._library,
+            instagram_sessions=self._instagram_sessions,
             progress=lambda current, total, status_text: self._progress(
                 job, current, total, status_text
             ),

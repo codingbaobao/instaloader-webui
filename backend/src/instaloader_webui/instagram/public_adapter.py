@@ -16,6 +16,12 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
     ProfileSnapshot,
 )
+from instaloader_webui.instagram.cookie_file import cookie_dict
+from instaloader_webui.instagram.errors import classify_instaloader_error
+from instaloader_webui.instagram.session_store import (
+    InstagramSessionStore,
+    InstagramSessionStoreError,
+)
 
 MediaKind = Literal["post", "reel"]
 ProgressCallback = Callable[[int, int | None, str], None]
@@ -52,22 +58,30 @@ class PublicInstaloaderAdapter:
         jobs_root: Path,
         library: LibraryRepository,
         progress: ProgressCallback,
+        instagram_sessions: InstagramSessionStore,
     ) -> None:
         self._data_root = data_root.resolve()
         self._media_root = self._require_data_subdirectory(media_root)
         self._jobs_root = self._require_data_subdirectory(jobs_root)
         self._library = library
         self._progress = progress
+        self._instagram_sessions = instagram_sessions
 
     def fetch_profile(self, username: str) -> PublicProfile:
         """Load normalized metadata for one publicly accessible profile."""
-        loader = self._new_loader(self._metadata_staging_directory())
+        loader, session_configured = self._new_loader(
+            self._metadata_staging_directory()
+        )
         try:
             profile = Profile.from_username(loader.context, username)
             return self._normalize_profile(profile)
         except InstaloaderException as error:
             raise PublicInstagramAdapterError(
-                "This Instagram profile is unavailable or private."
+                classify_instaloader_error(
+                    error,
+                    session_configured=session_configured,
+                    target="profile",
+                )
             ) from error
 
     def download_shortcode(
@@ -81,9 +95,9 @@ class PublicInstaloaderAdapter:
         """Download one public media item and persist its finalized local assets."""
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
-        loader = self._new_loader(staging_directory)
         kind = self._normalize_kind(expected_kind)
         try:
+            loader, session_configured = self._new_loader(staging_directory)
             self._report(0, None, "Loading public Instagram media.")
             post = Post.from_shortcode(loader.context, shortcode)
             return self._download_post(
@@ -95,7 +109,11 @@ class PublicInstaloaderAdapter:
             )
         except InstaloaderException as error:
             raise PublicInstagramAdapterError(
-                "This Instagram media item is unavailable."
+                classify_instaloader_error(
+                    error,
+                    session_configured=session_configured,
+                    target="media",
+                )
             ) from error
         finally:
             self._remove_directory(staging_directory)
@@ -112,7 +130,7 @@ class PublicInstaloaderAdapter:
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader = self._new_loader(staging_directory)
+            loader, session_configured = self._new_loader(staging_directory)
             self._report(0, None, "Refreshing public Instagram profile.")
             profile = Profile.from_username(loader.context, stored_profile.username)
             profile_data = self._normalize_profile(profile)
@@ -134,7 +152,11 @@ class PublicInstaloaderAdapter:
         except InstaloaderException as error:
             self._record_sync_result(profile_id, succeeded=False)
             raise PublicInstagramAdapterError(
-                "This Instagram profile is unavailable or private."
+                classify_instaloader_error(
+                    error,
+                    session_configured=session_configured,
+                    target="profile",
+                )
             ) from error
         except Exception:
             self._record_sync_result(profile_id, succeeded=False)
@@ -279,7 +301,8 @@ class PublicInstaloaderAdapter:
     def _normalize_profile(self, profile: Profile) -> PublicProfile:
         if profile.is_private:
             raise PublicInstagramAdapterError(
-                "This Instagram profile is unavailable or private."
+                "Private Instagram profiles are not supported by this POC, even when "
+                "the imported account can view them."
             )
         return PublicProfile(
             instagram_user_id=profile.userid,
@@ -412,8 +435,8 @@ class PublicInstaloaderAdapter:
                 now=datetime.now(UTC),
             )
 
-    def _new_loader(self, staging_directory: Path) -> Instaloader:
-        return Instaloader(
+    def _new_loader(self, staging_directory: Path) -> tuple[Instaloader, bool]:
+        loader = Instaloader(
             dirname_pattern=str(staging_directory),
             filename_pattern="{shortcode}",
             download_pictures=True,
@@ -425,6 +448,15 @@ class PublicInstaloaderAdapter:
             post_metadata_txt_pattern="",
             quiet=True,
         )
+        try:
+            snapshot = self._instagram_sessions.load()
+        except InstagramSessionStoreError:
+            raise PublicInstagramAdapterError(
+                "Instagram session storage is unreadable. An administrator must re-import the Cookie file."
+            ) from None
+        if snapshot is not None:
+            loader.load_session(snapshot.username, cookie_dict(snapshot.cookies))
+        return loader, snapshot is not None
 
     def _metadata_staging_directory(self) -> Path:
         return self._contained_path(self._jobs_root, "profile-metadata")
