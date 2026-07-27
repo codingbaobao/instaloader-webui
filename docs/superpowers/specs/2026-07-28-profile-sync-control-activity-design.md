@@ -127,12 +127,12 @@ The Profiles list displays `Sync active` or `Sync stopped` instead of
 
 ## Activity Repair
 
-Observed runtime evidence shows `/api/jobs` returning `200` every two seconds
+Observed runtime evidence shows `/api/jobs` returning `200` repeatedly
 while the Activity page remains at its initial loading presentation. The
 backend job list and stored job records are available, so the repair is scoped
 to frontend polling state.
 
-Activity will use one fixed two-second polling controller while the page is
+Activity will use one fixed ten-second polling controller while the page is
 mounted. It will no longer switch the polling interval based on the returned job
 array, which currently tears down the controller and clears its data during
 state transitions.
@@ -141,6 +141,11 @@ The first request owns the full-page `Loading activity...` state. Later polling
 requests keep rendering the last successful job list while refreshing. Leaving
 the Activity route aborts the request and removes the timer through the existing
 polling cleanup.
+
+The page keeps a visible `Refresh` button that requests an immediate poll
+without waiting for the next ten-second interval. It does not start a duplicate
+request while another poll is in flight, and the next background interval is
+scheduled after the immediate request settles.
 
 ## Error and Job Presentation
 
@@ -161,7 +166,8 @@ configuration/build checks, and Git diff checks.
 
 Manual acceptance will cover:
 
-1. Activity replaces its initial loading state with persisted jobs.
+1. Activity replaces its initial loading state with persisted jobs, refreshes
+   every ten seconds, and supports an immediate Refresh action.
 2. Stop Sync prevents the next profile media item while allowing the current
    media item to finish safely.
 3. Stopped profiles are ignored by scheduled sync, Sync All, and Sync Now.
