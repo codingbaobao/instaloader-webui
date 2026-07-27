@@ -48,7 +48,15 @@ export function ProfilesPage() {
                 <span className="profile-card-name">{profile.full_name || "Public Instagram profile"}</span>
                 <span className="profile-card-meta">{profile.media_count} saved · Last attempt {formatDate(profile.last_sync_attempted_at)}</span>
               </span>
-              <span className={`status-badge status-badge-${profile.status}`}>{profile.tracked ? profile.status : "untracked"}</span>
+              <span
+                className={
+                  profile.tracked
+                    ? "status-badge status-badge-sync-active"
+                    : "status-badge status-badge-sync-stopped"
+                }
+              >
+                {profile.tracked ? "Sync active" : "Sync stopped"}
+              </span>
             </Link>
           ))}
         </div>

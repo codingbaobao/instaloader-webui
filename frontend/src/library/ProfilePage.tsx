@@ -3,7 +3,13 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
-import { deleteProfile, getProfile, listMedia, syncProfile } from "./api";
+import {
+  deleteProfile,
+  getProfile,
+  listMedia,
+  setProfileSyncEnabled,
+  syncProfile,
+} from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate, MediaGrid } from "./MediaGrid";
 import type { JobSummary } from "./types";
@@ -19,6 +25,8 @@ export function ProfilePage({ session }: ProfilePageProps) {
   const [actionJob, setActionJob] = useState<JobSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [syncSetting, setSyncSetting] = useState(false);
+  const [stopSyncOpen, setStopSyncOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const loadProfile = useCallback(async (signal: AbortSignal) => {
@@ -45,6 +53,27 @@ export function ProfilePage({ session }: ProfilePageProps) {
       setActionError(cause instanceof ApiError ? cause.message : "The profile could not be synchronized.");
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function updateSyncSetting(enabled: boolean) {
+    if (!profileId) {
+      return;
+    }
+    setSyncSetting(true);
+    setActionError(null);
+    try {
+      await setProfileSyncEnabled(profileId, enabled, session.csrf_token);
+      setStopSyncOpen(false);
+      await reload();
+    } catch (cause) {
+      setActionError(
+        cause instanceof ApiError
+          ? cause.message
+          : "The profile synchronization setting could not be changed.",
+      );
+    } finally {
+      setSyncSetting(false);
     }
   }
 
@@ -86,6 +115,15 @@ export function ProfilePage({ session }: ProfilePageProps) {
           <div className="profile-title-row">
             <h1 id="profile-title">@{profile.username}</h1>
             <span className={`status-badge status-badge-${profile.status}`}>{profile.status}</span>
+            <span
+              className={
+                profile.tracked
+                  ? "status-badge status-badge-sync-active"
+                  : "status-badge status-badge-sync-stopped"
+              }
+            >
+              {profile.tracked ? "Sync active" : "Sync stopped"}
+            </span>
           </div>
           {profile.full_name ? <p className="profile-full-name">{profile.full_name}</p> : null}
           {profile.biography ? <p className="profile-biography">{profile.biography}</p> : <p className="profile-biography muted-copy">No public biography saved yet.</p>}
@@ -94,9 +132,18 @@ export function ProfilePage({ session }: ProfilePageProps) {
             <span>Last attempt {formatDate(profile.last_sync_attempted_at)}</span>
           </div>
           <div className="profile-actions">
-            <button className="secondary-button" type="button" disabled={syncing} onClick={() => void requestSync()}>
+            <button className="secondary-button" type="button" disabled={!profile.tracked || syncing || syncSetting} onClick={() => void requestSync()}>
               {syncing ? "Queueing…" : "Sync now"}
             </button>
+            {profile.tracked ? (
+              <button className="secondary-button" type="button" disabled={syncSetting} onClick={() => setStopSyncOpen(true)}>
+                Stop sync
+              </button>
+            ) : (
+              <button className="secondary-button" type="button" disabled={syncSetting} onClick={() => void updateSyncSetting(true)}>
+                Resume sync
+              </button>
+            )}
             <button className="danger-button danger-button-outline" type="button" onClick={() => setDeleteOpen(true)}>
               Delete profile
             </button>
@@ -123,6 +170,14 @@ export function ProfilePage({ session }: ProfilePageProps) {
           emptyTitle={`No ${tab === "post" ? "posts" : "reels"} yet`}
         />
       </div>
+      <ConfirmDialog
+        confirmLabel="Stop sync"
+        description={`Stop future downloads for @${profile.username}. If a post or reel is currently downloading, it will finish safely before synchronization stops.`}
+        open={stopSyncOpen}
+        title="Stop profile synchronization?"
+        onClose={() => setStopSyncOpen(false)}
+        onConfirm={() => updateSyncSetting(false)}
+      />
       <ConfirmDialog
         confirmLabel="Delete profile"
         description={`This queues deletion of @${profile.username} and all downloaded media from this library. This cannot be undone.`}

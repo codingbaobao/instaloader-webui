@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import { listJobs } from "./api";
 import { formatDate } from "./MediaGrid";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
-
-function isActive(job: JobSummary): boolean {
-  return job.state === "pending" || job.state === "running";
-}
 
 function jobTitle(job: JobSummary): string {
   return job.type.replaceAll("_", " ");
@@ -22,16 +18,11 @@ function progress(job: JobSummary): number {
 
 export function ActivityPage() {
   const loadJobs = useCallback((signal: AbortSignal) => listJobs(signal), []);
-  const [pollingActive, setPollingActive] = useState(false);
   const { data: jobs, error, loading, reload } = usePolling(
     loadJobs,
-    pollingActive ? 2_000 : 0,
+    10_000,
     true,
   );
-
-  useEffect(() => {
-    setPollingActive(jobsContainActive(jobs));
-  }, [jobs]);
 
   return (
     <section className="library-page" aria-labelledby="activity-title">
@@ -39,7 +30,9 @@ export function ActivityPage() {
         <div>
           <p className="eyebrow">Library activity</p>
           <h1 id="activity-title">Downloads and syncs</h1>
-          <p className="page-intro">Active jobs refresh automatically every two seconds.</p>
+          <p className="page-intro">
+            Activity refreshes every ten seconds, or immediately when you choose Refresh.
+          </p>
         </div>
         <button className="secondary-button compact-button" type="button" disabled={loading} onClick={() => void reload()}>Refresh</button>
       </header>
@@ -82,8 +75,4 @@ export function ActivityPage() {
       ) : null}
     </section>
   );
-}
-
-function jobsContainActive(jobs: readonly JobSummary[] | null): boolean {
-  return jobs?.some(isActive) ?? false;
 }

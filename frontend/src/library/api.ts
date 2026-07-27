@@ -58,6 +58,21 @@ export function syncProfile(profileId: string, csrfToken: string): Promise<JobSu
   });
 }
 
+export function setProfileSyncEnabled(
+  profileId: string,
+  enabled: boolean,
+  csrfToken: string,
+): Promise<ProfileDetail> {
+  return apiRequest<ProfileDetail>(
+    `/api/profiles/${pathSegment(profileId)}/sync`,
+    {
+      method: "PATCH",
+      body: { enabled },
+      csrfToken,
+    },
+  );
+}
+
 export function deleteProfile(
   profileId: string,
   csrfToken: string,
