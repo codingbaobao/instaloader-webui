@@ -2,6 +2,7 @@ import { type FormEvent, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../app/api";
+import { BrandLockup } from "../brand/Brand";
 import { requestSession } from "./sessionData";
 import { useSession } from "./useSession";
 
@@ -59,9 +60,7 @@ export function LoginPage() {
   return (
     <main className="auth-layout">
       <section className="auth-card" aria-labelledby="login-title">
-        <div className="brand-mark" aria-hidden="true">
-          iw
-        </div>
+        <BrandLockup className="auth-brand" />
         <p className="eyebrow">Personal media archive</p>
         <h1 id="login-title">Sign in</h1>
         <p className="auth-intro">

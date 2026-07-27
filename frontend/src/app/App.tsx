@@ -21,6 +21,7 @@ import { MediaViewerPage } from "../library/MediaViewerPage";
 import { ProfilePage } from "../library/ProfilePage";
 import { ProfilesPage } from "../library/ProfilesPage";
 import { SettingsPage } from "../library/SettingsPage";
+import { BrandLockup } from "../brand/Brand";
 
 type AppProps = Readonly<{
   initialSession?: SessionData | null;
@@ -60,7 +61,9 @@ function AuthenticatedShell() {
   return (
     <div className="app-frame">
       <aside className="desktop-sidebar">
-        <NavLink className="wordmark" to="/" aria-label="Instaloader WebUI home">Instaloader</NavLink>
+        <NavLink className="wordmark" to="/" aria-label="Instaloader WebUI home">
+          <BrandLockup />
+        </NavLink>
         <nav aria-label="Desktop" className="desktop-navigation"><NavigationItems /></nav>
         <div className="account-actions" aria-label="Desktop account controls">
           <span>@{session.username}</span>
@@ -69,7 +72,9 @@ function AuthenticatedShell() {
       </aside>
       <main className="content-area">
         <header className="mobile-header">
-          <NavLink className="wordmark" to="/">Instaloader</NavLink>
+          <NavLink className="wordmark" to="/" aria-label="Instaloader WebUI home">
+            <BrandLockup />
+          </NavLink>
           <span className="mobile-account-actions" aria-label="Mobile account controls">
             <span className="avatar" aria-label={`Signed in as ${session.username}`}>{session.username.slice(0, 1).toUpperCase()}</span>
             <LogoutButton className="mobile-logout-button" />
