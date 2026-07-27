@@ -14,6 +14,8 @@ from instaloader_webui.db.library_repositories import (
     LibraryRepository,
     SettingsRepository,
 )
+from instaloader_webui.instagram.session_service import InstagramSessionService
+from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.services.auth_service import (
     AuthenticatedSession,
     AuthService,
@@ -61,6 +63,14 @@ def get_library_service(request: Request) -> LibraryService:
 
 def get_app_secret(request: Request) -> AppSecret:
     return request.app.state.app_secret
+
+
+def get_instagram_session_store(request: Request) -> InstagramSessionStore:
+    return request.app.state.instagram_session_store
+
+
+def get_instagram_session_service(request: Request) -> InstagramSessionService:
+    return request.app.state.instagram_session_service
 
 
 def require_session_status(

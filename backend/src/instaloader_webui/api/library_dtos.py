@@ -13,6 +13,7 @@ from instaloader_webui.db.library_repositories import (
     MediaSnapshot,
     ProfileSnapshot,
 )
+from instaloader_webui.instagram.session_store import InstagramSessionStatus
 
 
 class AssetResponse(BaseModel):
@@ -91,6 +92,15 @@ class SettingsResponse(BaseModel):
     updated_at: datetime
 
 
+class InstagramSessionStatusResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    configured: bool
+    username: str | None
+    imported_at: datetime | None
+    last_validated_at: datetime | None
+
+
 def serialize_asset(asset: AssetSnapshot) -> AssetResponse:
     return AssetResponse(
         id=asset.id,
@@ -166,6 +176,17 @@ def serialize_settings(settings: AppSettingsSnapshot) -> SettingsResponse:
         next_sync_at=settings.next_sync_at,
         created_at=settings.created_at,
         updated_at=settings.updated_at,
+    )
+
+
+def serialize_instagram_session_status(
+    status: InstagramSessionStatus,
+) -> InstagramSessionStatusResponse:
+    return InstagramSessionStatusResponse(
+        configured=status.configured,
+        username=status.username,
+        imported_at=status.imported_at,
+        last_validated_at=status.last_validated_at,
     )
 
 

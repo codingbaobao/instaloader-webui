@@ -5,7 +5,10 @@ from starlette.responses import JSONResponse
 from starlette.types import Message, Receive, Scope, Send
 
 MAXIMUM_REQUEST_BODY_BYTES = 16 * 1024
+MAXIMUM_INSTAGRAM_SESSION_IMPORT_BYTES = 272 * 1024
 MAXIMUM_REQUEST_BODY_FRAMES = 128
+
+INSTAGRAM_SESSION_IMPORT_PATH = "/api/settings/instagram-session"
 
 SECURITY_HEADERS = (
     (
@@ -75,11 +78,12 @@ class RequestBodyLimitMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        if self._declared_too_large(scope):
+        maximum_bytes = self._maximum_bytes_for(scope)
+        if self._declared_too_large(scope, maximum_bytes):
             await _request_too_large_response()(scope, receive, send)
             return
 
-        buffered = await self._read_bounded(receive)
+        buffered = await self._read_bounded(receive, maximum_bytes)
         if buffered is None:
             await _request_too_large_response()(scope, receive, send)
             return
@@ -95,17 +99,31 @@ class RequestBodyLimitMiddleware:
 
         await self._app(scope, replay_receive, send)
 
-    def _declared_too_large(self, scope: Scope) -> bool:
+    def _maximum_bytes_for(self, scope: Scope) -> int:
+        if (
+            scope.get("method") == "POST"
+            and scope.get("path") == INSTAGRAM_SESSION_IMPORT_PATH
+        ):
+            return MAXIMUM_INSTAGRAM_SESSION_IMPORT_BYTES
+        return self._maximum_bytes
+
+    def _declared_too_large(
+        self, scope: Scope, maximum_bytes: int | None = None
+    ) -> bool:
+        limit = maximum_bytes if maximum_bytes is not None else self._maximum_bytes_for(scope)
         for name, value in scope.get("headers", []):
             if name.lower() != b"content-length":
                 continue
             try:
-                return int(value) > self._maximum_bytes
+                return int(value) > limit
             except ValueError:
                 return False
         return False
 
-    async def _read_bounded(self, receive: Receive) -> tuple[Message, ...] | None:
+    async def _read_bounded(
+        self, receive: Receive, maximum_bytes: int | None = None
+    ) -> tuple[Message, ...] | None:
+        limit = maximum_bytes if maximum_bytes is not None else self._maximum_bytes
         body = bytearray()
         frame_count = 0
         while True:
@@ -125,7 +143,7 @@ class RequestBodyLimitMiddleware:
             if frame_count > MAXIMUM_REQUEST_BODY_FRAMES:
                 return None
             body.extend(message.get("body", b""))
-            if len(body) > self._maximum_bytes:
+            if len(body) > limit:
                 return None
             if not message.get("more_body", False):
                 return (

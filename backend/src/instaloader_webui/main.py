@@ -21,6 +21,9 @@ from instaloader_webui.api.routes.health import router as health_router
 from instaloader_webui.api.routes.jobs import router as jobs_router
 from instaloader_webui.api.routes.media import router as media_router
 from instaloader_webui.api.routes.profiles import router as profiles_router
+from instaloader_webui.api.routes.instagram_session import (
+    router as instagram_session_router,
+)
 from instaloader_webui.api.routes.settings import router as settings_router
 from instaloader_webui.auth.app_secret import load_or_create_app_secret
 from instaloader_webui.auth.passwords import PasswordService
@@ -38,6 +41,8 @@ from instaloader_webui.db.repositories import (
     LoginFailureRepository,
     WebSessionRepository,
 )
+from instaloader_webui.instagram.session_service import InstagramSessionService
+from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import AuthService
 from instaloader_webui.services.library_service import LibraryService
@@ -74,6 +79,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             jobs=app.state.job_repository,
         )
         app.state.app_secret = app_secret
+        app.state.instagram_session_store = InstagramSessionStore(
+            resolved.data_root,
+            app_secret,
+        )
+        app.state.instagram_session_service = InstagramSessionService(
+            app.state.instagram_session_store,
+        )
         try:
             yield
         finally:
@@ -130,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(media_router)
     app.include_router(jobs_router)
     app.include_router(settings_router)
+    app.include_router(instagram_session_router)
     install_spa(app, resolved.static_root, resolved.data_root)
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(SafeExceptionMiddleware)
