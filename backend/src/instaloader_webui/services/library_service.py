@@ -18,6 +18,14 @@ class ProfileNotFoundError(LookupError):
     pass
 
 
+class ProfileNotActiveError(RuntimeError):
+    pass
+
+
+class ProfileSyncStoppedError(RuntimeError):
+    pass
+
+
 class MediaNotFoundError(LookupError):
     pass
 
@@ -58,11 +66,35 @@ class LibraryService:
         profile = self._library.get_profile(profile_id)
         if profile is None:
             raise ProfileNotFoundError(profile_id)
+        if profile.status != "active":
+            raise ProfileNotActiveError(profile_id)
+        if not profile.tracked:
+            raise ProfileSyncStoppedError(profile_id)
         return self._jobs.enqueue_profile_sync(
             profile_id=profile.id,
             status_text="Queued profile synchronization.",
             now=now,
         )
+
+    def set_profile_sync_enabled(
+        self, profile_id: str, enabled: bool, now: datetime
+    ) -> ProfileSnapshot:
+        profile = self._library.get_profile(profile_id)
+        if profile is None:
+            raise ProfileNotFoundError(profile_id)
+        if profile.status != "active":
+            raise ProfileNotActiveError(profile_id)
+        try:
+            updated_profile = self._library.set_profile_sync_enabled(
+                profile_id=profile_id,
+                enabled=enabled,
+                now=now,
+            )
+        except ValueError as error:
+            raise ProfileNotActiveError(profile_id) from error
+        if updated_profile is None:
+            raise ProfileNotFoundError(profile_id)
+        return updated_profile
 
     def sync_all(self, now: datetime) -> tuple[JobSnapshot, ...]:
         return tuple(

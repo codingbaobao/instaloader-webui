@@ -283,6 +283,20 @@ class LibraryRepository:
             session.flush()
             return _profile_snapshot(model)
 
+    def set_profile_sync_enabled(
+        self, *, profile_id: str, enabled: bool, now: datetime
+    ) -> ProfileSnapshot | None:
+        with self._session_factory.begin() as session:
+            model = session.get(Profile, profile_id)
+            if model is None:
+                return None
+            if model.status != "active":
+                raise ValueError("Profile is not active.")
+            model.tracked = enabled
+            model.updated_at = _as_utc(now)
+            session.flush()
+            return _profile_snapshot(model)
+
     def update_profile_metadata(
         self,
         *,

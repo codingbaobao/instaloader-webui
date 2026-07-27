@@ -22,7 +22,9 @@ from instaloader_webui.db.library_repositories import LibraryRepository, Profile
 from instaloader_webui.services.instagram_inputs import InvalidInstagramInput
 from instaloader_webui.services.library_service import (
     LibraryService,
+    ProfileNotActiveError,
     ProfileNotFoundError,
+    ProfileSyncStoppedError,
 )
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -32,6 +34,12 @@ class InstagramInputRequest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     input: str = Field(min_length=1, max_length=2_048)
+
+
+class ProfileSyncStateRequest(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool
 
 
 class ProfileCreateResponse(BaseModel):
@@ -95,7 +103,44 @@ def sync_profile(
         job = service.sync_profile(profile_id, datetime.now(UTC))
     except ProfileNotFoundError as error:
         raise _profile_not_found(profile_id) from error
+    except ProfileNotActiveError as error:
+        raise ApiError(
+            409,
+            "profile_not_active",
+            "This profile cannot change synchronization state while deletion is pending.",
+        ) from error
+    except ProfileSyncStoppedError as error:
+        raise ApiError(
+            409,
+            "profile_sync_stopped",
+            "Resume synchronization before requesting a profile sync.",
+        ) from error
     return ApiEnvelope(success=True, data=serialize_job(job))
+
+
+@router.patch("/{profile_id}/sync", response_model=ApiEnvelope[ProfileResponse])
+def set_profile_sync_enabled(
+    profile_id: str,
+    payload: ProfileSyncStateRequest,
+    service: Annotated[LibraryService, Depends(get_library_service)],
+    library: Annotated[LibraryRepository, Depends(get_library_repository)],
+    _: Annotated[object, Depends(require_csrf)],
+) -> ApiEnvelope[ProfileResponse]:
+    try:
+        profile = service.set_profile_sync_enabled(
+            profile_id,
+            payload.enabled,
+            datetime.now(UTC),
+        )
+    except ProfileNotFoundError as error:
+        raise _profile_not_found(profile_id) from error
+    except ProfileNotActiveError as error:
+        raise ApiError(
+            409,
+            "profile_not_active",
+            "This profile cannot change synchronization state while deletion is pending.",
+        ) from error
+    return ApiEnvelope(success=True, data=_serialize_profile(library, profile))
 
 
 @router.delete("/{profile_id}", response_model=ApiEnvelope[JobResponse])
