@@ -5,6 +5,21 @@ import { listProfiles } from "./api";
 import { formatDate } from "./MediaGrid";
 import { usePolling } from "./usePolling";
 
+function deletionStatusBadge(status: string): Readonly<{
+  className: string;
+  label: string;
+}> {
+  return status === "deletion_failed"
+    ? {
+        className: "status-badge status-badge-failed",
+        label: "Deletion failed",
+      }
+    : {
+        className: "status-badge status-badge-pending",
+        label: "Deletion pending",
+      };
+}
+
 export function ProfilesPage() {
   const loadProfiles = useCallback(
     (signal: AbortSignal) => listProfiles(signal),
@@ -48,14 +63,21 @@ export function ProfilesPage() {
                 <span className="profile-card-name">{profile.full_name || "Public Instagram profile"}</span>
                 <span className="profile-card-meta">{profile.media_count} saved · Last attempt {formatDate(profile.last_sync_attempted_at)}</span>
               </span>
-              <span
-                className={
-                  profile.tracked
-                    ? "status-badge status-badge-sync-active"
-                    : "status-badge status-badge-sync-stopped"
-                }
-              >
-                {profile.tracked ? "Sync active" : "Sync stopped"}
+              <span className="profile-card-badges">
+                <span
+                  className={
+                    profile.tracked
+                      ? "status-badge status-badge-sync-active"
+                      : "status-badge status-badge-sync-stopped"
+                  }
+                >
+                  {profile.tracked ? "Sync active" : "Sync stopped"}
+                </span>
+                {profile.status !== "active" ? (
+                  <span className={deletionStatusBadge(profile.status).className}>
+                    {deletionStatusBadge(profile.status).label}
+                  </span>
+                ) : null}
               </span>
             </Link>
           ))}
