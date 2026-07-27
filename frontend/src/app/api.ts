@@ -5,7 +5,7 @@ export type ApiEnvelope<T> = {
   meta: Record<string, unknown>;
 };
 
-type ApiRequestOptions = {
+export type ApiRequestOptions = {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   csrfToken?: string;

@@ -14,10 +14,17 @@ import {
   type SessionData,
   useSession,
 } from "../auth/useSession";
+import { ActivityPage } from "../library/ActivityPage";
+import { AddPage } from "../library/AddPage";
+import { HomePage } from "../library/HomePage";
+import { MediaViewerPage } from "../library/MediaViewerPage";
+import { ProfilePage } from "../library/ProfilePage";
+import { ProfilesPage } from "../library/ProfilesPage";
+import { SettingsPage } from "../library/SettingsPage";
 
-type AppProps = {
+type AppProps = Readonly<{
   initialSession?: SessionData | null;
-};
+}>;
 
 const destinations = [
   { path: "/", label: "Home", symbol: "⌂", end: true },
@@ -37,28 +44,10 @@ function NavigationItems() {
       key={destination.path}
       to={destination.path}
     >
-      <span className="nav-symbol" aria-hidden="true">
-        {destination.symbol}
-      </span>
+      <span className="nav-symbol" aria-hidden="true">{destination.symbol}</span>
       <span>{destination.label}</span>
     </NavLink>
   ));
-}
-
-function PlaceholderPage({
-  title,
-  detail,
-}: {
-  title: string;
-  detail: string;
-}) {
-  return (
-    <section className="page-panel" aria-labelledby={`${title}-title`}>
-      <p className="eyebrow">Library</p>
-      <h1 id={`${title}-title`}>{title}</h1>
-      <p>{detail}</p>
-    </section>
-  );
 }
 
 function AuthenticatedShell() {
@@ -71,12 +60,8 @@ function AuthenticatedShell() {
   return (
     <div className="app-frame">
       <aside className="desktop-sidebar">
-        <a className="wordmark" href="/" aria-label="Instaloader WebUI home">
-          Instaloader
-        </a>
-        <nav aria-label="Desktop" className="desktop-navigation">
-          <NavigationItems />
-        </nav>
+        <NavLink className="wordmark" to="/" aria-label="Instaloader WebUI home">Instaloader</NavLink>
+        <nav aria-label="Desktop" className="desktop-navigation"><NavigationItems /></nav>
         <div className="account-actions" aria-label="Desktop account controls">
           <span>@{session.username}</span>
           <LogoutButton />
@@ -84,72 +69,24 @@ function AuthenticatedShell() {
       </aside>
       <main className="content-area">
         <header className="mobile-header">
-          <span className="wordmark">Instaloader</span>
-          <span
-            className="mobile-account-actions"
-            aria-label="Mobile account controls"
-          >
-            <span
-              className="avatar"
-              aria-label={`Signed in as ${session.username}`}
-            >
-              {session.username.slice(0, 1).toUpperCase()}
-            </span>
+          <NavLink className="wordmark" to="/">Instaloader</NavLink>
+          <span className="mobile-account-actions" aria-label="Mobile account controls">
+            <span className="avatar" aria-label={`Signed in as ${session.username}`}>{session.username.slice(0, 1).toUpperCase()}</span>
             <LogoutButton className="mobile-logout-button" />
           </span>
         </header>
         <Routes>
-          <Route
-            path="/"
-            element={
-              <PlaceholderPage
-                title={`Welcome back, ${session.username}`}
-                detail="Recently downloaded media will appear here."
-              />
-            }
-          />
-          <Route
-            path="/profiles"
-            element={
-              <PlaceholderPage
-                title="Profiles"
-                detail="Downloaded profiles will be available in a later phase."
-              />
-            }
-          />
-          <Route
-            path="/add"
-            element={
-              <PlaceholderPage
-                title="Add"
-                detail="Profile and post capture controls are coming next."
-              />
-            }
-          />
-          <Route
-            path="/activity"
-            element={
-              <PlaceholderPage
-                title="Activity"
-                detail="Persistent download jobs will be shown here."
-              />
-            }
-          />
-          <Route
-            path="/settings"
-            element={
-              <PlaceholderPage
-                title="Settings"
-                detail="Synchronization and account controls will live here."
-              />
-            }
-          />
+          <Route path="/" element={<HomePage session={session} />} />
+          <Route path="/profiles" element={<ProfilesPage />} />
+          <Route path="/profiles/:profileId" element={<ProfilePage session={session} />} />
+          <Route path="/media/:mediaId" element={<MediaViewerPage session={session} />} />
+          <Route path="/add" element={<AddPage session={session} />} />
+          <Route path="/activity" element={<ActivityPage />} />
+          <Route path="/settings" element={<SettingsPage session={session} />} />
           <Route path="*" element={<Navigate replace to="/" />} />
         </Routes>
       </main>
-      <nav aria-label="Mobile" className="mobile-navigation">
-        <NavigationItems />
-      </nav>
+      <nav aria-label="Mobile" className="mobile-navigation"><NavigationItems /></nav>
     </div>
   );
 }
@@ -158,11 +95,7 @@ export function AppRoutes() {
   const { session, status, errorMessage, refreshSession } = useSession();
 
   if (status === "loading") {
-    return (
-      <main className="loading-screen" aria-live="polite">
-        Loading…
-      </main>
-    );
+    return <main className="loading-screen" aria-live="polite">Loading…</main>;
   }
   if (status === "error") {
     return (
@@ -170,16 +103,8 @@ export function AppRoutes() {
         <section className="auth-card" aria-labelledby="session-error-title">
           <p className="eyebrow">Session unavailable</p>
           <h1 id="session-error-title">Unable to restore your session</h1>
-          <p className="auth-intro" role="alert">
-            {errorMessage ?? "The session could not be restored."}
-          </p>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => void refreshSession()}
-          >
-            Retry
-          </button>
+          <p className="auth-intro" role="alert">{errorMessage ?? "The session could not be restored."}</p>
+          <button className="primary-button" type="button" onClick={() => void refreshSession()}>Retry</button>
         </section>
       </main>
     );
@@ -205,12 +130,8 @@ export function AppRoutes() {
 
 export function App({ initialSession }: AppProps) {
   return (
-    <BrowserRouter
-      future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
-    >
-      <SessionProvider initialSession={initialSession}>
-        <AppRoutes />
-      </SessionProvider>
+    <BrowserRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <SessionProvider initialSession={initialSession}><AppRoutes /></SessionProvider>
     </BrowserRouter>
   );
 }
