@@ -8,8 +8,8 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import secrets
 import stat
-import tempfile
 from typing import Any
 import unicodedata
 
@@ -109,24 +109,36 @@ class InstagramSessionStore:
         except (TypeError, ValueError):
             raise InstagramSessionStoreError("Instagram session data is invalid.") from None
 
-        self._ensure_secret_directory()
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=".instagram_session.",
-            dir=self._secret_directory,
-        )
-        temporary_path = Path(temporary_name)
+        directory_descriptor = self._open_secret_directory(create=True)
+        if directory_descriptor is None:
+            raise InstagramSessionStoreError("Instagram session storage could not be prepared.")
+        temporary_name: str | None = None
         try:
-            _set_private_file_mode(descriptor)
-            with os.fdopen(descriptor, "wb") as target:
+            descriptor, temporary_name = _create_temporary_file(directory_descriptor)
+            try:
+                target = os.fdopen(descriptor, "wb")
+            except OSError:
+                os.close(descriptor)
+                raise
+            with target:
+                _set_private_file_mode(target.fileno())
                 target.write(encrypted)
                 target.flush()
                 os.fsync(target.fileno())
-            os.replace(temporary_path, self._session_path)
-            _fsync_directory(self._secret_directory)
+            os.replace(
+                temporary_name,
+                INSTAGRAM_SESSION_FILENAME,
+                src_dir_fd=directory_descriptor,
+                dst_dir_fd=directory_descriptor,
+            )
+            temporary_name = None
+            _fsync_directory(directory_descriptor)
         except OSError:
             raise InstagramSessionStoreError("Instagram session storage could not be updated.") from None
         finally:
-            temporary_path.unlink(missing_ok=True)
+            if temporary_name is not None:
+                _unlink_temporary_file(directory_descriptor, temporary_name)
+            os.close(directory_descriptor)
 
         return InstagramSessionStatus(
             configured=True,
@@ -137,44 +149,96 @@ class InstagramSessionStore:
 
     def delete(self) -> None:
         """Remove the encrypted session if present, without resolving symlinks."""
+        directory_descriptor = self._open_secret_directory(create=False)
+        if directory_descriptor is None:
+            return
         try:
-            self._session_path.unlink(missing_ok=True)
+            os.unlink(INSTAGRAM_SESSION_FILENAME, dir_fd=directory_descriptor)
+        except FileNotFoundError:
+            return
         except OSError:
             raise InstagramSessionStoreError("Instagram session storage could not be removed.") from None
+        finally:
+            os.close(directory_descriptor)
 
-    def _ensure_secret_directory(self) -> None:
+    def _open_secret_directory(self, *, create: bool) -> int | None:
         try:
-            self._secret_directory.mkdir(
-                mode=SECRET_DIRECTORY_MODE,
-                parents=True,
-                exist_ok=True,
-            )
-            if os.name == "posix":
-                self._secret_directory.chmod(SECRET_DIRECTORY_MODE)
-        except OSError:
-            raise InstagramSessionStoreError("Instagram session storage could not be prepared.") from None
-
-    def _read_encrypted(self) -> bytes | None:
-        try:
-            metadata = self._session_path.lstat()
+            metadata = self._secret_directory.lstat()
         except FileNotFoundError:
-            return None
+            if not create:
+                return None
+            try:
+                os.mkdir(self._secret_directory, mode=SECRET_DIRECTORY_MODE)
+            except FileExistsError:
+                pass
+            except OSError:
+                raise InstagramSessionStoreError(
+                    "Instagram session storage could not be prepared."
+                ) from None
+            try:
+                metadata = self._secret_directory.lstat()
+            except OSError:
+                raise InstagramSessionStoreError(
+                    "Instagram session storage could not be prepared."
+                ) from None
         except OSError:
             raise InstagramSessionStoreError("Instagram session storage is unavailable.") from None
-        if stat.S_ISLNK(metadata.st_mode):
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise InstagramSessionStoreError("Instagram session storage is invalid.")
 
         try:
             descriptor = os.open(
-                self._session_path,
-                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                self._secret_directory,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
             )
-        except FileNotFoundError:
-            return None
         except OSError:
             raise InstagramSessionStoreError("Instagram session storage is unavailable.") from None
-
         try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise InstagramSessionStoreError("Instagram session storage is invalid.")
+            if os.name == "posix":
+                os.fchmod(descriptor, SECRET_DIRECTORY_MODE)
+            return descriptor
+        except InstagramSessionStoreError:
+            os.close(descriptor)
+            raise
+        except OSError:
+            os.close(descriptor)
+            raise InstagramSessionStoreError("Instagram session storage is unavailable.") from None
+
+    def _read_encrypted(self) -> bytes | None:
+        directory_descriptor = self._open_secret_directory(create=False)
+        if directory_descriptor is None:
+            return None
+        try:
+            try:
+                metadata = os.lstat(
+                    INSTAGRAM_SESSION_FILENAME,
+                    dir_fd=directory_descriptor,
+                )
+            except FileNotFoundError:
+                return None
+            except OSError:
+                raise InstagramSessionStoreError(
+                    "Instagram session storage is unavailable."
+                ) from None
+            if stat.S_ISLNK(metadata.st_mode):
+                raise InstagramSessionStoreError("Instagram session storage is invalid.")
+            try:
+                descriptor = os.open(
+                    INSTAGRAM_SESSION_FILENAME,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_descriptor,
+                )
+            except FileNotFoundError:
+                return None
+            except OSError:
+                raise InstagramSessionStoreError(
+                    "Instagram session storage is unavailable."
+                ) from None
             with os.fdopen(descriptor, "rb") as source:
                 metadata = os.fstat(source.fileno())
                 if not stat.S_ISREG(metadata.st_mode):
@@ -182,10 +246,8 @@ class InstagramSessionStore:
                         "Instagram session storage is invalid."
                     )
                 return source.read()
-        except InstagramSessionStoreError:
-            raise
-        except OSError:
-            raise InstagramSessionStoreError("Instagram session storage is unavailable.") from None
+        finally:
+            os.close(directory_descriptor)
 
 
 def _set_private_file_mode(descriptor: int) -> None:
@@ -196,14 +258,42 @@ def _set_private_file_mode(descriptor: int) -> None:
             raise
 
 
-def _fsync_directory(directory: Path) -> None:
+def _create_temporary_file(directory_descriptor: int) -> tuple[int, str]:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    for _ in range(32):
+        name = f".instagram_session.{secrets.token_hex(16)}"
+        try:
+            return (
+                os.open(name, flags, SECRET_FILE_MODE, dir_fd=directory_descriptor),
+                name,
+            )
+        except FileExistsError:
+            continue
+        except OSError:
+            raise InstagramSessionStoreError(
+                "Instagram session storage could not be updated."
+            ) from None
+    raise InstagramSessionStoreError("Instagram session storage could not be updated.")
+
+
+def _unlink_temporary_file(directory_descriptor: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=directory_descriptor)
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise InstagramSessionStoreError("Instagram session storage could not be updated.") from None
+
+
+def _fsync_directory(directory_descriptor: int) -> None:
     if os.name != "posix":
         return
-    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    os.fsync(directory_descriptor)
 
 
 def _load_json_document(plaintext: bytes) -> dict[str, Any]:

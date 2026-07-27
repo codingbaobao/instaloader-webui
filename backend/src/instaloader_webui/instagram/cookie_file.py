@@ -35,10 +35,13 @@ def parse_netscape_cookie_file(payload: bytes) -> tuple[InstagramCookie, ...]:
         text = payload.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise CookieFileError("Cookie file must be UTF-8 text.") from None
+    if _contains_forbidden_control_characters(text):
+        raise CookieFileError("Cookie file contains control characters.")
 
     cookies: list[InstagramCookie] = []
     values_by_name: dict[str, str] = {}
-    for line in text.splitlines():
+    for raw_line in text.split("\n"):
+        line = raw_line.removesuffix("\r")
         if not line.strip() or (
             line.startswith("#") and not line.startswith("#HttpOnly_")
         ):
@@ -97,6 +100,13 @@ def cookie_dict(cookies: tuple[InstagramCookie, ...]) -> dict[str, str]:
 
 def _contains_control_characters(value: str) -> bool:
     return any(unicodedata.category(character) == "Cc" for character in value)
+
+
+def _contains_forbidden_control_characters(value: str) -> bool:
+    return any(
+        unicodedata.category(character) == "Cc" and character not in {"\t", "\r", "\n"}
+        for character in value
+    )
 
 
 def _is_instagram_domain(domain: str) -> bool:
