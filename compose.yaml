@@ -1,29 +1,38 @@
 name: instaloader-webui
 
+x-webui-image: &webui-image instaloader-webui:local
+
+x-webui-environment: &webui-environment
+  IW_DATA_ROOT: /data
+  IW_ADMIN_USERNAME: "${IW_ADMIN_USERNAME:?IW_ADMIN_USERNAME must be set}"
+  IW_ADMIN_PASSWORD: "${IW_ADMIN_PASSWORD:-}"
+  IW_SESSION_COOKIE_SECURE: "${IW_SESSION_COOKIE_SECURE:-false}"
+  FORWARDED_ALLOW_IPS: "${IW_FORWARDED_ALLOW_IPS:-127.0.0.1}"
+
+x-webui-runtime: &webui-runtime
+  volumes:
+    - "${IW_DATA_ROOT_HOST:-./data}:/data"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 128
+  init: true
+  restart: unless-stopped
+
 services:
   web:
+    image: *webui-image
     build:
-      context: .
-      dockerfile: docker/Dockerfile
+      context: ..
+      dockerfile: instaloader-webui/docker/Dockerfile
     ports:
       - "${IW_HTTP_BIND:-0.0.0.0}:${IW_HTTP_PORT:-8080}:8080"
-    environment:
-      IW_DATA_ROOT: /data
-      IW_ADMIN_USERNAME: "${IW_ADMIN_USERNAME:?IW_ADMIN_USERNAME must be set}"
-      IW_ADMIN_PASSWORD: "${IW_ADMIN_PASSWORD:-}"
-      IW_SESSION_COOKIE_SECURE: "${IW_SESSION_COOKIE_SECURE:-false}"
-      FORWARDED_ALLOW_IPS: "${IW_FORWARDED_ALLOW_IPS:-127.0.0.1}"
-    volumes:
-      - "${IW_DATA_ROOT_HOST:-./data}:/data"
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 128
-    init: true
+    environment: *webui-environment
+    <<: *webui-runtime
     healthcheck:
       test:
         - CMD
@@ -36,4 +45,12 @@ services:
       timeout: 5s
       retries: 6
       start_period: 10s
-    restart: unless-stopped
+
+  worker:
+    image: *webui-image
+    command: ["/bin/sh", "-c", "umask 077 && exec instaloader-webui-worker"]
+    environment: *webui-environment
+    <<: *webui-runtime
+    depends_on:
+      web:
+        condition: service_healthy
