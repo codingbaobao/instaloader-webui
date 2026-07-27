@@ -34,6 +34,13 @@ class PublicProfile:
     profile_pic_url: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class AssetFinalization:
+    assets: tuple[NormalizedAsset, ...]
+    final_directory: Path
+    backup_directory: Path | None
+
+
 class PublicInstaloaderAdapter:
     """Keep upstream Instaloader calls and filesystem staging inside one boundary."""
 
@@ -212,32 +219,47 @@ class PublicInstaloaderAdapter:
             raise PublicInstagramAdapterError(
                 "Instagram did not produce a local media file."
             )
-        assets = self._move_assets(
+        finalization = self._finalize_assets(
             staged_assets=staged_assets,
             instagram_user_id=owner.instagram_user_id,
             shortcode=post.shortcode,
             job_id=job_id,
         )
-        self._report(len(assets), len(assets), "Saved public Instagram media.")
-        return self._library.upsert_media(
-            normalized=NormalizedMedia(
-                instagram_media_id=str(post.mediaid),
-                shortcode=post.shortcode,
-                kind=kind,
-                caption=post.caption or "",
-                accessibility_caption=post.accessibility_caption or "",
-                published_at=post.date_utc.replace(tzinfo=UTC),
-                original_url=original_url
-                or self._canonical_original_url(post.shortcode, kind),
-            ),
-            profile_id=owner.id,
-            assets=assets,
-            now=datetime.now(UTC),
+        try:
+            persisted = self._library.upsert_media(
+                normalized=NormalizedMedia(
+                    instagram_media_id=str(post.mediaid),
+                    shortcode=post.shortcode,
+                    kind=kind,
+                    caption=post.caption or "",
+                    accessibility_caption=post.accessibility_caption or "",
+                    published_at=post.date_utc.replace(tzinfo=UTC),
+                    original_url=original_url
+                    or self._canonical_original_url(post.shortcode, kind),
+                ),
+                profile_id=owner.id,
+                assets=finalization.assets,
+                now=datetime.now(UTC),
+            )
+        except Exception:
+            self._rollback_asset_finalization(finalization)
+            raise
+        self._commit_asset_finalization(finalization)
+        self._report(
+            len(finalization.assets),
+            len(finalization.assets),
+            "Saved public Instagram media.",
         )
+        return persisted
 
     def _upsert_owner(self, profile: Profile) -> ProfileSnapshot:
         data = self._normalize_profile(profile)
-        stored = self._library.find_profile_by_username(data.username)
+        instagram_user_id = str(data.instagram_user_id)
+        stored = self._library.find_profile_by_instagram_user_id(
+            instagram_user_id
+        )
+        if stored is None:
+            stored = self._library.find_profile_by_username(data.username)
         if stored is None:
             stored = self._library.upsert_profile_stub(
                 username=data.username,
@@ -246,7 +268,7 @@ class PublicInstaloaderAdapter:
             )
         return self._library.update_profile_metadata(
             profile_id=stored.id,
-            instagram_user_id=str(data.instagram_user_id),
+            instagram_user_id=instagram_user_id,
             username=data.username,
             full_name=data.full_name,
             biography=data.biography,
@@ -279,14 +301,14 @@ class PublicInstaloaderAdapter:
             sorted(files, key=lambda path: self._asset_sort_key(path, shortcode))
         )
 
-    def _move_assets(
+    def _finalize_assets(
         self,
         *,
         staged_assets: Iterable[Path],
         instagram_user_id: str | None,
         shortcode: str,
         job_id: str,
-    ) -> tuple[NormalizedAsset, ...]:
+    ) -> AssetFinalization:
         if not instagram_user_id:
             raise PublicInstagramAdapterError(
                 "Instagram media owner metadata is incomplete."
@@ -295,30 +317,79 @@ class PublicInstaloaderAdapter:
         replacement_directory = self._replacement_directory(
             final_directory, shortcode, job_id
         )
+        backup_directory = self._backup_directory(
+            final_directory, shortcode, job_id
+        )
+        self._remove_path(backup_directory)
         self._recreate_directory(replacement_directory)
+        finalized_paths: list[Path] = []
+        preserved_directory: Path | None = None
+        new_final_installed = False
         try:
-            finalized_paths: list[Path] = []
             for staged_asset in staged_assets:
                 final_path = replacement_directory / staged_asset.name
                 shutil.move(str(staged_asset), str(final_path))
                 finalized_paths.append(final_path)
-            self._replace_directory(replacement_directory, final_directory)
+            if final_directory.exists():
+                final_directory.replace(backup_directory)
+                preserved_directory = backup_directory
+            replacement_directory.replace(final_directory)
+            new_final_installed = True
+            completed_paths = tuple(
+                final_directory / path.name for path in finalized_paths
+            )
+            assets = tuple(
+                NormalizedAsset(
+                    relative_path=path.relative_to(self._media_root).as_posix(),
+                    mime_type=(
+                        "image/jpeg"
+                        if path.suffix.casefold() == ".jpg"
+                        else "video/mp4"
+                    ),
+                    kind=(
+                        "image"
+                        if path.suffix.casefold() == ".jpg"
+                        else "video"
+                    ),
+                    position=position,
+                    file_size=path.stat().st_size,
+                )
+                for position, path in enumerate(completed_paths)
+            )
         except Exception:
             self._remove_directory(replacement_directory)
+            if new_final_installed or preserved_directory is not None:
+                self._rollback_asset_finalization(
+                    AssetFinalization(
+                        assets=(),
+                        final_directory=final_directory,
+                        backup_directory=preserved_directory,
+                    )
+                )
             raise
-        completed_paths = tuple(final_directory / path.name for path in finalized_paths)
-        return tuple(
-            NormalizedAsset(
-                relative_path=path.relative_to(self._media_root).as_posix(),
-                mime_type=(
-                    "image/jpeg" if path.suffix.casefold() == ".jpg" else "video/mp4"
-                ),
-                kind=("image" if path.suffix.casefold() == ".jpg" else "video"),
-                position=position,
-                file_size=path.stat().st_size,
-            )
-            for position, path in enumerate(completed_paths)
+        return AssetFinalization(
+            assets=assets,
+            final_directory=final_directory,
+            backup_directory=preserved_directory,
         )
+
+    @staticmethod
+    def _rollback_asset_finalization(finalization: AssetFinalization) -> None:
+        PublicInstaloaderAdapter._remove_path(finalization.final_directory)
+        if (
+            finalization.backup_directory is not None
+            and finalization.backup_directory.exists()
+        ):
+            finalization.backup_directory.replace(
+                finalization.final_directory
+            )
+
+    @staticmethod
+    def _commit_asset_finalization(finalization: AssetFinalization) -> None:
+        if finalization.backup_directory is not None:
+            PublicInstaloaderAdapter._remove_path(
+                finalization.backup_directory
+            )
 
     def _profile_is_syncable(self, profile_id: str) -> bool:
         profile = self._library.get_profile(profile_id)
@@ -377,6 +448,17 @@ class PublicInstaloaderAdapter:
             (
                 f".{self._safe_component(shortcode)}-"
                 f"{self._safe_component(job_id)}.partial"
+            ),
+        )
+
+    def _backup_directory(
+        self, final_directory: Path, shortcode: str, job_id: str
+    ) -> Path:
+        return self._contained_path(
+            final_directory.parent,
+            (
+                f".{self._safe_component(shortcode)}-"
+                f"{self._safe_component(job_id)}.backup"
             ),
         )
 
@@ -444,14 +526,13 @@ class PublicInstaloaderAdapter:
         shutil.rmtree(directory)
 
     @staticmethod
-    def _replace_directory(replacement: Path, final: Path) -> None:
-        final.parent.mkdir(parents=True, exist_ok=True)
-        if final.exists():
-            if final.is_dir():
-                shutil.rmtree(final)
-            else:
-                final.unlink()
-        replacement.replace(final)
+    def _remove_path(path: Path) -> None:
+        if not path.exists():
+            return
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
     def _report(self, current: int, total: int | None, status_text: str) -> None:
         self._progress(current, total, status_text)

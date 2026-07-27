@@ -242,6 +242,18 @@ class LibraryRepository:
             model = session.scalar(select(Profile).where(Profile.username == username))
             return _profile_snapshot(model) if model is not None else None
 
+    def find_profile_by_instagram_user_id(
+        self, instagram_user_id: str
+    ) -> ProfileSnapshot | None:
+        """Resolve a profile by Instagram's stable numeric identity."""
+        with self._session_factory() as session:
+            model = session.scalar(
+                select(Profile).where(
+                    Profile.instagram_user_id == instagram_user_id
+                )
+            )
+            return _profile_snapshot(model) if model is not None else None
+
     def upsert_profile_stub(
         self, *, username: str, tracked: bool, now: datetime
     ) -> ProfileSnapshot:
