@@ -3,12 +3,19 @@
 from datetime import datetime
 from pathlib import Path
 
-from instaloader import Instaloader
+from instaloader import Instaloader, RateController, TooManyRequestsException
 
 from instaloader_webui.instagram.cookie_file import cookie_dict
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 
 SessionRevision = tuple[str, datetime]
+
+
+class _WorkerRateController(RateController):
+    """Release the single worker immediately when Instagram rate limits it."""
+
+    def handle_429(self, query_type: str) -> None:
+        raise TooManyRequestsException("Instagram worker request was rate limited.")
 
 
 class WorkerInstaloaderRuntime:
@@ -98,4 +105,5 @@ class WorkerInstaloaderRuntime:
             save_metadata=False,
             post_metadata_txt_pattern="",
             quiet=True,
+            rate_controller=_WorkerRateController,
         )
