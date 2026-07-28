@@ -2,8 +2,8 @@
 
 Instaloader WebUI is a personal, public-Instagram library POC. It provides a
 single-administrator FastAPI and React application plus a persistent worker that
-downloads public Instagram media through the unmodified local Instaloader
-source checkout.
+downloads public Instagram media through an exactly pinned Instaloader package
+from PyPI.
 
 This POC downloads public Instagram content only. Instagram can nevertheless
 require an authenticated session to access public profiles or media. An
@@ -14,18 +14,9 @@ profiles or media, Stories, or Tagged content.
 
 ## Docker Compose deployment
 
-Requirements: Docker Engine and Docker Compose v2. The checkout layout matters:
-Compose builds from the parent repository so the image contains both the local
-upstream `instaloader/` package and this WebUI repository.
-
-```text
-instaloader/
-├── setup.py
-├── instaloader/
-└── instaloader-webui/
-    ├── compose.yaml
-    └── docker/Dockerfile
-```
+Requirements: Docker Engine and Docker Compose v2. Compose builds entirely from
+this WebUI repository. The backend declares and installs an exact Instaloader
+version from PyPI, so no sibling Instaloader source checkout is required.
 
 From `instaloader-webui/`:
 
@@ -197,7 +188,7 @@ docker compose logs worker
 docker compose down
 ```
 
-The image is rebuilt from the outer repository context with:
+The image is rebuilt from the WebUI repository context with:
 
 ```sh
 docker compose build
