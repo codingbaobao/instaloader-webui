@@ -25,6 +25,10 @@ export function mediaAssetUrl(mediaId: string, assetId: string): string {
   return `/api/media/${pathSegment(mediaId)}/assets/${pathSegment(assetId)}`;
 }
 
+export function profileAvatarUrl(profileId: string): string {
+  return `/api/profiles/${pathSegment(profileId)}/avatar`;
+}
+
 export function listProfiles(
   signal?: AbortSignal,
 ): Promise<readonly ProfileSummary[]> {

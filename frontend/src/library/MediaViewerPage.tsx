@@ -6,6 +6,7 @@ import type { SessionData } from "../auth/useSession";
 import { deleteMedia, getMedia, getProfile, mediaAssetUrl } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDateTime } from "./MediaGrid";
+import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 
 type MediaViewerPageProps = Readonly<{ session: SessionData }>;
@@ -87,7 +88,7 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
         </div>
         <article className="viewer-details">
           <div className="viewer-owner">
-            <span className="profile-avatar" aria-hidden="true">{owner.username.slice(0, 1).toUpperCase()}</span>
+            <ProfileAvatar profile={owner} />
             <Link to={`/profiles/${encodeURIComponent(owner.id)}`}>@{owner.username}</Link>
           </div>
           <h1 id="viewer-title">{media.kind === "reel" ? "Reel" : "Post"}</h1>

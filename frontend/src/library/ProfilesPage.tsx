@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { listProfiles } from "./api";
 import { formatDate } from "./MediaGrid";
+import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 
 function deletionStatusBadge(status: string): Readonly<{
@@ -57,7 +58,7 @@ export function ProfilesPage() {
         <div className="profiles-list">
           {profiles.map((profile) => (
             <Link className="profile-card" key={profile.id} to={`/profiles/${encodeURIComponent(profile.id)}`}>
-              <span className="profile-avatar" aria-hidden="true">{profile.username.slice(0, 1).toUpperCase()}</span>
+              <ProfileAvatar profile={profile} />
               <span className="profile-card-main">
                 <span className="profile-card-title">@{profile.username}</span>
                 <span className="profile-card-name">{profile.full_name || "Public Instagram profile"}</span>

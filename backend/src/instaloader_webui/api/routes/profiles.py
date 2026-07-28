@@ -2,12 +2,14 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from instaloader_webui.api.dependencies import (
     ApiError,
     get_library_repository,
     get_library_service,
+    get_settings,
     require_csrf,
     require_password_change_complete,
 )
@@ -18,6 +20,7 @@ from instaloader_webui.api.library_dtos import (
     serialize_job,
     serialize_profile,
 )
+from instaloader_webui.config import Settings
 from instaloader_webui.db.library_repositories import LibraryRepository, ProfileSnapshot
 from instaloader_webui.services.instagram_inputs import InvalidInstagramInput
 from instaloader_webui.services.library_service import (
@@ -25,6 +28,10 @@ from instaloader_webui.services.library_service import (
     ProfileNotActiveError,
     ProfileNotFoundError,
     ProfileSyncStoppedError,
+)
+from instaloader_webui.services.profile_avatars import (
+    PROFILE_AVATAR_MEDIA_TYPE,
+    profile_avatar_path,
 )
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
@@ -91,6 +98,30 @@ def get_profile(
     if profile is None:
         raise _profile_not_found(profile_id)
     return ApiEnvelope(success=True, data=_serialize_profile(library, profile))
+
+
+@router.get("/{profile_id}/avatar")
+def get_profile_avatar(
+    profile_id: str,
+    library: Annotated[LibraryRepository, Depends(get_library_repository)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    _: Annotated[object, Depends(require_password_change_complete)],
+) -> FileResponse:
+    if library.get_profile(profile_id) is None:
+        raise _profile_not_found(profile_id)
+
+    try:
+        path = profile_avatar_path(settings.media_root, profile_id)
+    except ValueError as error:
+        raise _profile_avatar_not_found(profile_id) from error
+    if not path.is_file():
+        raise _profile_avatar_not_found(profile_id)
+
+    return FileResponse(
+        path=path,
+        media_type=PROFILE_AVATAR_MEDIA_TYPE,
+        headers={"Cache-Control": "private, no-cache"},
+    )
 
 
 @router.post("/{profile_id}/sync", response_model=ApiEnvelope[JobResponse])
@@ -168,4 +199,12 @@ def _profile_not_found(profile_id: str) -> ApiError:
         status_code=404,
         code="profile_not_found",
         message=f"Profile {profile_id} was not found.",
+    )
+
+
+def _profile_avatar_not_found(profile_id: str) -> ApiError:
+    return ApiError(
+        status_code=404,
+        code="profile_avatar_not_found",
+        message=f"Profile avatar for {profile_id} was not found.",
     )

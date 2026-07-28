@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { SessionData } from "../auth/useSession";
 import { listMedia, listProfiles } from "./api";
 import { MediaGrid } from "./MediaGrid";
+import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 
 type HomePageProps = Readonly<{ session: SessionData }>;
@@ -40,9 +41,7 @@ export function HomePage({ session }: HomePageProps) {
           <div className="profile-shortcuts">
             {data.profiles.slice(0, 10).map((profile) => (
               <Link className="profile-shortcut" key={profile.id} to={`/profiles/${encodeURIComponent(profile.id)}`}>
-                <span className="profile-avatar profile-avatar-ring" aria-hidden="true">
-                  {profile.username.slice(0, 1).toUpperCase()}
-                </span>
+                <ProfileAvatar className="profile-avatar-ring" profile={profile} />
                 <span>@{profile.username}</span>
               </Link>
             ))}

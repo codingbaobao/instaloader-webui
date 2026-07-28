@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate, MediaGrid } from "./MediaGrid";
+import { ProfileAvatar } from "./ProfileAvatar";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
 
@@ -110,7 +111,7 @@ export function ProfilePage({ session }: ProfilePageProps) {
     <section className="library-page profile-page" aria-labelledby="profile-title">
       <Link className="back-link" to="/profiles">Back to profiles</Link>
       <header className="profile-header">
-        <span className="profile-avatar profile-avatar-large" aria-hidden="true">{profile.username.slice(0, 1).toUpperCase()}</span>
+        <ProfileAvatar className="profile-avatar-large" profile={profile} />
         <div className="profile-header-main">
           <div className="profile-title-row">
             <h1 id="profile-title">@{profile.username}</h1>

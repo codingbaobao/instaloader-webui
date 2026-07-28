@@ -15,6 +15,7 @@ from instaloader_webui.instagram.public_adapter import (
     PublicInstaloaderAdapter,
 )
 from instaloader_webui.instagram.session_store import InstagramSessionStore
+from instaloader_webui.services.profile_avatars import profile_avatar_path
 
 _MAXIMUM_ERROR_LENGTH = 240
 
@@ -122,8 +123,14 @@ class JobRunner:
             return
         media_items = self._library.list_all_media_for_profile(profile_id)
         assets = tuple(asset for media in media_items for asset in media.assets)
-        total = len(assets)
-        for current, asset in enumerate(assets, start=1):
+        avatar_path = profile_avatar_path(self._media_root, profile_id)
+        avatar_exists = avatar_path.is_file()
+        avatar_count = 1 if avatar_exists else 0
+        total = len(assets) + avatar_count
+        if avatar_exists:
+            avatar_path.unlink()
+            self._progress(job, 1, total, "Removed local profile avatar.")
+        for current, asset in enumerate(assets, start=avatar_count + 1):
             self._delete_asset(asset.relative_path)
             self._progress(job, current, total, "Removed local profile media file.")
         self._library.delete_profile_records(profile_id)

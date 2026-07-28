@@ -3,6 +3,7 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import os
 from pathlib import Path
 import shutil
 from typing import Literal
@@ -21,6 +22,10 @@ from instaloader_webui.instagram.errors import classify_instaloader_error
 from instaloader_webui.instagram.session_store import (
     InstagramSessionStore,
     InstagramSessionStoreError,
+)
+from instaloader_webui.services.profile_avatars import (
+    PROFILE_AVATAR_MEDIA_TYPE,
+    profile_avatar_path,
 )
 
 MediaKind = Literal["post", "reel"]
@@ -151,6 +156,12 @@ class PublicInstaloaderAdapter:
             self._report(0, None, "Refreshing public Instagram profile.")
             profile = Profile.from_username(loader.context, stored_profile.username)
             profile_data = self._normalize_profile(profile)
+            self._refresh_profile_avatar(
+                loader=loader,
+                profile=profile,
+                profile_id=profile_id,
+                staging_directory=staging_directory,
+            )
             self._library.update_profile_metadata(
                 profile_id=profile_id,
                 instagram_user_id=str(profile_data.instagram_user_id),
@@ -183,6 +194,49 @@ class PublicInstaloaderAdapter:
             return inspected
         finally:
             self._remove_directory(staging_directory)
+
+    def _refresh_profile_avatar(
+        self,
+        *,
+        loader: Instaloader,
+        profile: Profile,
+        profile_id: str,
+        staging_directory: Path,
+    ) -> None:
+        avatar_url = profile.profile_pic_url
+        if not avatar_url:
+            raise PublicInstagramAdapterError(
+                "Instagram profile avatar metadata is incomplete."
+            )
+
+        response = loader.context.get_raw(avatar_url)
+        try:
+            content_type = (
+                response.headers.get("Content-Type", "")
+                .partition(";")[0]
+                .strip()
+                .casefold()
+            )
+            if content_type != PROFILE_AVATAR_MEDIA_TYPE:
+                raise PublicInstagramAdapterError(
+                    "Instagram returned an invalid profile avatar image."
+                )
+
+            staged_path = self._contained_path(staging_directory, "avatar.jpg")
+            partial_path = self._contained_path(
+                staging_directory, ".avatar.jpg.partial"
+            )
+            with partial_path.open("xb") as avatar_file:
+                shutil.copyfileobj(response.raw, avatar_file)
+                avatar_file.flush()
+                os.fsync(avatar_file.fileno())
+            os.replace(partial_path, staged_path)
+
+            final_path = profile_avatar_path(self._media_root, profile_id)
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_path, final_path)
+        finally:
+            response.close()
 
     def _sync_iterators(
         self,
@@ -262,7 +316,11 @@ class PublicInstaloaderAdapter:
     ) -> MediaSnapshot:
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
-        owner = self._upsert_owner(post.owner_profile)
+        owner = self._upsert_owner(
+            loader=loader,
+            profile=post.owner_profile,
+            staging_directory=staging_directory,
+        )
         self._report(0, None, f"Downloading public Instagram media {post.shortcode}.")
         loader.download_post(post, target=owner.username)
         staged_assets = self._discover_assets(staging_directory, post.shortcode)
@@ -303,7 +361,13 @@ class PublicInstaloaderAdapter:
         )
         return persisted
 
-    def _upsert_owner(self, profile: Profile) -> ProfileSnapshot:
+    def _upsert_owner(
+        self,
+        *,
+        loader: Instaloader,
+        profile: Profile,
+        staging_directory: Path,
+    ) -> ProfileSnapshot:
         data = self._normalize_profile(profile)
         instagram_user_id = str(data.instagram_user_id)
         stored = self._library.find_profile_by_instagram_user_id(
@@ -317,7 +381,7 @@ class PublicInstaloaderAdapter:
                 tracked=False,
                 now=datetime.now(UTC),
             )
-        return self._library.update_profile_metadata(
+        owner = self._library.update_profile_metadata(
             profile_id=stored.id,
             instagram_user_id=instagram_user_id,
             username=data.username,
@@ -326,6 +390,21 @@ class PublicInstaloaderAdapter:
             profile_pic_url=data.profile_pic_url,
             now=datetime.now(UTC),
         )
+        if not profile_avatar_path(self._media_root, owner.id).is_file():
+            try:
+                self._refresh_profile_avatar(
+                    loader=loader,
+                    profile=profile,
+                    profile_id=owner.id,
+                    staging_directory=staging_directory,
+                )
+            except (InstaloaderException, PublicInstagramAdapterError):
+                self._report(
+                    0,
+                    None,
+                    "Profile avatar was unavailable; continuing media download.",
+                )
+        return owner
 
     def _normalize_profile(self, profile: Profile) -> PublicProfile:
         if profile.is_private:
