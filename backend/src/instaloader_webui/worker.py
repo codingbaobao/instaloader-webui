@@ -1,11 +1,14 @@
 """Entrypoint for the persistent single-process public-library worker."""
 
-from datetime import UTC, datetime
 import time
+from datetime import UTC, datetime
 
-from instaloader_webui.config import Settings
 from instaloader_webui.auth.app_secret import load_or_create_app_secret
+from instaloader_webui.config import Settings
 from instaloader_webui.db.engine import build_engine, build_session_factory
+from instaloader_webui.db.followee_import_repositories import (
+    FolloweeImportRepository,
+)
 from instaloader_webui.db.library_repositories import (
     JobRepository,
     LibraryRepository,
@@ -29,6 +32,7 @@ def main() -> None:
     session_factory = build_session_factory(engine)
     library = LibraryRepository(session_factory)
     jobs = JobRepository(session_factory)
+    followee_imports = FolloweeImportRepository(session_factory)
     scheduling = SettingsRepository(session_factory)
     app_secret = load_or_create_app_secret(settings.data_root)
     instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
@@ -39,6 +43,7 @@ def main() -> None:
         jobs_root=settings.jobs_root,
         library=library,
         jobs=jobs,
+        followee_imports=followee_imports,
         loader_runtime=loader_runtime,
     )
     jobs.recover_interrupted(datetime.now(UTC))

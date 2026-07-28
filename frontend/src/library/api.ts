@@ -1,5 +1,7 @@
 import { apiRequest } from "../app/api";
 import type {
+  FolloweeImportBatch,
+  FolloweeImportCommitResult,
   JobSummary,
   LibrarySettings,
   MediaDetail,
@@ -187,4 +189,38 @@ export function removeInstagramSession(
     method: "DELETE",
     csrfToken,
   });
+}
+
+export function startFolloweeImport(
+  csrfToken: string,
+): Promise<FolloweeImportBatch> {
+  return apiRequest<FolloweeImportBatch>("/api/followee-imports", {
+    method: "POST",
+    csrfToken,
+  });
+}
+
+export function getFolloweeImport(
+  batchId: string,
+  signal?: AbortSignal,
+): Promise<FolloweeImportBatch> {
+  return apiRequest<FolloweeImportBatch>(
+    `/api/followee-imports/${pathSegment(batchId)}`,
+    { signal },
+  );
+}
+
+export function commitFolloweeImport(
+  batchId: string,
+  candidateIds: readonly string[],
+  csrfToken: string,
+): Promise<FolloweeImportCommitResult> {
+  return apiRequest<FolloweeImportCommitResult>(
+    `/api/followee-imports/${pathSegment(batchId)}/commit`,
+    {
+      method: "POST",
+      body: { candidate_ids: candidateIds },
+      csrfToken,
+    },
+  );
 }

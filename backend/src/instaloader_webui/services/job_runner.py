@@ -1,14 +1,21 @@
 """Execute claimed public-library jobs in the single worker process."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable
 from urllib.parse import urlsplit
 
+from instaloader_webui.db.followee_import_repositories import (
+    FolloweeImportRepository,
+)
 from instaloader_webui.db.library_repositories import (
     JobRepository,
     JobSnapshot,
     LibraryRepository,
+)
+from instaloader_webui.instagram.followee_discovery import (
+    FolloweeDiscoveryAdapter,
+    FolloweeDiscoveryError,
 )
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
@@ -31,6 +38,7 @@ class JobRunner:
         jobs_root: Path,
         library: LibraryRepository,
         jobs: JobRepository,
+        followee_imports: FolloweeImportRepository,
         loader_runtime: WorkerInstaloaderRuntime,
     ) -> None:
         self._data_root = data_root
@@ -38,6 +46,7 @@ class JobRunner:
         self._jobs_root = jobs_root
         self._library = library
         self._jobs = jobs
+        self._followee_imports = followee_imports
         self._loader_runtime = loader_runtime
 
     def run(self, job: JobSnapshot) -> None:
@@ -46,15 +55,17 @@ class JobRunner:
             self._progress(job, 0, None, "Starting worker job.")
             self._dispatch(job)
         except Exception as error:
+            safe_error = shorten_job_error(error)
             try:
                 self._record_profile_sync_failure(job)
                 self._record_profile_deletion_failure(job)
+                self._record_followee_discovery_failure(job, safe_error)
             except Exception:
                 # The original operation failure remains the job's useful outcome.
                 pass
             self._jobs.fail(
                 job_id=job.id,
-                error=shorten_job_error(error),
+                error=safe_error,
                 now=datetime.now(UTC),
             )
         else:
@@ -91,7 +102,47 @@ class JobRunner:
         if job.type == "delete_profile":
             self._delete_profile(job, _required_payload_text(job, "profile_id"))
             return
+        if job.type == "followee_discovery":
+            self._discover_followees(
+                job,
+                _required_payload_text(job, "batch_id"),
+            )
+            return
         raise ValueError(f"Unsupported worker job type: {job.type}")
+
+    def _discover_followees(self, job: JobSnapshot, batch_id: str) -> None:
+        batch = self._followee_imports.get(batch_id)
+        if batch is None:
+            raise ValueError("Followee discovery batch does not exist.")
+        self._followee_imports.start_discovery(
+            batch_id=batch_id,
+            job_id=job.id,
+        )
+        adapter = FolloweeDiscoveryAdapter(
+            jobs_root=self._jobs_root,
+            loader_runtime=self._loader_runtime,
+            progress=lambda current, total, status_text: self._progress(
+                job,
+                current,
+                total,
+                status_text,
+            ),
+        )
+        discovered = adapter.discover(
+            source_username=batch.source_username,
+            session_imported_at=batch.session_imported_at,
+        )
+        self._followee_imports.complete_discovery(
+            batch_id=batch_id,
+            followees=discovered,
+            now=datetime.now(UTC),
+        )
+        self._progress(
+            job,
+            len(discovered),
+            len(discovered),
+            f"Found {len(discovered)} followed Instagram accounts.",
+        )
 
     def _adapter(self, job: JobSnapshot) -> PublicInstaloaderAdapter:
         return PublicInstaloaderAdapter(
@@ -181,6 +232,22 @@ class JobRunner:
             datetime.now(UTC),
         )
 
+    def _record_followee_discovery_failure(
+        self,
+        job: JobSnapshot,
+        safe_error: str,
+    ) -> None:
+        if job.type != "followee_discovery":
+            return
+        batch_id = job.payload.get("batch_id")
+        if not isinstance(batch_id, str) or not batch_id:
+            return
+        self._followee_imports.fail_discovery(
+            batch_id=batch_id,
+            error=safe_error,
+            now=datetime.now(UTC),
+        )
+
 
 def enqueue_due_profile_syncs(
     *,
@@ -209,7 +276,7 @@ def enqueue_due_profile_syncs(
 
 def shorten_job_error(error: Exception) -> str:
     """Avoid persisting long upstream URLs, paths, or traceback-like messages."""
-    if isinstance(error, PublicInstagramAdapterError):
+    if isinstance(error, (PublicInstagramAdapterError, FolloweeDiscoveryError)):
         message = str(error)
     elif isinstance(error, OSError):
         detail = error.strerror or error.__class__.__name__

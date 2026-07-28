@@ -9,6 +9,9 @@ from fastapi import Cookie, Depends, Header, Request
 from instaloader_webui.auth.app_secret import AppSecret
 from instaloader_webui.auth.session_tokens import derive_csrf_token
 from instaloader_webui.config import Settings
+from instaloader_webui.db.followee_import_repositories import (
+    FolloweeImportRepository,
+)
 from instaloader_webui.db.library_repositories import (
     JobRepository,
     LibraryRepository,
@@ -20,6 +23,7 @@ from instaloader_webui.services.auth_service import (
     AuthenticatedSession,
     AuthService,
 )
+from instaloader_webui.services.followee_import_service import FolloweeImportService
 from instaloader_webui.services.library_service import LibraryService
 
 
@@ -59,6 +63,14 @@ def get_settings_repository(request: Request) -> SettingsRepository:
 
 def get_library_service(request: Request) -> LibraryService:
     return request.app.state.library_service
+
+
+def get_followee_import_repository(request: Request) -> FolloweeImportRepository:
+    return request.app.state.followee_import_repository
+
+
+def get_followee_import_service(request: Request) -> FolloweeImportService:
+    return request.app.state.followee_import_service
 
 
 def get_app_secret(request: Request) -> AppSecret:

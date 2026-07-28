@@ -16,6 +16,7 @@ import {
 } from "../auth/useSession";
 import { ActivityPage } from "../library/ActivityPage";
 import { AddPage } from "../library/AddPage";
+import { FolloweeImportPage } from "../library/FolloweeImportPage";
 import { HomePage } from "../library/HomePage";
 import { MediaViewerPage } from "../library/MediaViewerPage";
 import { ProfilePage } from "../library/ProfilePage";
@@ -82,7 +83,11 @@ function AuthenticatedShell() {
         </header>
         <Routes>
           <Route path="/" element={<HomePage session={session} />} />
-          <Route path="/profiles" element={<ProfilesPage />} />
+          <Route path="/profiles" element={<ProfilesPage session={session} />} />
+          <Route
+            path="/profiles/import-followings/:batchId"
+            element={<FolloweeImportPage session={session} />}
+          />
           <Route path="/profiles/:profileId" element={<ProfilePage session={session} />} />
           <Route path="/media/:mediaId" element={<MediaViewerPage session={session} />} />
           <Route path="/add" element={<AddPage session={session} />} />

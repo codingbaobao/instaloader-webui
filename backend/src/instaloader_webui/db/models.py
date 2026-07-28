@@ -9,6 +9,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -181,7 +182,7 @@ class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (
         CheckConstraint(
-            "type IN ('profile_sync', 'single_media', 'delete_profile', 'delete_media')",
+            "type IN ('profile_sync', 'single_media', 'delete_profile', 'delete_media', 'followee_discovery')",
             name="ck_jobs_type",
         ),
         CheckConstraint(
@@ -203,6 +204,65 @@ class Job(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class FolloweeImportBatch(Base):
+    __tablename__ = "followee_import_batches"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'running', 'ready', 'imported', 'failed')",
+            name="ck_followee_import_batches_state",
+        ),
+        Index(
+            "ix_followee_import_batches_state_created_at",
+            "state",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_username: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT"), unique=True, nullable=False
+    )
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    importable_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    existing_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class FolloweeImportCandidate(Base):
+    __tablename__ = "followee_import_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "instagram_user_id",
+            name="uq_followee_import_candidates_batch_user",
+        ),
+        Index(
+            "ix_followee_import_candidates_batch_username",
+            "batch_id",
+            "username",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("followee_import_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    instagram_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    profile_pic_url: Mapped[str | None] = mapped_column(Text)
+    is_private: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
 
 class AppSetting(Base):

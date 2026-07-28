@@ -89,3 +89,35 @@ export type InstagramSessionStatus = Readonly<{
   imported_at: string | null;
   last_validated_at: string | null;
 }>;
+
+export type FolloweeImportCandidate = Readonly<{
+  id: string;
+  instagram_user_id: string;
+  username: string;
+  full_name: string;
+  profile_pic_url: string | null;
+  is_private: boolean;
+  already_exists: boolean;
+}>;
+
+export type FolloweeImportBatch = Readonly<{
+  id: string;
+  state: string;
+  source_username: string;
+  session_imported_at: string;
+  job: JobSummary;
+  total_count: number;
+  importable_count: number;
+  existing_count: number;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+  imported_at: string | null;
+  candidates: readonly FolloweeImportCandidate[];
+}>;
+
+export type FolloweeImportCommitResult = Readonly<{
+  imported_count: number;
+  existing_count: number;
+  jobs: readonly JobSummary[];
+}>;

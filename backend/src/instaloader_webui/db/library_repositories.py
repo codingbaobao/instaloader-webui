@@ -209,6 +209,11 @@ def _job_snapshot(model: Job) -> JobSnapshot:
     )
 
 
+def job_snapshot(model: Job) -> JobSnapshot:
+    """Expose an immutable job DTO to focused transactional repositories."""
+    return _job_snapshot(model)
+
+
 def _settings_snapshot(model: AppSetting) -> AppSettingsSnapshot:
     return AppSettingsSnapshot(
         id=model.id,

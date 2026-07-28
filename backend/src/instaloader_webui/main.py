@@ -17,25 +17,31 @@ from instaloader_webui.api.routes.auth import (
 from instaloader_webui.api.routes.auth import (
     router as auth_router,
 )
+from instaloader_webui.api.routes.followee_imports import (
+    router as followee_imports_router,
+)
 from instaloader_webui.api.routes.health import router as health_router
-from instaloader_webui.api.routes.jobs import router as jobs_router
-from instaloader_webui.api.routes.media import router as media_router
-from instaloader_webui.api.routes.profiles import router as profiles_router
 from instaloader_webui.api.routes.instagram_session import (
     router as instagram_session_router,
 )
+from instaloader_webui.api.routes.jobs import router as jobs_router
+from instaloader_webui.api.routes.media import router as media_router
+from instaloader_webui.api.routes.profiles import router as profiles_router
 from instaloader_webui.api.routes.settings import router as settings_router
 from instaloader_webui.auth.app_secret import load_or_create_app_secret
 from instaloader_webui.auth.passwords import PasswordService
 from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.config import Settings
 from instaloader_webui.db.engine import build_engine, build_session_factory
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.followee_import_repositories import (
+    FolloweeImportRepository,
+)
 from instaloader_webui.db.library_repositories import (
     JobRepository,
     LibraryRepository,
     SettingsRepository,
 )
+from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import (
     AdminRepository,
     LoginFailureRepository,
@@ -45,6 +51,7 @@ from instaloader_webui.instagram.session_service import InstagramSessionService
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import AuthService
+from instaloader_webui.services.followee_import_service import FolloweeImportService
 from instaloader_webui.services.library_service import LibraryService
 from instaloader_webui.web.spa import install_spa
 
@@ -85,6 +92,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.instagram_session_service = InstagramSessionService(
             app.state.instagram_session_store,
+        )
+        app.state.followee_import_repository = FolloweeImportRepository(
+            session_factory
+        )
+        app.state.followee_import_service = FolloweeImportService(
+            repository=app.state.followee_import_repository,
+            sessions=app.state.instagram_session_store,
         )
         try:
             yield
@@ -143,6 +157,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(settings_router)
     app.include_router(instagram_session_router)
+    app.include_router(followee_imports_router)
     install_spa(app, resolved.static_root, resolved.data_root)
     app.add_middleware(RequestBodyLimitMiddleware)
     app.add_middleware(SafeExceptionMiddleware)

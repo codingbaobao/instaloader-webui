@@ -1,14 +1,30 @@
 """Process-local Instaloader clients for the persistent worker."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from instaloader import Instaloader, RateController, TooManyRequestsException
 
 from instaloader_webui.instagram.cookie_file import cookie_dict
-from instaloader_webui.instagram.session_store import InstagramSessionStore
+from instaloader_webui.instagram.session_store import (
+    InstagramSessionSnapshot,
+    InstagramSessionStore,
+)
 
 SessionRevision = tuple[str, datetime]
+
+
+class InstagramSessionRevisionError(RuntimeError):
+    """The worker no longer has the Cookie revision required by a queued job."""
+
+
+def _revision(username: str, imported_at: datetime) -> SessionRevision:
+    normalized = (
+        imported_at.replace(tzinfo=UTC)
+        if imported_at.tzinfo is None
+        else imported_at.astimezone(UTC)
+    )
+    return username, normalized
 
 
 class _WorkerRateController(RateController):
@@ -34,6 +50,13 @@ class WorkerInstaloaderRuntime:
             raise RuntimeError("Instaloader runtime is closed.")
 
         snapshot = self._sessions.load()
+        return self._acquire_snapshot(snapshot, staging_directory)
+
+    def _acquire_snapshot(
+        self,
+        snapshot: InstagramSessionSnapshot | None,
+        staging_directory: Path,
+    ) -> tuple[Instaloader, bool]:
         if snapshot is None:
             self._discard_authenticated_loader()
             if self._anonymous_loader is None:
@@ -41,7 +64,7 @@ class WorkerInstaloaderRuntime:
             loader = self._anonymous_loader
             session_configured = False
         else:
-            revision = (snapshot.username, snapshot.imported_at)
+            revision = _revision(snapshot.username, snapshot.imported_at)
             if (
                 self._authenticated_loader is None
                 or self._authenticated_revision != revision
@@ -67,6 +90,36 @@ class WorkerInstaloaderRuntime:
             raise RuntimeError("Instaloader runtime did not provide a client.")
         loader.dirname_pattern = str(staging_directory)
         return loader, session_configured
+
+    def acquire_authenticated(
+        self,
+        staging_directory: Path,
+        *,
+        expected_username: str,
+        expected_imported_at: datetime,
+    ) -> Instaloader:
+        """Return the authenticated loader only for the requested Cookie revision."""
+        if self._closed:
+            raise RuntimeError("Instaloader runtime is closed.")
+        snapshot = self._sessions.load()
+        expected_revision = _revision(expected_username, expected_imported_at)
+        if snapshot is None or _revision(
+            snapshot.username,
+            snapshot.imported_at,
+        ) != expected_revision:
+            self._discard_authenticated_loader()
+            raise InstagramSessionRevisionError(
+                "The Instagram Cookie changed or was removed. Run followee discovery again."
+            )
+        loader, session_configured = self._acquire_snapshot(
+            snapshot,
+            staging_directory,
+        )
+        if not session_configured:
+            raise InstagramSessionRevisionError(
+                "An Instagram Cookie is required. Run followee discovery again."
+            )
+        return loader
 
     def close(self) -> None:
         """Close all cached clients exactly once."""

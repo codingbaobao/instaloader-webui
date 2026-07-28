@@ -76,7 +76,10 @@ class PublicInstaloaderAdapter:
         )
         try:
             profile = Profile.from_username(loader.context, username)
-            return self._normalize_profile(profile)
+            return self._normalize_profile(
+                profile,
+                authenticated=session_configured,
+            )
         except InstaloaderException as error:
             raise PublicInstagramAdapterError(
                 classify_instaloader_error(
@@ -152,7 +155,10 @@ class PublicInstaloaderAdapter:
             loader, session_configured = self._acquire_loader(staging_directory)
             self._report(0, None, "Refreshing public Instagram profile.")
             profile = Profile.from_username(loader.context, stored_profile.username)
-            profile_data = self._normalize_profile(profile)
+            profile_data = self._normalize_profile(
+                profile,
+                authenticated=session_configured,
+            )
             self._refresh_profile_avatar(
                 loader=loader,
                 profile=profile,
@@ -365,7 +371,10 @@ class PublicInstaloaderAdapter:
         profile: Profile,
         staging_directory: Path,
     ) -> ProfileSnapshot:
-        data = self._normalize_profile(profile)
+        data = self._normalize_profile(
+            profile,
+            authenticated=loader.context.is_logged_in,
+        )
         instagram_user_id = str(data.instagram_user_id)
         stored = self._library.find_profile_by_instagram_user_id(
             instagram_user_id
@@ -403,11 +412,17 @@ class PublicInstaloaderAdapter:
                 )
         return owner
 
-    def _normalize_profile(self, profile: Profile) -> PublicProfile:
-        if profile.is_private:
+    def _normalize_profile(
+        self,
+        profile: Profile,
+        *,
+        authenticated: bool,
+    ) -> PublicProfile:
+        if profile.is_private and (
+            not authenticated or not profile.followed_by_viewer
+        ):
             raise PublicInstagramAdapterError(
-                "Private Instagram profiles are not supported by this POC, even when "
-                "the imported account can view them."
+                "This private Instagram profile is not accessible to the imported account."
             )
         return PublicProfile(
             instagram_user_id=profile.userid,
