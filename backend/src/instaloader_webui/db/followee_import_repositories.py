@@ -241,7 +241,9 @@ class FolloweeImportRepository:
                 completed_at=None,
                 imported_at=None,
             )
-            session.add_all((job, batch))
+            session.add(job)
+            session.flush()
+            session.add(batch)
             session.flush()
             snapshot = _batch_snapshot(batch)
             session.commit()
