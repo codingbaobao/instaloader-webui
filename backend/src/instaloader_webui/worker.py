@@ -13,6 +13,7 @@ from instaloader_webui.db.library_repositories import (
 )
 from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.instagram.session_store import InstagramSessionStore
+from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.job_runner import JobRunner, enqueue_due_profile_syncs
 
 
@@ -31,13 +32,14 @@ def main() -> None:
     scheduling = SettingsRepository(session_factory)
     app_secret = load_or_create_app_secret(settings.data_root)
     instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
+    loader_runtime = WorkerInstaloaderRuntime(instagram_sessions)
     runner = JobRunner(
         data_root=settings.data_root,
         media_root=settings.media_root,
         jobs_root=settings.jobs_root,
         library=library,
         jobs=jobs,
-        instagram_sessions=instagram_sessions,
+        loader_runtime=loader_runtime,
     )
     jobs.recover_interrupted(datetime.now(UTC))
 
@@ -56,4 +58,7 @@ def main() -> None:
                 continue
             runner.run(job)
     finally:
-        engine.dispose()
+        try:
+            loader_runtime.close()
+        finally:
+            engine.dispose()

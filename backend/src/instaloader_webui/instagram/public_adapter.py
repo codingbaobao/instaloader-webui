@@ -17,12 +17,9 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
     ProfileSnapshot,
 )
-from instaloader_webui.instagram.cookie_file import cookie_dict
 from instaloader_webui.instagram.errors import classify_instaloader_error
-from instaloader_webui.instagram.session_store import (
-    InstagramSessionStore,
-    InstagramSessionStoreError,
-)
+from instaloader_webui.instagram.session_store import InstagramSessionStoreError
+from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.profile_avatars import (
     PROFILE_AVATAR_MEDIA_TYPE,
     profile_avatar_path,
@@ -63,18 +60,18 @@ class PublicInstaloaderAdapter:
         jobs_root: Path,
         library: LibraryRepository,
         progress: ProgressCallback,
-        instagram_sessions: InstagramSessionStore,
+        loader_runtime: WorkerInstaloaderRuntime,
     ) -> None:
         self._data_root = data_root.resolve()
         self._media_root = self._require_data_subdirectory(media_root)
         self._jobs_root = self._require_data_subdirectory(jobs_root)
         self._library = library
         self._progress = progress
-        self._instagram_sessions = instagram_sessions
+        self._loader_runtime = loader_runtime
 
     def fetch_profile(self, username: str) -> PublicProfile:
         """Load normalized metadata for one publicly accessible profile."""
-        loader, session_configured = self._new_loader(
+        loader, session_configured = self._acquire_loader(
             self._metadata_staging_directory()
         )
         try:
@@ -119,7 +116,7 @@ class PublicInstaloaderAdapter:
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader, session_configured = self._new_loader(staging_directory)
+            loader, session_configured = self._acquire_loader(staging_directory)
             self._report(0, None, "Loading public Instagram media.")
             post = Post.from_shortcode(loader.context, shortcode)
             return self._download_post(
@@ -152,7 +149,7 @@ class PublicInstaloaderAdapter:
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader, session_configured = self._new_loader(staging_directory)
+            loader, session_configured = self._acquire_loader(staging_directory)
             self._report(0, None, "Refreshing public Instagram profile.")
             profile = Profile.from_username(loader.context, stored_profile.username)
             profile_data = self._normalize_profile(profile)
@@ -543,28 +540,13 @@ class PublicInstaloaderAdapter:
                 now=datetime.now(UTC),
             )
 
-    def _new_loader(self, staging_directory: Path) -> tuple[Instaloader, bool]:
-        loader = Instaloader(
-            dirname_pattern=str(staging_directory),
-            filename_pattern="{shortcode}",
-            download_pictures=True,
-            download_videos=True,
-            download_video_thumbnails=True,
-            download_geotags=False,
-            download_comments=False,
-            save_metadata=False,
-            post_metadata_txt_pattern="",
-            quiet=True,
-        )
+    def _acquire_loader(self, staging_directory: Path) -> tuple[Instaloader, bool]:
         try:
-            snapshot = self._instagram_sessions.load()
+            return self._loader_runtime.acquire(staging_directory)
         except InstagramSessionStoreError:
             raise PublicInstagramAdapterError(
                 "Instagram session storage is unreadable. An administrator must re-import the Cookie file."
             ) from None
-        if snapshot is not None:
-            loader.load_session(snapshot.username, cookie_dict(snapshot.cookies))
-        return loader, snapshot is not None
 
     def _metadata_staging_directory(self) -> Path:
         return self._contained_path(self._jobs_root, "profile-metadata")
