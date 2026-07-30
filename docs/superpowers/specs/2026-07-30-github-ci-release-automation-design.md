@@ -13,7 +13,7 @@ GitHub as part of this work.
 ## Repository Baseline
 
 - GitHub repository: `codingbaobao/instaloader-webui`
-- Docker Hub image: `codingbaobao/instaloader-webui`
+- Docker Hub image: `z21012101/instaloader-webui`
 - Default branch: `main`
 - Current application version: `0.1.0`
 - Release baseline commit:
@@ -167,14 +167,14 @@ and never push an image.
 The base `compose.yaml` becomes the deployment definition and defaults to:
 
 ```yaml
-${IW_IMAGE:-codingbaobao/instaloader-webui:latest}
+${IW_IMAGE:-z21012101/instaloader-webui:latest}
 ```
 
 Both `web` and `worker` continue to run the exact same image. Operators can pin
 a release by setting, for example:
 
 ```text
-IW_IMAGE=codingbaobao/instaloader-webui:0.1.0
+IW_IMAGE=z21012101/instaloader-webui:0.1.0
 ```
 
 Remove source build instructions from the base Compose file. Add

@@ -72,7 +72,7 @@ jobs:
         id: metadata
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
-          images: codingbaobao/instaloader-webui
+          images: ${{ vars.DOCKERHUB_USERNAME }}/instaloader-webui
           tags: |
             type=semver,pattern={{version}},value=${{ steps.release.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.version }}

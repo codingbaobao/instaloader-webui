@@ -1,6 +1,6 @@
 name: instaloader-webui
 
-x-webui-image: &webui-image "${IW_IMAGE:-codingbaobao/instaloader-webui:latest}"
+x-webui-image: &webui-image "${IW_IMAGE:-z21012101/instaloader-webui:latest}"
 
 x-webui-environment: &webui-environment
   IW_DATA_ROOT: /data

@@ -15,7 +15,7 @@ profiles or media, Stories, or Tagged content.
 ## Docker Compose deployment
 
 Requirements: Docker Engine and Docker Compose v2. Compose builds entirely from
-the published `codingbaobao/instaloader-webui` image. The image contains an
+the published `z21012101/instaloader-webui` image. The image contains an
 exact Instaloader version from PyPI, so no sibling Instaloader source checkout
 is required.
 
@@ -61,7 +61,7 @@ the POC database.
 Set `IW_IMAGE` in `.env` to pin a release instead of following `latest`:
 
 ```text
-IW_IMAGE=codingbaobao/instaloader-webui:0.1.0
+IW_IMAGE=z21012101/instaloader-webui:0.1.0
 ```
 
 ### Building from source
@@ -231,12 +231,12 @@ Release. Publishing the GitHub Release builds and pushes `linux/amd64` and
 ### Repository configuration
 
 Create a public Docker Hub repository named
-`codingbaobao/instaloader-webui`, then configure these values under
+`z21012101/instaloader-webui`, then configure these values under
 **GitHub repository Settings > Secrets and variables > Actions**:
 
 | Kind | Name | Value or permissions |
 | --- | --- | --- |
-| Variable | `DOCKERHUB_USERNAME` | Docker Hub account name, normally `codingbaobao` |
+| Variable | `DOCKERHUB_USERNAME` | Docker Hub account name, `z21012101` |
 | Secret | `DOCKERHUB_TOKEN` | Expiring Docker Hub personal access token with Read/Write, not Delete |
 | Secret | `RELEASE_PLEASE_TOKEN` | Expiring fine-grained GitHub PAT scoped only to this repository |
 

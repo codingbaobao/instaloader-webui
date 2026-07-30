@@ -64,8 +64,8 @@ def test_deployment_compose_uses_only_the_published_image() -> None:
     config = resolved_compose_config(COMPOSE_FILE)
     services = config["services"]
 
-    assert services["web"]["image"] == "codingbaobao/instaloader-webui:latest"
-    assert services["worker"]["image"] == "codingbaobao/instaloader-webui:latest"
+    assert services["web"]["image"] == "z21012101/instaloader-webui:latest"
+    assert services["worker"]["image"] == "z21012101/instaloader-webui:latest"
     assert "build" not in services["web"]
     assert "build" not in services["worker"]
 
