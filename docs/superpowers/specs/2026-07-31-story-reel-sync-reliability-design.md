@@ -402,8 +402,10 @@ The diagnostic deployment uses:
 - an isolated application database, download directory, and config directory;
 - a high port confirmed unused at diagnostic time;
 - a diagnostic-only image built on the NAS, never pushed to Docker Hub;
-- only the minimum required copied Instagram session file, with its contents
-  never printed or logged.
+- only the two files required to decrypt the existing Instagram session,
+  `secrets/app_secret_key` and `secrets/instagram_session.enc`, copied into the
+  diagnostic data directory with private permissions and never printed or
+  logged.
 
 The production data directory is never mounted read-write. The production
 `0.1.1` containers are not stopped, recreated, or modified.
