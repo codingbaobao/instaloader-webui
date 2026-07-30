@@ -71,7 +71,6 @@ export function usePolling<T>(
     if (!enabled) {
       versionRef.current += 1;
       controllerRef.current = null;
-      setLoading(false);
       return;
     }
 
@@ -123,30 +122,31 @@ export function usePolling<T>(
         controller.inFlight = false;
         if (controller.cancelled) {
           resolveReloadWaiters(controller);
-          return;
-        }
-        if (controller.reloadQueued) {
+        } else if (controller.reloadQueued) {
           void controller.run();
-          return;
-        }
-        if (reloadRun) {
-          resolveReloadWaiters(controller);
-        }
-        if (intervalMs > 0 && isCurrent()) {
-          controller.timeoutId = window.setTimeout(() => {
-            controller.timeoutId = null;
-            void controller.run();
-          }, intervalMs);
-        }
-        if (isCurrent()) {
-          setLoading(false);
+        } else {
+          if (reloadRun) {
+            resolveReloadWaiters(controller);
+          }
+          if (intervalMs > 0 && isCurrent()) {
+            controller.timeoutId = window.setTimeout(() => {
+              controller.timeoutId = null;
+              void controller.run();
+            }, intervalMs);
+          }
+          if (isCurrent()) {
+            setLoading(false);
+          }
         }
       }
     };
 
     controllerRef.current = controller;
+    /* eslint-disable react-hooks/set-state-in-effect -- A new polling source
+       intentionally discards stale data before its first request starts. */
     setData(null);
     setError(null);
+    /* eslint-enable react-hooks/set-state-in-effect */
     void controller.run();
 
     return () => {
@@ -165,5 +165,5 @@ export function usePolling<T>(
     };
   }, [enabled, intervalMs, load]);
 
-  return { data, loading, error, reload };
+  return { data, loading: enabled && loading, error, reload };
 }

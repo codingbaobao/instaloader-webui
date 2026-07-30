@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { deleteMedia, getMedia, getProfile, mediaAssetUrl } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { formatDateTime } from "./MediaGrid";
+import { formatDateTime } from "./dateFormatters";
 import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 
@@ -14,7 +14,10 @@ type MediaViewerPageProps = Readonly<{ session: SessionData }>;
 export function MediaViewerPage({ session }: MediaViewerPageProps) {
   const { mediaId = "" } = useParams();
   const navigate = useNavigate();
-  const [assetIndex, setAssetIndex] = useState(0);
+  const [assetSelection, setAssetSelection] = useState({
+    mediaId: "",
+    index: 0,
+  });
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -27,10 +30,6 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
     return { media, owner };
   }, [mediaId]);
   const { data, error, loading, reload } = usePolling(loadMedia, 0, true);
-
-  useEffect(() => {
-    setAssetIndex(0);
-  }, [data?.media.id]);
 
   async function confirmDeletion() {
     if (!mediaId) {
@@ -61,10 +60,20 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
   }
 
   const { media, owner } = data;
+  const assetIndex =
+    assetSelection.mediaId === media.id ? assetSelection.index : 0;
   const asset = media.assets[assetIndex] ?? null;
   const hasMultipleAssets = media.assets.length > 1;
-  const previousAsset = () => setAssetIndex((index) => (index - 1 + media.assets.length) % media.assets.length);
-  const nextAsset = () => setAssetIndex((index) => (index + 1) % media.assets.length);
+  const previousAsset = () =>
+    setAssetSelection({
+      mediaId: media.id,
+      index: (assetIndex - 1 + media.assets.length) % media.assets.length,
+    });
+  const nextAsset = () =>
+    setAssetSelection({
+      mediaId: media.id,
+      index: (assetIndex + 1) % media.assets.length,
+    });
 
   return (
     <section className="library-page viewer-page" aria-labelledby="viewer-title">

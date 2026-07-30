@@ -1,7 +1,7 @@
 import { useCallback } from "react";
 
 import { listJobs } from "./api";
-import { formatDate } from "./MediaGrid";
+import { formatDate } from "./dateFormatters";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
 

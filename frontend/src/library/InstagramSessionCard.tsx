@@ -4,7 +4,7 @@ import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { getInstagramSession, importInstagramSession, removeInstagramSession } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { formatDateTime } from "./MediaGrid";
+import { formatDateTime } from "./dateFormatters";
 import type { InstagramSessionStatus } from "./types";
 
 type InstagramSessionCardProps = Readonly<{ session: SessionData }>;

@@ -1,15 +1,16 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { getLibrarySettings, syncAllProfiles, updateLibrarySettings } from "./api";
+import { formatDate } from "./dateFormatters";
 import { InstagramSessionCard } from "./InstagramSessionCard";
-import { formatDate } from "./MediaGrid";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
 
 type SettingsPageProps = Readonly<{ session: SessionData }>;
+type IntervalDraft = Readonly<{ source: number; value: string }>;
 
 export function SettingsPage({ session }: SettingsPageProps) {
   const loadSettings = useCallback(
@@ -17,17 +18,17 @@ export function SettingsPage({ session }: SettingsPageProps) {
     [],
   );
   const { data: settings, error, loading, reload } = usePolling(loadSettings, 0, true);
-  const [interval, setInterval] = useState("15");
+  const [intervalDraft, setIntervalDraft] = useState<IntervalDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (settings !== null) {
-      setInterval(String(settings.profile_sync_interval_minutes));
-    }
-  }, [settings]);
+  const persistedInterval = settings?.profile_sync_interval_minutes ?? 15;
+  const interval =
+    intervalDraft?.source === persistedInterval
+      ? intervalDraft.value
+      : String(persistedInterval);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,7 +42,10 @@ export function SettingsPage({ session }: SettingsPageProps) {
     setNotice(null);
     try {
       const updated = await updateLibrarySettings(minutes, session.csrf_token);
-      setInterval(String(updated.profile_sync_interval_minutes));
+      setIntervalDraft({
+        source: persistedInterval,
+        value: String(updated.profile_sync_interval_minutes),
+      });
       setNotice("Sync interval saved.");
       await reload();
     } catch (cause) {
@@ -89,7 +93,12 @@ export function SettingsPage({ session }: SettingsPageProps) {
               step="1"
               type="number"
               value={interval}
-              onChange={(event) => setInterval(event.target.value)}
+              onChange={(event) =>
+                setIntervalDraft({
+                  source: persistedInterval,
+                  value: event.target.value,
+                })
+              }
             />
             <p className="field-hint">Next scheduled sync: {formatDate(settings.next_sync_at)}.</p>
             <button className="primary-button" disabled={saving} type="submit">{saving ? "Saving…" : "Save interval"}</button>

@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import type { SessionData } from "../auth/useSession";
 import { getInstagramSession, listProfiles, startFolloweeImport } from "./api";
-import { formatDate } from "./MediaGrid";
+import { formatDate } from "./dateFormatters";
 import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 

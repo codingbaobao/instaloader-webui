@@ -11,7 +11,8 @@ import {
   syncProfile,
 } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { formatDate, MediaGrid } from "./MediaGrid";
+import { formatDate } from "./dateFormatters";
+import { MediaGrid } from "./MediaGrid";
 import { ProfileAvatar } from "./ProfileAvatar";
 import type { JobSummary } from "./types";
 import { usePolling } from "./usePolling";
