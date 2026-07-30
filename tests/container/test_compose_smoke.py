@@ -16,6 +16,7 @@ pytestmark = pytest.mark.container
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = PROJECT_ROOT / "compose.yaml"
+LOCAL_BUILD_COMPOSE_FILE = PROJECT_ROOT / "compose.build.yaml"
 COMPOSE_ENV_FILE = PROJECT_ROOT / ".env.example"
 COMPOSE_CONTROL_PREFIX = "COMPOSE_"
 
@@ -31,6 +32,52 @@ def test_compose_declares_runtime_security_boundaries() -> None:
     assert 'FORWARDED_ALLOW_IPS: "${IW_FORWARDED_ALLOW_IPS:-127.0.0.1}"' in (
         compose_source
     )
+
+
+def resolved_compose_config(*compose_files: Path) -> dict[str, object]:
+    command = ["docker", "compose"]
+    for compose_file in compose_files:
+        command.extend(["--file", str(compose_file)])
+    command.extend(
+        [
+            "--env-file",
+            str(COMPOSE_ENV_FILE),
+            "config",
+            "--format",
+            "json",
+        ]
+    )
+    return json.loads(
+        subprocess.run(
+            command,
+            cwd=PROJECT_ROOT,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        ).stdout
+    )
+
+
+def test_deployment_compose_uses_only_the_published_image() -> None:
+    config = resolved_compose_config(COMPOSE_FILE)
+    services = config["services"]
+
+    assert services["web"]["image"] == "codingbaobao/instaloader-webui:latest"
+    assert services["worker"]["image"] == "codingbaobao/instaloader-webui:latest"
+    assert "build" not in services["web"]
+    assert "build" not in services["worker"]
+
+
+def test_local_build_override_builds_one_shared_local_image() -> None:
+    config = resolved_compose_config(COMPOSE_FILE, LOCAL_BUILD_COMPOSE_FILE)
+    services = config["services"]
+
+    assert services["web"]["image"] == "instaloader-webui:local"
+    assert services["worker"]["image"] == "instaloader-webui:local"
+    assert services["web"]["build"]["dockerfile"].endswith("docker/Dockerfile")
+    assert "build" not in services["worker"]
 
 
 def prepare_data_root(data_root: Path, *, posix: bool = os.name == "posix") -> None:
@@ -108,6 +155,8 @@ def compose(
             "compose",
             "--file",
             str(COMPOSE_FILE),
+            "--file",
+            str(LOCAL_BUILD_COMPOSE_FILE),
             "--env-file",
             str(COMPOSE_ENV_FILE),
             "--project-name",

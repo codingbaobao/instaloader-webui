@@ -1,0 +1,9 @@
+services:
+  web:
+    image: instaloader-webui:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+
+  worker:
+    image: instaloader-webui:local

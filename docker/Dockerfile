@@ -40,7 +40,7 @@ RUN --mount=type=bind,from=python-build,source=/wheels,target=/wheels,ro \
         --no-index \
         --find-links=/wheels \
         instaloader \
-        "instaloader-webui==0.1.0"
+        instaloader-webui
 COPY --from=frontend-build /build/frontend/dist /app/static
 RUN mkdir -p /data \
     && chown app:app /data
