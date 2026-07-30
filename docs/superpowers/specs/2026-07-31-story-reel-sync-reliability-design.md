@@ -288,9 +288,9 @@ creates the same structured issue but ends the job as `failed`.
 
 ## Instaloader Upgrade
 
-Both the runtime dependency declaration and lock data are pinned to
-`instaloader==4.15.3`. The build must not use an open version range that can
-silently select another release.
+The runtime dependency declaration is pinned to `instaloader==4.15.3`. This
+repository has no Python lock file, so the exact `backend/pyproject.toml` pin is
+the build source of truth and must not be replaced with an open version range.
 
 This exact release is required because the production `4.15.2` runtime
 reproduced `BadResponseException: Fetching Post metadata failed`, while the same
