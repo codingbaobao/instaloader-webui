@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
+from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
@@ -11,12 +14,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from instaloader_webui.db.models import (
     AppSetting,
     Job,
+    JobIssue,
     MediaAsset,
     MediaItem,
     Profile,
 )
 
 GLOBAL_APP_SETTINGS_ID = "global"
+_MAX_EXCEPTION_CLASS_CHAIN_LENGTH = 8
+_MAX_EXCEPTION_CLASS_NAME_LENGTH = 128
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -30,9 +36,16 @@ class AssetSnapshot:
     relative_path: str
     mime_type: str
     kind: str
+    role: str
     position: int
     file_size: int
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MediaIdentity:
+    identity_type: Literal["shortcode", "story_media_id"]
+    value: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,13 +68,17 @@ class ProfileSnapshot:
 class MediaSnapshot:
     id: str
     instagram_media_id: str | None
-    shortcode: str
+    shortcode: str | None
+    story_media_id: str | None
+    identity_type: str
+    identity_value: str
     owner_profile_id: str
     kind: str
     caption: str
     accessibility_caption: str
     published_at: datetime
     original_url: str
+    story_expires_at: datetime | None
     downloaded_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -78,10 +95,38 @@ class JobSnapshot:
     progress_total: int | None
     status_text: str
     error: str | None
+    phase: str | None
+    issue_count: int
+    issues: tuple[JobIssueSnapshot, ...]
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class JobIssueInput:
+    identity_type: str
+    identity_value: str
+    media_kind: str
+    error_code: str
+    safe_message: str
+    exception_class_chain: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class JobIssueSnapshot:
+    id: str
+    job_id: str
+    identity_type: str
+    identity_value: str
+    shortcode: str | None
+    story_media_id: str | None
+    media_kind: str
+    error_code: str
+    safe_message: str
+    exception_class_chain: tuple[str, ...]
+    occurred_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,19 +142,22 @@ class AppSettingsSnapshot:
 class NormalizedAsset:
     relative_path: str
     mime_type: str
-    kind: str
+    kind: Literal["image", "video"]
+    role: Literal["content", "poster"]
     position: int
     file_size: int
 
 
 @dataclass(frozen=True, slots=True)
 class NormalizedMedia:
+    identity: MediaIdentity
     instagram_media_id: str | None
-    shortcode: str
+    shortcode: str | None
     kind: str
     caption: str
     accessibility_caption: str
     published_at: datetime
+    story_expires_at: datetime | None
     original_url: str
 
 
@@ -120,6 +168,7 @@ def _asset_snapshot(model: MediaAsset) -> AssetSnapshot:
         relative_path=model.relative_path,
         mime_type=model.mime_type,
         kind=model.kind,
+        role=model.role,
         position=model.position,
         file_size=model.file_size,
         created_at=_as_utc(model.created_at),
@@ -152,22 +201,41 @@ def _profile_snapshot(model: Profile) -> ProfileSnapshot:
 
 
 def _media_snapshot(model: MediaItem, assets: list[MediaAsset]) -> MediaSnapshot:
+    ordered_assets = sorted(
+        assets,
+        key=lambda asset: (
+            asset.position,
+            0 if asset.role == "content" else 1,
+            _as_utc(asset.created_at),
+            asset.id,
+        ),
+    )
     return MediaSnapshot(
         id=model.id,
         instagram_media_id=model.instagram_media_id,
         shortcode=model.shortcode,
+        story_media_id=(
+            model.identity_value if model.identity_type == "story_media_id" else None
+        ),
+        identity_type=model.identity_type,
+        identity_value=model.identity_value,
         owner_profile_id=model.owner_profile_id,
         kind=model.kind,
         caption=model.caption,
         accessibility_caption=model.accessibility_caption,
         published_at=_as_utc(model.published_at),
         original_url=model.original_url,
+        story_expires_at=(
+            _as_utc(model.story_expires_at)
+            if model.story_expires_at is not None
+            else None
+        ),
         downloaded_at=(
             _as_utc(model.downloaded_at) if model.downloaded_at is not None else None
         ),
         created_at=_as_utc(model.created_at),
         updated_at=_as_utc(model.updated_at),
-        assets=tuple(_asset_snapshot(asset) for asset in assets),
+        assets=tuple(_asset_snapshot(asset) for asset in ordered_assets),
     )
 
 
@@ -187,7 +255,55 @@ def _freeze_job_payload(payload: dict[str, object]) -> Mapping[str, object]:
     )
 
 
-def _job_snapshot(model: Job) -> JobSnapshot:
+def _decode_exception_class_chain(value: str) -> tuple[str, ...]:
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ValueError("Persisted exception class chain is malformed.") from error
+    if (
+        not isinstance(decoded, list)
+        or len(decoded) > _MAX_EXCEPTION_CLASS_CHAIN_LENGTH
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > _MAX_EXCEPTION_CLASS_NAME_LENGTH
+            for item in decoded
+        )
+    ):
+        raise ValueError("Persisted exception class chain is malformed.")
+    return tuple(decoded)
+
+
+def _job_issue_snapshot(model: JobIssue) -> JobIssueSnapshot:
+    return JobIssueSnapshot(
+        id=model.id,
+        job_id=model.job_id,
+        identity_type=model.identity_type,
+        identity_value=model.identity_value,
+        shortcode=(
+            model.identity_value if model.identity_type == "shortcode" else None
+        ),
+        story_media_id=(
+            model.identity_value
+            if model.identity_type == "story_media_id"
+            else None
+        ),
+        media_kind=model.media_kind,
+        error_code=model.error_code,
+        safe_message=model.safe_message,
+        exception_class_chain=_decode_exception_class_chain(
+            model.exception_class_chain_text
+        ),
+        occurred_at=_as_utc(model.occurred_at),
+    )
+
+
+def _job_snapshot(
+    model: Job,
+    *,
+    issue_count: int = 0,
+    issues: tuple[JobIssueSnapshot, ...] = (),
+) -> JobSnapshot:
     payload = json.loads(model.payload_text)
     if not isinstance(payload, dict):
         raise ValueError("Persisted job payload must be a JSON object.")
@@ -200,6 +316,9 @@ def _job_snapshot(model: Job) -> JobSnapshot:
         progress_total=model.progress_total,
         status_text=model.status_text,
         error=model.error,
+        phase=model.phase,
+        issue_count=issue_count,
+        issues=issues,
         created_at=_as_utc(model.created_at),
         started_at=_as_utc(model.started_at) if model.started_at is not None else None,
         completed_at=(
@@ -438,9 +557,17 @@ class LibraryRepository:
             return self._media_snapshots(session, [model])[0]
 
     def find_media_by_shortcode(self, shortcode: str) -> MediaSnapshot | None:
+        return self.find_media_by_identity(MediaIdentity("shortcode", shortcode))
+
+    def find_media_by_identity(
+        self, identity: MediaIdentity
+    ) -> MediaSnapshot | None:
         with self._session_factory() as session:
             model = session.scalar(
-                select(MediaItem).where(MediaItem.shortcode == shortcode)
+                select(MediaItem).where(
+                    MediaItem.identity_type == identity.identity_type,
+                    MediaItem.identity_value == identity.value,
+                )
             )
             if model is None:
                 return None
@@ -474,19 +601,29 @@ class LibraryRepository:
         current_time = _as_utc(now)
         with self._session_factory.begin() as session:
             model = session.scalar(
-                select(MediaItem).where(MediaItem.shortcode == normalized.shortcode)
+                select(MediaItem).where(
+                    MediaItem.identity_type == normalized.identity.identity_type,
+                    MediaItem.identity_value == normalized.identity.value,
+                )
             )
             if model is None:
                 model = MediaItem(
                     id=str(uuid4()),
                     instagram_media_id=normalized.instagram_media_id,
                     shortcode=normalized.shortcode,
+                    identity_type=normalized.identity.identity_type,
+                    identity_value=normalized.identity.value,
                     owner_profile_id=profile_id,
                     kind=normalized.kind,
                     caption=normalized.caption,
                     accessibility_caption=normalized.accessibility_caption,
                     published_at=_as_utc(normalized.published_at),
                     original_url=normalized.original_url,
+                    story_expires_at=(
+                        _as_utc(normalized.story_expires_at)
+                        if normalized.story_expires_at is not None
+                        else None
+                    ),
                     downloaded_at=current_time,
                     created_at=current_time,
                     updated_at=current_time,
@@ -495,12 +632,20 @@ class LibraryRepository:
                 session.flush()
             else:
                 model.instagram_media_id = normalized.instagram_media_id
+                model.shortcode = normalized.shortcode
+                model.identity_type = normalized.identity.identity_type
+                model.identity_value = normalized.identity.value
                 model.owner_profile_id = profile_id
                 model.kind = normalized.kind
                 model.caption = normalized.caption
                 model.accessibility_caption = normalized.accessibility_caption
                 model.published_at = _as_utc(normalized.published_at)
                 model.original_url = normalized.original_url
+                model.story_expires_at = (
+                    _as_utc(normalized.story_expires_at)
+                    if normalized.story_expires_at is not None
+                    else None
+                )
                 model.downloaded_at = current_time
                 model.updated_at = current_time
                 session.execute(
@@ -513,6 +658,7 @@ class LibraryRepository:
                     relative_path=asset.relative_path,
                     mime_type=asset.mime_type,
                     kind=asset.kind,
+                    role=asset.role,
                     position=asset.position,
                     file_size=asset.file_size,
                     created_at=current_time,
@@ -698,12 +844,43 @@ class JobRepository:
             jobs = session.scalars(
                 select(Job).order_by(Job.created_at.desc()).limit(limit)
             ).all()
-            return tuple(_job_snapshot(job) for job in jobs)
+            if not jobs:
+                return ()
+            issue_counts: dict[str, int] = {
+                job_id: int(count)
+                for job_id, count in session.execute(
+                    select(JobIssue.job_id, func.count(JobIssue.id))
+                    .where(JobIssue.job_id.in_(job.id for job in jobs))
+                    .group_by(JobIssue.job_id)
+                ).tuples()
+            }
+            return tuple(
+                _job_snapshot(job, issue_count=issue_counts.get(job.id, 0))
+                for job in jobs
+            )
 
-    def get(self, job_id: str) -> JobSnapshot | None:
+    def get(
+        self, job_id: str, *, include_issues: bool = False
+    ) -> JobSnapshot | None:
         with self._session_factory() as session:
             model = session.get(Job, job_id)
-            return _job_snapshot(model) if model is not None else None
+            if model is None:
+                return None
+            issue_models = session.scalars(
+                select(JobIssue)
+                .where(JobIssue.job_id == job_id)
+                .order_by(JobIssue.occurred_at, JobIssue.id)
+            ).all()
+            issues = (
+                tuple(_job_issue_snapshot(issue) for issue in issue_models)
+                if include_issues
+                else ()
+            )
+            return _job_snapshot(
+                model,
+                issue_count=len(issue_models),
+                issues=issues,
+            )
 
     def claim_next(self, now: datetime) -> JobSnapshot | None:
         current_time = _as_utc(now)
@@ -734,6 +911,7 @@ class JobRepository:
         total: int | None,
         status_text: str,
         now: datetime,
+        phase: str | None = None,
     ) -> None:
         with self._session_factory.begin() as session:
             session.execute(
@@ -743,9 +921,36 @@ class JobRepository:
                     progress_current=current,
                     progress_total=total,
                     status_text=status_text,
+                    phase=phase,
                     updated_at=_as_utc(now),
                 )
             )
+
+    def record_issue(
+        self,
+        *,
+        job_id: str,
+        issue: JobIssueInput,
+        now: datetime,
+    ) -> JobIssueSnapshot:
+        model = JobIssue(
+            id=str(uuid4()),
+            job_id=job_id,
+            identity_type=issue.identity_type,
+            identity_value=issue.identity_value,
+            media_kind=issue.media_kind,
+            error_code=issue.error_code,
+            safe_message=issue.safe_message,
+            exception_class_chain_text=json.dumps(
+                issue.exception_class_chain,
+                separators=(",", ":"),
+            ),
+            occurred_at=_as_utc(now),
+        )
+        with self._session_factory.begin() as session:
+            session.add(model)
+            session.flush()
+            return _job_issue_snapshot(model)
 
     def succeed(self, *, job_id: str, status_text: str, now: datetime) -> None:
         current_time = _as_utc(now)
@@ -755,6 +960,23 @@ class JobRepository:
                 .where(Job.id == job_id, Job.state == "running")
                 .values(
                     state="succeeded",
+                    status_text=status_text,
+                    error=None,
+                    completed_at=current_time,
+                    updated_at=current_time,
+                )
+            )
+
+    def complete_with_warnings(
+        self, *, job_id: str, status_text: str, now: datetime
+    ) -> None:
+        current_time = _as_utc(now)
+        with self._session_factory.begin() as session:
+            session.execute(
+                update(Job)
+                .where(Job.id == job_id, Job.state == "running")
+                .values(
+                    state="completed_with_warnings",
                     status_text=status_text,
                     error=None,
                     completed_at=current_time,
