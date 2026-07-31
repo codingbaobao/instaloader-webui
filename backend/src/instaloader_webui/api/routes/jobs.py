@@ -19,7 +19,9 @@ def list_jobs(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
     _: Annotated[object, Depends(require_password_change_complete)],
 ) -> ApiEnvelope[tuple[JobResponse, ...]]:
-    return ApiEnvelope(success=True, data=tuple(serialize_job(job) for job in jobs.list()))
+    return ApiEnvelope(
+        success=True, data=tuple(serialize_job(job) for job in jobs.list())
+    )
 
 
 @router.get("/{job_id}", response_model=ApiEnvelope[JobResponse])
@@ -28,7 +30,7 @@ def get_job(
     jobs: Annotated[JobRepository, Depends(get_job_repository)],
     _: Annotated[object, Depends(require_password_change_complete)],
 ) -> ApiEnvelope[JobResponse]:
-    job = jobs.get(job_id)
+    job = jobs.get(job_id, include_issues=True)
     if job is None:
         raise ApiError(404, "job_not_found", f"Job {job_id} was not found.")
     return ApiEnvelope(success=True, data=serialize_job(job))
