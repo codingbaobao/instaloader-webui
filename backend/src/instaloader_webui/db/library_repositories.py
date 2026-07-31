@@ -255,23 +255,29 @@ def _freeze_job_payload(payload: dict[str, object]) -> Mapping[str, object]:
     )
 
 
+def _validate_exception_class_chain(value: object) -> tuple[str, ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) > _MAX_EXCEPTION_CLASS_CHAIN_LENGTH
+        or any(
+            not isinstance(item, str)
+            or not item
+            or len(item) > _MAX_EXCEPTION_CLASS_NAME_LENGTH
+            for item in value
+        )
+    ):
+        raise ValueError("Invalid exception class chain.")
+    return tuple(value)
+
+
 def _decode_exception_class_chain(value: str) -> tuple[str, ...]:
     try:
         decoded = json.loads(value)
     except (json.JSONDecodeError, TypeError) as error:
         raise ValueError("Persisted exception class chain is malformed.") from error
-    if (
-        not isinstance(decoded, list)
-        or len(decoded) > _MAX_EXCEPTION_CLASS_CHAIN_LENGTH
-        or any(
-            not isinstance(item, str)
-            or not item
-            or len(item) > _MAX_EXCEPTION_CLASS_NAME_LENGTH
-            for item in decoded
-        )
-    ):
+    if not isinstance(decoded, list):
         raise ValueError("Persisted exception class chain is malformed.")
-    return tuple(decoded)
+    return _validate_exception_class_chain(decoded)
 
 
 def _job_issue_snapshot(model: JobIssue) -> JobIssueSnapshot:
@@ -933,6 +939,9 @@ class JobRepository:
         issue: JobIssueInput,
         now: datetime,
     ) -> JobIssueSnapshot:
+        exception_class_chain = _validate_exception_class_chain(
+            issue.exception_class_chain
+        )
         model = JobIssue(
             id=str(uuid4()),
             job_id=job_id,
@@ -942,7 +951,7 @@ class JobRepository:
             error_code=issue.error_code,
             safe_message=issue.safe_message,
             exception_class_chain_text=json.dumps(
-                issue.exception_class_chain,
+                exception_class_chain,
                 separators=(",", ":"),
             ),
             occurred_at=_as_utc(now),

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from sqlalchemy import delete, func, select, update
@@ -172,6 +173,42 @@ def test_deleting_job_cascades_recorded_issues(
         issue_count = session.scalar(
             select(func.count(JobIssue.id)).where(JobIssue.job_id == job.id)
         )
+    assert issue_count == 0
+
+
+@pytest.mark.parametrize(
+    "invalid_chain",
+    [
+        ("BadResponseException", 42),
+        ("",),
+        ("x" * 129,),
+        ("a", "b", "c", "d", "e", "f", "g", "h", "i"),
+    ],
+    ids=["non-string", "empty", "overlong", "too-many"],
+)
+def test_record_issue_rejects_invalid_chain_before_database_write(
+    jobs: JobRepository,
+    session_factory,
+    invalid_chain: tuple[object, ...],
+) -> None:
+    invalid_issue = JobIssueInput(
+        identity_type="shortcode",
+        identity_value="DOqEJyxCRGJ",
+        media_kind="reel",
+        error_code="instagram_unavailable",
+        safe_message="Instagram could not be reached. Try again later.",
+        exception_class_chain=cast(tuple[str, ...], invalid_chain),
+    )
+
+    with pytest.raises(ValueError, match="exception class chain"):
+        jobs.record_issue(
+            job_id="missing-job",
+            issue=invalid_issue,
+            now=NOW,
+        )
+
+    with session_factory() as session:
+        issue_count = session.scalar(select(func.count(JobIssue.id)))
     assert issue_count == 0
 
 
