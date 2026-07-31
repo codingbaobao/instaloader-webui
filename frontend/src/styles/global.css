@@ -286,6 +286,10 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 .profile-title-row h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); }
 
+.profile-instagram-link { color: #656565; font-size: 13px; font-weight: 750; text-decoration: none; }
+
+.profile-instagram-link:hover { color: #111; text-decoration: underline; }
+
 .profile-full-name { margin: 10px 0 3px; font-weight: 750; }
 
 .profile-biography { max-width: 600px; margin: 8px 0; white-space: pre-line; }

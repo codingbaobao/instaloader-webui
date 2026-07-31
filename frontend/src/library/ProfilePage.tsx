@@ -14,11 +14,41 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate } from "./dateFormatters";
 import { MediaGrid } from "./MediaGrid";
 import { ProfileAvatar } from "./ProfileAvatar";
-import type { JobSummary } from "./types";
+import type { JobSummary, MediaKind } from "./types";
 import { usePolling } from "./usePolling";
 
 type ProfilePageProps = Readonly<{ session: SessionData }>;
-type MediaTab = "post" | "reel";
+type MediaTab = MediaKind;
+
+const mediaTabs: readonly Readonly<{
+  kind: MediaTab;
+  id: string;
+  label: string;
+  emptyTitle: string;
+  emptyDetail: string;
+}>[] = [
+  {
+    kind: "post",
+    id: "posts-tab",
+    label: "Posts",
+    emptyTitle: "No posts yet",
+    emptyDetail: "No posts have been saved from this profile yet.",
+  },
+  {
+    kind: "reel",
+    id: "reels-tab",
+    label: "Reels",
+    emptyTitle: "No reels yet",
+    emptyDetail: "No reels have been saved from this profile yet.",
+  },
+  {
+    kind: "story",
+    id: "story-tab",
+    label: "Story",
+    emptyTitle: "No stories yet",
+    emptyDetail: "No stories have been saved from this profile yet.",
+  },
+];
 
 export function ProfilePage({ session }: ProfilePageProps) {
   const { profileId = "" } = useParams();
@@ -108,6 +138,7 @@ export function ProfilePage({ session }: ProfilePageProps) {
   }
 
   const { profile, media } = data;
+  const activeTab = mediaTabs.find((item) => item.kind === tab) ?? mediaTabs[0];
   return (
     <section className="library-page profile-page" aria-labelledby="profile-title">
       <Link className="back-link" to="/profiles">Back to profiles</Link>
@@ -116,6 +147,15 @@ export function ProfilePage({ session }: ProfilePageProps) {
         <div className="profile-header-main">
           <div className="profile-title-row">
             <h1 id="profile-title">@{profile.username}</h1>
+            <a
+              aria-label={`Open @${profile.username} on Instagram`}
+              className="profile-instagram-link"
+              href={`https://www.instagram.com/${encodeURIComponent(profile.username)}/`}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              Instagram
+            </a>
             <span className={`status-badge status-badge-${profile.status}`}>{profile.status}</span>
             <span
               className={
@@ -156,8 +196,21 @@ export function ProfilePage({ session }: ProfilePageProps) {
       </header>
 
       <div className="media-tabs" role="tablist" aria-label="Profile media">
-        <button className={tab === "post" ? "media-tab media-tab-active" : "media-tab"} id="posts-tab" role="tab" type="button" aria-selected={tab === "post"} onClick={() => setTab("post")}>Posts</button>
-        <button className={tab === "reel" ? "media-tab media-tab-active" : "media-tab"} id="reels-tab" role="tab" type="button" aria-selected={tab === "reel"} onClick={() => setTab("reel")}>Reels</button>
+        {mediaTabs.map((item) => (
+          <button
+            aria-selected={tab === item.kind}
+            className={
+              tab === item.kind ? "media-tab media-tab-active" : "media-tab"
+            }
+            id={item.id}
+            key={item.kind}
+            role="tab"
+            type="button"
+            onClick={() => setTab(item.kind)}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
       {error ? (
         <div className="inline-error" role="alert">
@@ -165,11 +218,11 @@ export function ProfilePage({ session }: ProfilePageProps) {
           <button className="text-button" type="button" onClick={() => void reload()}>Try again</button>
         </div>
       ) : null}
-      <div aria-labelledby={tab === "post" ? "posts-tab" : "reels-tab"} role="tabpanel">
+      <div aria-labelledby={activeTab.id} role="tabpanel">
         <MediaGrid
           media={media}
-          emptyDetail={`No ${tab === "post" ? "posts" : "reels"} have been saved from this profile yet.`}
-          emptyTitle={`No ${tab === "post" ? "posts" : "reels"} yet`}
+          emptyDetail={activeTab.emptyDetail}
+          emptyTitle={activeTab.emptyTitle}
         />
       </div>
       <ConfirmDialog

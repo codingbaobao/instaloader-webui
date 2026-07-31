@@ -5,6 +5,7 @@ import type {
   JobSummary,
   LibrarySettings,
   MediaDetail,
+  MediaKind,
   MediaSummary,
   ProfileCreateResult,
   ProfileDetail,
@@ -15,7 +16,7 @@ import type {
 
 type MediaListOptions = Readonly<{
   profileId?: string;
-  kind?: "post" | "reel";
+  kind?: MediaKind;
   limit?: number;
 }>;
 
