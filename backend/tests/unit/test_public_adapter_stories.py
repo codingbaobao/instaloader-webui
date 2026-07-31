@@ -13,6 +13,7 @@ from instaloader_webui.config import Settings
 from instaloader_webui.db.library_repositories import (
     LibraryRepository,
     MediaIdentity,
+    NormalizedMedia,
     ProfileSnapshot,
 )
 from instaloader_webui.db.migrations import run_migrations
@@ -242,6 +243,41 @@ def story_input(*, username: str = USERNAME) -> StoryInput:
             f"{username}/{STORY_MEDIA_ID}/"
         ),
     )
+
+
+def persist_incomplete_media(
+    *,
+    repository: LibraryRepository,
+    profile: ProfileSnapshot,
+    kind: str,
+) -> MediaIdentity:
+    identity = MediaIdentity(
+        "story_media_id" if kind == "story" else "shortcode",
+        STORY_MEDIA_ID if kind == "story" else SHORTCODE,
+    )
+    repository.upsert_media(
+        normalized=NormalizedMedia(
+            identity=identity,
+            instagram_media_id=identity.value,
+            shortcode=None if kind == "story" else SHORTCODE,
+            kind=kind,
+            caption="Incomplete local media",
+            accessibility_caption="",
+            published_at=NOW,
+            story_expires_at=EXPIRES_AT.replace(tzinfo=UTC)
+            if kind == "story"
+            else None,
+            original_url=(
+                CANONICAL_STORY_URL
+                if kind == "story"
+                else f"https://www.instagram.com/{'reel' if kind == 'reel' else 'p'}/{SHORTCODE}/"
+            ),
+        ),
+        profile_id=profile.id,
+        assets=(),
+        now=NOW,
+    )
+    return identity
 
 
 def test_direct_story_validates_owner_and_downloads_only_story(
@@ -717,6 +753,179 @@ def test_absent_profile_is_created_before_direct_media_persistence(
     assert created is not None
     assert persisted_after_profile_creation == [created.id]
     assert saved.owner_profile_id == created.id
+
+
+@pytest.mark.parametrize("kind", ("post", "reel", "story"))
+def test_stub_linked_incomplete_media_recovers_when_username_matches(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    test_settings: Settings,
+    kind: str,
+) -> None:
+    # Break caught: requiring a stable ID on a local username-only owner turns
+    # an incomplete retry into a false not-found instead of repairing media.
+    stub = repository.upsert_profile_stub(
+        username=USERNAME,
+        tracked=False,
+        now=NOW,
+    )
+    assert stub.instagram_user_id is None
+    persist_incomplete_media(
+        repository=repository,
+        profile=stub,
+        kind=kind,
+    )
+    owner = FakeProfile()
+    loader = FakeLoader(logged_in=kind == "story")
+    if kind == "story":
+        patch_story_lookup(
+            monkeypatch,
+            FakeStoryItem(owner_profile=owner),
+        )
+        parsed: PostInput | ReelInput | StoryInput = story_input()
+    else:
+        patch_post_lookup(
+            monkeypatch,
+            FakePost(owner_profile=owner),
+        )
+        route = "reel" if kind == "reel" else "p"
+        parsed = (
+            ReelInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/{route}/{SHORTCODE}/",
+            )
+            if kind == "reel"
+            else PostInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/{route}/{SHORTCODE}/",
+            )
+        )
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=kind == "story",
+    )
+
+    saved = adapter.download_input(parsed, f"job-stub-retry-{kind}")
+
+    assert saved.owner_profile_id == stub.id
+    assert saved.assets
+    assert repository.get_profile(stub.id) == stub
+
+
+@pytest.mark.parametrize("mismatch", ("username", "stable_id"))
+def test_incomplete_media_still_rejects_mismatched_local_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    test_settings: Settings,
+    mismatch: str,
+) -> None:
+    # Break caught: unconditional stub reuse can attach downloaded media to a
+    # different local account when username or stable identity disagrees.
+    if mismatch == "username":
+        local_owner = repository.upsert_profile_stub(
+            username="local.owner",
+            tracked=False,
+            now=NOW,
+        )
+        remote_owner = FakeProfile(username="remote.owner")
+    else:
+        stub = repository.upsert_profile_stub(
+            username=USERNAME,
+            tracked=False,
+            now=NOW,
+        )
+        local_owner = repository.update_profile_metadata(
+            profile_id=stub.id,
+            instagram_user_id="111111111",
+            username=USERNAME,
+            full_name="Local owner",
+            biography="",
+            profile_pic_url=None,
+            now=NOW,
+        )
+        remote_owner = FakeProfile()
+    persist_incomplete_media(
+        repository=repository,
+        profile=local_owner,
+        kind="reel",
+    )
+    loader = FakeLoader(logged_in=False)
+    patch_post_lookup(
+        monkeypatch,
+        FakePost(owner_profile=remote_owner),
+    )
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=False,
+    )
+
+    with pytest.raises(MediaItemFailure) as caught:
+        adapter.download_input(
+            ReelInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/reel/{SHORTCODE}/",
+            ),
+            f"job-owner-{mismatch}",
+        )
+
+    assert caught.value.issue.error_code == "instagram_not_found"
+    assert loader.downloaded_posts == []
+
+
+@pytest.mark.parametrize("kind", ("reel", "story"))
+def test_username_only_local_profile_never_refreshes_avatar(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    test_settings: Settings,
+    kind: str,
+) -> None:
+    # Break caught: a local username-only Profile is still a reusable owner;
+    # upgrading it or fetching its avatar violates local-first direct media.
+    stub = repository.upsert_profile_stub(
+        username=USERNAME.upper(),
+        tracked=False,
+        now=NOW,
+    )
+    remote_owner = FakeProfile(
+        profile_pic_url="https://cdn.example/username-only-avatar.jpg",
+    )
+    loader = FakeLoader(logged_in=kind == "story")
+
+    def reject_avatar(_url: str) -> None:
+        raise AssertionError("username-only local Profile must skip avatar refresh")
+
+    loader.context.get_raw = reject_avatar  # type: ignore[attr-defined]
+    if kind == "story":
+        patch_story_lookup(
+            monkeypatch,
+            FakeStoryItem(owner_profile=remote_owner),
+        )
+        parsed: ReelInput | StoryInput = story_input()
+    else:
+        patch_post_lookup(
+            monkeypatch,
+            FakePost(owner_profile=remote_owner),
+        )
+        parsed = ReelInput(
+            shortcode=SHORTCODE,
+            canonical_url=f"https://www.instagram.com/reel/{SHORTCODE}/",
+        )
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=kind == "story",
+    )
+
+    saved = adapter.download_input(parsed, f"job-username-only-{kind}")
+
+    assert saved.owner_profile_id == stub.id
+    assert saved.instagram_media_id is not None
+    assert repository.get_profile(stub.id) == stub
 
 
 def test_direct_media_avatar_failure_remains_nonfatal(

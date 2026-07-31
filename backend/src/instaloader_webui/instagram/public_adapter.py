@@ -310,9 +310,7 @@ class PublicInstaloaderAdapter:
                 session_configured=True,
             )
         if owner is None:
-            owner = self._library.find_profile_by_username(parsed.username)
-            if owner is not None and owner.instagram_user_id is None:
-                owner = None
+            owner = self._find_local_profile_by_username(parsed.username)
 
         return (
             MediaCandidate(
@@ -413,23 +411,45 @@ class PublicInstaloaderAdapter:
         )
         if stored is not None:
             return stored
-        stored = self._library.find_profile_by_username(profile.username)
-        if (
-            stored is not None
-            and stored.instagram_user_id == instagram_user_id
-        ):
+        stored = self._find_local_profile_by_username(profile.username)
+        if stored is None:
+            return None
+        if stored.instagram_user_id is None:
             return stored
-        return None
+        if stored.instagram_user_id != instagram_user_id:
+            raise _MediaOwnerMismatchError(
+                "The requested Instagram media item was not found."
+            )
+        return stored
+
+    def _find_local_profile_by_username(
+        self,
+        username: str,
+    ) -> ProfileSnapshot | None:
+        stored = self._library.find_profile_by_username(username)
+        if stored is not None:
+            return stored
+        normalized = username.casefold()
+        return next(
+            (
+                profile
+                for profile in self._library.list_profiles()
+                if profile.username.casefold() == normalized
+            ),
+            None,
+        )
 
     @staticmethod
     def _validate_stable_owner(
         owner: ProfileSnapshot,
         profile: Profile,
     ) -> None:
-        if (
-            owner.instagram_user_id is None
-            or owner.instagram_user_id != str(profile.userid)
-        ):
+        matches = (
+            owner.username.casefold() == profile.username.casefold()
+            if owner.instagram_user_id is None
+            else owner.instagram_user_id == str(profile.userid)
+        )
+        if not matches:
             raise _MediaOwnerMismatchError(
                 "The requested Instagram media item was not found."
             )
@@ -466,13 +486,8 @@ class PublicInstaloaderAdapter:
         original_url: str,
     ) -> ResolvedMedia:
         owner_profile = item.owner_profile
-        if (
-            owner.instagram_user_id is None
-            or str(owner_profile.userid) != owner.instagram_user_id
-        ):
-            raise _StoryOwnerMismatchError(
-                "The requested Story was not found."
-            )
+        self._validate_stable_owner(owner, owner_profile)
+        instagram_user_id = str(owner_profile.userid)
         published_at = self._as_utc(item.date_utc)
         expires_at = self._as_utc(item.expiring_utc)
         if expires_at <= datetime.now(UTC):
@@ -491,7 +506,7 @@ class PublicInstaloaderAdapter:
             instagram_media_id=identity.value,
             shortcode=None,
             profile_id=owner.id,
-            instagram_user_id=owner.instagram_user_id,
+            instagram_user_id=instagram_user_id,
             owner_username=owner_profile.username,
             caption=caption,
             accessibility_caption="",
@@ -740,10 +755,7 @@ class PublicInstaloaderAdapter:
             profile=post.owner_profile,
             staging_directory=Path(loader.dirname_pattern),
         )
-        if not resolved_owner.instagram_user_id:
-            raise PublicInstagramAdapterError(
-                "Instagram media owner metadata is incomplete."
-            )
+        instagram_user_id = str(post.owner_profile.userid)
 
         def download(active_loader: Instaloader, target: str) -> None:
             active_loader.download_post(post, target=target)
@@ -754,7 +766,7 @@ class PublicInstaloaderAdapter:
             instagram_media_id=str(post.mediaid),
             shortcode=post.shortcode,
             profile_id=resolved_owner.id,
-            instagram_user_id=resolved_owner.instagram_user_id,
+            instagram_user_id=instagram_user_id,
             owner_username=post.owner_profile.username,
             caption=post.caption or "",
             accessibility_caption=post.accessibility_caption or "",
