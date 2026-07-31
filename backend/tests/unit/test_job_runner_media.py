@@ -406,6 +406,104 @@ def test_direct_media_item_failure_records_issue_then_fails_with_safe_message(
     assert len(issue_logs) == 1
 
 
+def test_direct_issue_repository_failure_ends_job_with_bounded_fatal_error(
+    runner: JobRunner,
+    jobs: JobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: an exception raised while persisting the direct issue must
+    # not escape run() and strand the already-claimed job in running.
+    job = _claimed_single_media(
+        jobs,
+        {
+            "media_kind": "reel",
+            "identity_type": "shortcode",
+            "identity_value": "repository-failure",
+            "shortcode": "repository-failure",
+            "original_url": (
+                "https://www.instagram.com/reel/repository-failure/"
+            ),
+        },
+    )
+    issue = SafeMediaIssue(
+        identity=MediaIdentity("shortcode", "repository-failure"),
+        kind="reel",
+        error_code="instagram_unavailable",
+        safe_message="Instagram could not be reached. Try again later.",
+        exception_class_chain=("ConnectionException",),
+    )
+
+    class FailingAdapter:
+        def download_input(self, _parsed: ReelInput, _job_id: str) -> None:
+            raise MediaItemFailure(issue)
+
+    def reject_issue_write(**_kwargs) -> None:
+        raise RuntimeError("postgresql://admin:raw-secret@private.example/jobs")
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: FailingAdapter())
+    monkeypatch.setattr(jobs, "record_issue", reject_issue_write)
+
+    runner.run(job)
+
+    failed = jobs.get(job.id, include_issues=True)
+    assert failed is not None
+    assert failed.state == "failed"
+    assert failed.error == "Media issue reporting failed."
+    assert failed.issue_count == 0
+
+
+def test_direct_issue_logging_failure_ends_job_with_bounded_fatal_error(
+    runner: JobRunner,
+    jobs: JobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: a logging handler failure after issue persistence must not
+    # escape run() or expose its raw internal message in the terminal error.
+    job = _claimed_single_media(
+        jobs,
+        {
+            "media_kind": "story",
+            "identity_type": "story_media_id",
+            "identity_value": "3952742051065980676",
+            "story_media_id": "3952742051065980676",
+            "username": "katerina.soria",
+            "original_url": (
+                "https://www.instagram.com/stories/"
+                "katerina.soria/3952742051065980676/"
+            ),
+        },
+    )
+    issue = SafeMediaIssue(
+        identity=MediaIdentity("story_media_id", "3952742051065980676"),
+        kind="story",
+        error_code="instagram_unavailable",
+        safe_message="Instagram could not be reached. Try again later.",
+        exception_class_chain=("BadResponseException",),
+    )
+
+    class FailingAdapter:
+        def download_input(self, _parsed: StoryInput, _job_id: str) -> None:
+            raise MediaItemFailure(issue)
+
+    def reject_issue_log(*_args, **_kwargs) -> None:
+        raise RuntimeError("raw log handler secret at /private/log.sock")
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: FailingAdapter())
+    monkeypatch.setattr(
+        job_runner_module,
+        "log_media_issue",
+        reject_issue_log,
+    )
+
+    runner.run(job)
+
+    failed = jobs.get(job.id, include_issues=True)
+    assert failed is not None
+    assert failed.state == "failed"
+    assert failed.error == "Media issue reporting failed."
+    assert failed.issue_count == 1
+
+
 def test_fatal_profile_scan_preserves_story_and_records_failed_attempt(
     runner: JobRunner,
     library: LibraryRepository,

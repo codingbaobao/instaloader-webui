@@ -36,6 +36,7 @@ from instaloader_webui.services.instagram_inputs import (
 from instaloader_webui.services.profile_avatars import profile_avatar_path
 
 _MAXIMUM_ERROR_LENGTH = 240
+_MEDIA_ISSUE_REPORTING_FAILED = "Media issue reporting failed."
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -67,26 +68,21 @@ class JobRunner:
             self._progress(job, 0, None, "Starting worker job.")
             warning_count = self._dispatch(job)
         except MediaItemFailure as failure:
-            self._record_media_issue(job, failure.issue)
-            self._jobs.fail(
-                job_id=job.id,
-                error=failure.issue.safe_message,
-                now=datetime.now(UTC),
-            )
-        except Exception as error:  # noqa: BLE001
-            safe_error = shorten_job_error(error)
             try:
-                self._record_profile_sync_failure(job)
-                self._record_profile_deletion_failure(job)
-                self._record_followee_discovery_failure(job, safe_error)
-            except Exception:  # noqa: BLE001, S110
-                # The original operation failure remains the job's useful outcome.
-                pass
-            self._jobs.fail(
-                job_id=job.id,
-                error=safe_error,
-                now=datetime.now(UTC),
-            )
+                self._record_media_issue(job, failure.issue)
+            except Exception:  # noqa: BLE001
+                self._fail_job(
+                    job,
+                    RuntimeError(_MEDIA_ISSUE_REPORTING_FAILED),
+                )
+            else:
+                self._jobs.fail(
+                    job_id=job.id,
+                    error=failure.issue.safe_message,
+                    now=datetime.now(UTC),
+                )
+        except Exception as error:  # noqa: BLE001
+            self._fail_job(job, error)
         else:
             completed = self._jobs.get(job.id)
             status_text = (
@@ -107,6 +103,21 @@ class JobRunner:
                     status_text=status_text,
                     now=now,
                 )
+
+    def _fail_job(self, job: JobSnapshot, error: Exception) -> None:
+        safe_error = shorten_job_error(error)
+        try:
+            self._record_profile_sync_failure(job)
+            self._record_profile_deletion_failure(job)
+            self._record_followee_discovery_failure(job, safe_error)
+        except Exception:  # noqa: BLE001, S110
+            # The original operation failure remains the job's useful outcome.
+            pass
+        self._jobs.fail(
+            job_id=job.id,
+            error=safe_error,
+            now=datetime.now(UTC),
+        )
 
     def _dispatch(self, job: JobSnapshot) -> int:
         if job.type == "profile_sync":
