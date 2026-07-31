@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from alembic import command
@@ -15,6 +16,40 @@ def migration_config(database_path: Path) -> Config:
         f"sqlite:///{database_path.resolve().as_posix()}",
     )
     return config
+
+
+def test_migration_preserves_existing_job_runner_logger_state(test_settings) -> None:
+    logger = logging.getLogger("instaloader_webui.services.job_runner")
+    original_state = (
+        logger.disabled,
+        logger.level,
+        logger.propagate,
+        logger.handlers[:],
+    )
+    sentinel_handler = logging.NullHandler()
+    logger.disabled = False
+    logger.setLevel(logging.WARNING)
+    logger.propagate = False
+    logger.addHandler(sentinel_handler)
+    expected_state = (
+        logger.disabled,
+        logger.level,
+        logger.propagate,
+        logger.handlers[:],
+    )
+
+    try:
+        command.upgrade(migration_config(test_settings.database_path), "head")
+
+        assert (
+            logger.disabled,
+            logger.level,
+            logger.propagate,
+            logger.handlers,
+        ) == expected_state
+    finally:
+        logger.disabled, logger.level, logger.propagate, handlers = original_state
+        logger.handlers[:] = handlers
 
 
 def insert_legacy_library_fixture(database_path: Path) -> None:
