@@ -84,7 +84,7 @@ export function ActivityPage() {
                   {stateLabel(job.state)}
                 </span>
               </div>
-              {job.progress_total !== null ? (
+              {job.progress_total !== null && job.progress_total > 0 ? (
                 <>
                   <div className="job-progress-copy">
                     <span>{job.progress_current} of {job.progress_total}</span>
@@ -96,6 +96,9 @@ export function ActivityPage() {
                     value={progress(job)}
                   />
                 </>
+              ) : null}
+              {job.state === "failed" && job.error ? (
+                <p className="job-error" role="alert">{job.error}</p>
               ) : null}
               {job.state === "completed_with_warnings" && job.issue_count > 0 ? (
                 <JobIssues jobId={job.id} issueCount={job.issue_count} />

@@ -71,6 +71,62 @@ describe("ActivityPage", () => {
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
+  it("omits numeric progress when a delete job has a zero total", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            type: "delete_media",
+            state: "succeeded",
+            progress_current: 0,
+            progress_total: 0,
+            status_text: "Media deleted.",
+            completed_at: "2026-07-31T08:00:04Z",
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    expect(await screen.findByText("Media deleted.")).toBeVisible();
+    expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("shows the sanitized failure reason for an ordinary failed job", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            state: "failed",
+            status_text: "Profile sync failed.",
+            error: "Filesystem operation failed: Permission denied.",
+            completed_at: "2026-07-31T08:00:04Z",
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("alert"),
+    ).toHaveTextContent("Filesystem operation failed: Permission denied.");
+    expect(screen.getByText("Failed")).toBeVisible();
+  });
+
   it("loads and shows only safe warning details after expansion", async () => {
     const warningJob = jobFixture({
       state: "completed_with_warnings",
