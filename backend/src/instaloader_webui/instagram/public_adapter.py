@@ -1,12 +1,15 @@
 """Resolve public Instaloader inputs for the shared local media processor."""
 
+from __future__ import annotations
+
 import os
 import shutil
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from inspect import signature
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from instaloader import (
     BadResponseException,
@@ -35,6 +38,11 @@ from instaloader_webui.instagram.media_types import (
     MediaCandidate,
     ResolvedMedia,
 )
+from instaloader_webui.instagram.profile_sync import (
+    IssueCallback,
+    ProfileSyncCoordinator,
+    ProfileSyncResult,
+)
 from instaloader_webui.instagram.safe_issues import (
     MediaItemFailure,
     SafeMediaIssue,
@@ -57,7 +65,7 @@ from instaloader_webui.services.profile_avatars import (
 
 MediaKind = Literal["post", "reel"]
 DirectMediaInput = PostInput | ReelInput | StoryInput
-ProgressCallback = Callable[[int, int | None, str], None]
+ProgressCallback = Callable[..., None]
 _MISSING_STORY_METADATA = "Fetching StoryItem metadata failed."
 
 
@@ -90,6 +98,44 @@ class PublicProfile:
     profile_pic_url: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _PublicProfileMediaSource:
+    adapter: PublicInstaloaderAdapter
+    loader: Instaloader
+    owner: ProfileSnapshot
+
+    def iter_stories(self, profile: object) -> Iterator[MediaCandidate]:
+        return self.adapter._iter_story_candidates(
+            loader=self.loader,
+            profile=cast(Profile, profile),
+            owner=self.owner,
+        )
+
+    def iter_reels(self, profile: object) -> Iterator[MediaCandidate]:
+        typed_profile = cast(Profile, profile)
+        return (
+            self.adapter._profile_post_candidate(
+                loader=self.loader,
+                post=post,
+                kind="reel",
+                owner=self.owner,
+            )
+            for post in typed_profile.get_reels()
+        )
+
+    def iter_posts(self, profile: object) -> Iterator[MediaCandidate]:
+        typed_profile = cast(Profile, profile)
+        return (
+            self.adapter._profile_post_candidate(
+                loader=self.loader,
+                post=post,
+                kind="post",
+                owner=self.owner,
+            )
+            for post in typed_profile.get_posts()
+        )
+
+
 class PublicInstaloaderAdapter:
     """Keep upstream Instaloader calls and filesystem staging inside one boundary."""
 
@@ -102,12 +148,15 @@ class PublicInstaloaderAdapter:
         library: LibraryRepository,
         progress: ProgressCallback,
         loader_runtime: WorkerInstaloaderRuntime,
+        issue: IssueCallback | None = None,
     ) -> None:
         self._data_root = data_root.resolve()
         self._media_root = self._require_data_subdirectory(media_root)
         self._jobs_root = self._require_data_subdirectory(jobs_root)
         self._library = library
         self._progress = progress
+        self._progress_supports_phase = self._supports_phase(progress)
+        self._issue = issue or (lambda _issue: None)
         self._loader_runtime = loader_runtime
 
     def fetch_profile(self, username: str) -> PublicProfile:
@@ -212,16 +261,29 @@ class PublicInstaloaderAdapter:
         loader = self._acquire_required_loader(
             self._metadata_staging_directory()
         )
+        yield from self._iter_story_candidates(
+            loader=loader,
+            profile=profile,
+            owner=stored_profile,
+        )
+
+    def _iter_story_candidates(
+        self,
+        *,
+        loader: Instaloader,
+        profile: Profile,
+        owner: ProfileSnapshot,
+    ) -> Iterator[MediaCandidate]:
         for story in loader.get_stories(userids=[profile.userid]):
             for item in story.get_items():
                 identity = MediaIdentity("story_media_id", str(item.mediaid))
                 yield self._story_candidate(
                     loader=loader,
                     item=item,
-                    owner=stored_profile,
+                    owner=owner,
                     identity=identity,
                     original_url=self._canonical_story_url(
-                        stored_profile.username,
+                        owner.username,
                         identity.value,
                     ),
                 )
@@ -610,24 +672,39 @@ class PublicInstaloaderAdapter:
             )
         )
 
-    def sync_profile(self, profile_id: str, job_id: str) -> int:
+    def sync_profile(self, profile_id: str, job_id: str) -> ProfileSyncResult:
         """Refresh one tracked profile and download its missing public media."""
         stored_profile = self._library.get_profile(profile_id)
         if stored_profile is None:
             raise PublicInstagramAdapterError("The requested profile no longer exists.")
         if not stored_profile.tracked or stored_profile.status != "active":
-            self._report(0, 0, "Profile synchronization is stopped.")
-            return 0
+            self._report(
+                0,
+                0,
+                "Profile synchronization is stopped.",
+                phase="profile_preflight",
+            )
+            return ProfileSyncResult(
+                processed=0,
+                total=0,
+                issue_count=0,
+                stopped=True,
+            )
 
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader, session_configured = self._acquire_loader(staging_directory)
-            self._report(0, None, "Refreshing public Instagram profile.")
+            loader = self._acquire_required_loader(staging_directory)
+            self._report(
+                0,
+                None,
+                "Refreshing public Instagram profile.",
+                phase="profile_preflight",
+            )
             profile = Profile.from_username(loader.context, stored_profile.username)
             profile_data = self._normalize_profile(
                 profile,
-                authenticated=session_configured,
+                authenticated=True,
             )
             self._refresh_profile_avatar(
                 loader=loader,
@@ -635,7 +712,7 @@ class PublicInstaloaderAdapter:
                 profile_id=profile_id,
                 staging_directory=staging_directory,
             )
-            self._library.update_profile_metadata(
+            refreshed_profile = self._library.update_profile_metadata(
                 profile_id=profile_id,
                 instagram_user_id=str(profile_data.instagram_user_id),
                 username=profile_data.username,
@@ -644,10 +721,23 @@ class PublicInstaloaderAdapter:
                 profile_pic_url=profile_data.profile_pic_url,
                 now=datetime.now(UTC),
             )
-            inspected = self._sync_iterators(
-                loader=loader,
+            result = ProfileSyncCoordinator(
+                source=_PublicProfileMediaSource(
+                    adapter=self,
+                    loader=loader,
+                    owner=refreshed_profile,
+                ),
+                processor=self._processor(loader),
+                progress=lambda current, total, phase, status_text: self._report(
+                    current,
+                    total,
+                    status_text,
+                    phase=phase,
+                ),
+                record_issue=self._issue,
+                is_syncable=lambda: self._profile_is_syncable(profile_id),
+            ).run(
                 profile=profile,
-                profile_id=profile_id,
                 job_id=job_id,
             )
         except InstaloaderException as error:
@@ -655,7 +745,7 @@ class PublicInstaloaderAdapter:
             raise PublicInstagramAdapterError(
                 classify_instaloader_error(
                     error,
-                    session_configured=session_configured,
+                    session_configured=True,
                     target="profile",
                 )
             ) from error
@@ -664,7 +754,7 @@ class PublicInstaloaderAdapter:
             raise
         else:
             self._record_sync_result(profile_id, succeeded=True)
-            return inspected
+            return result
         finally:
             self._remove_directory(staging_directory)
 
@@ -711,57 +801,15 @@ class PublicInstaloaderAdapter:
         finally:
             response.close()
 
-    def _sync_iterators(
+    def _profile_post_candidate(
         self,
         *,
         loader: Instaloader,
-        profile: Profile,
-        profile_id: str,
-        job_id: str,
-    ) -> int:
-        inspected = 0
-        for kind, iterator_factory in (
-            ("post", profile.get_posts),
-            ("reel", profile.get_reels),
-        ):
-            if not self._profile_is_syncable(profile_id):
-                self._report(
-                    inspected,
-                    inspected,
-                    "Profile synchronization stopped before the next media item.",
-                )
-                return inspected
-            iterator = iter(iterator_factory())
-            while True:
-                if not self._profile_is_syncable(profile_id):
-                    self._report(
-                        inspected,
-                        inspected,
-                        "Profile synchronization stopped before the next media item.",
-                    )
-                    return inspected
-                try:
-                    post = next(iterator)
-                except StopIteration:
-                    break
-                inspected += 1
-                self._sync_post(
-                    loader=loader,
-                    post=post,
-                    job_id=job_id,
-                    kind=self._normalize_kind(kind),
-                )
-                self._report(
-                    inspected,
-                    None,
-                    f"Inspected public Instagram {kind} {inspected}.",
-                )
-        return inspected
-
-    def _sync_post(
-        self, *, loader: Instaloader, post: Post, job_id: str, kind: MediaKind
-    ) -> None:
-        candidate = MediaCandidate(
+        post: Post,
+        kind: MediaKind,
+        owner: ProfileSnapshot | None,
+    ) -> MediaCandidate:
+        return MediaCandidate(
             identity=MediaIdentity("shortcode", post.shortcode),
             kind=kind,
             session_configured=loader.context.is_logged_in,
@@ -770,9 +818,9 @@ class PublicInstaloaderAdapter:
                 post=post,
                 kind=kind,
                 original_url=self._canonical_original_url(post.shortcode, kind),
+                owner=owner,
             ),
         )
-        self._processor(loader).process(candidate, job_id=job_id)
 
     def _resolve_shortcode(
         self,
@@ -1022,5 +1070,23 @@ class PublicInstaloaderAdapter:
             raise PublicInstagramAdapterError("Worker staging path is not a directory.")
         shutil.rmtree(directory)
 
-    def _report(self, current: int, total: int | None, status_text: str) -> None:
-        self._progress(current, total, status_text)
+    def _report(
+        self,
+        current: int,
+        total: int | None,
+        status_text: str,
+        *,
+        phase: str | None = None,
+    ) -> None:
+        if self._progress_supports_phase:
+            self._progress(current, total, phase, status_text)
+        else:
+            self._progress(current, total, status_text)
+
+    @staticmethod
+    def _supports_phase(progress: ProgressCallback) -> bool:
+        try:
+            signature(progress).bind(0, None, "phase", "status")
+        except (TypeError, ValueError):
+            return False
+        return True
