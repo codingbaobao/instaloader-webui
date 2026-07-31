@@ -12,12 +12,12 @@ class EmptySessionStore:
         return None
 
 
-def test_context_error_redacts_sensitive_url_and_cookie_details_from_stderr(
+def test_context_error_redacts_url_query_without_losing_safe_diagnostic(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Break caught: Instaloader's 429 warning prints the raw response URL before
-    # the worker can classify the exception into a safe issue.
+    # Break caught: fail-closed secret handling must not erase an otherwise
+    # safe warning merely because its Instagram URL has a query string.
     runtime = WorkerInstaloaderRuntime(
         cast(InstagramSessionStore, EmptySessionStore())
     )
@@ -27,11 +27,7 @@ def test_context_error_redacts_sensitive_url_and_cookie_details_from_stderr(
     loader.context.error(
         "429 retrying "
         "https://www.instagram.com/graphql/query/"
-        "?query_hash=query-marker-91&variables=secret-marker-37 "
-        "Cookie: cookie-secret-14; "
-        "sessionid=session-secret-26; "
-        "csrftoken=csrf-secret-58; "
-        "igsh=igsh-secret-63"
+        "?query_hash=query-marker-91&variables=secret-marker-37"
     )
 
     stderr = capsys.readouterr().err
@@ -41,14 +37,6 @@ def test_context_error_redacts_sensitive_url_and_cookie_details_from_stderr(
     for forbidden in (
         "query-marker-91",
         "secret-marker-37",
-        "cookie-secret-14",
-        "session-secret-26",
-        "csrf-secret-58",
-        "igsh-secret-63",
-        "cookie",
-        "sessionid",
-        "csrftoken",
-        "igsh",
     ):
         assert forbidden.casefold() not in stderr.casefold()
     assert loader.context.error_log == [stderr.strip()]
@@ -96,8 +84,7 @@ def test_context_error_redacts_repr_style_secret_mappings(
     stderr = capsys.readouterr().err
     runtime.close()
 
-    assert "429 request rejected" in stderr
-    assert len(stderr.rstrip("\n")) <= 2048
+    assert stderr == "Instagram warning omitted because it contained sensitive details.\n"
     for forbidden in (
         "sessionid",
         "csrftoken",
@@ -105,6 +92,55 @@ def test_context_error_redacts_repr_style_secret_mappings(
         "dummy-one-marker",
         "dummy-two-marker",
         "dummy-three-marker",
+    ):
+        assert forbidden.casefold() not in stderr.casefold()
+    assert loader.context.error_log == [stderr.strip()]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "headers={'Cookie': {'sessionid': 'DUMMYSESSION', "
+            "'csrftoken': 'DUMMYCSRF'}}"
+        ),
+        (
+            "outer={layer:{HeAdErS:{cOoKiE:{IgSh:DUMMYIGSH,"
+            "SeSsIoNiD:DUMMYDEEP}}}}"
+        ),
+        f"{'safe-prefix-' * 800} Cookie=DUMMYLATE",
+    ],
+)
+def test_context_error_replaces_nested_sensitive_shapes_with_fixed_warning(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    message: str,
+) -> None:
+    # Break caught: nested or mixed repr structures outgrow field-level regex
+    # parsing and can retain raw secret values in stderr and error_log.
+    runtime = WorkerInstaloaderRuntime(
+        cast(InstagramSessionStore, EmptySessionStore())
+    )
+    loader, _configured = runtime.acquire(tmp_path / "staging")
+
+    loader.context.error(message)
+
+    stderr = capsys.readouterr().err
+    runtime.close()
+
+    assert stderr == "Instagram warning omitted because it contained sensitive details.\n"
+    assert len(stderr.rstrip("\n")) <= 2048
+    assert message.casefold() not in stderr.casefold()
+    for forbidden in (
+        "cookie",
+        "sessionid",
+        "csrftoken",
+        "igsh",
+        "dummysession",
+        "dummycsrf",
+        "dummyigsh",
+        "dummydeep",
+        "dummylate",
     ):
         assert forbidden.casefold() not in stderr.casefold()
     assert loader.context.error_log == [stderr.strip()]

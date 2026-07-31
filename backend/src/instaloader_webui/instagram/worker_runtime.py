@@ -16,18 +16,12 @@ SessionRevision = tuple[str, datetime]
 
 _MAX_CONTEXT_ERROR_INPUT_LENGTH = 8192
 _MAX_CONTEXT_ERROR_LENGTH = 2048
+_SENSITIVE_CONTEXT_ERROR_WARNING = (
+    "Instagram warning omitted because it contained sensitive details."
+)
+_SENSITIVE_ERROR_MARKERS = ("cookie", "sessionid", "csrftoken", "igsh")
 _URL_QUERY_OR_FRAGMENT = re.compile(
     r"(?P<base>[A-Za-z][A-Za-z0-9+.-]*://[^\s?#]+)[?#][^\s]*"
-)
-_SENSITIVE_ERROR_MAPPING = re.compile(
-    r"\b(?:cookies|headers)\b\s*=\s*\{[^{}\r\n]{0,8192}\}",
-    flags=re.IGNORECASE,
-)
-_SENSITIVE_ERROR_FIELD = re.compile(
-    r"(?<!\w)['\"]?(?:cookie|sessionid|csrftoken|igsh)['\"]?"
-    r"\s*(?:(?:=|:)\s*)?"
-    r"(?:\"[^\"\r\n]{0,4096}\"|'[^'\r\n]{0,4096}'|[^\s,;}\]\r\n]{0,4096})?",
-    flags=re.IGNORECASE,
 )
 
 
@@ -209,10 +203,12 @@ class WorkerInstaloaderRuntime:
 
 
 def _sanitize_context_error(message: object) -> str:
-    text = str(message)[:_MAX_CONTEXT_ERROR_INPUT_LENGTH]
+    raw_text = str(message)
+    normalized = raw_text.casefold()
+    if any(marker in normalized for marker in _SENSITIVE_ERROR_MARKERS):
+        return _SENSITIVE_CONTEXT_ERROR_WARNING
+    text = raw_text[:_MAX_CONTEXT_ERROR_INPUT_LENGTH]
     text = _URL_QUERY_OR_FRAGMENT.sub(r"\g<base>?[redacted]", text)
-    text = _SENSITIVE_ERROR_MAPPING.sub("[redacted]", text)
-    text = _SENSITIVE_ERROR_FIELD.sub("[redacted]", text)
     if len(text) <= _MAX_CONTEXT_ERROR_LENGTH:
         return text
     return f"{text[: _MAX_CONTEXT_ERROR_LENGTH - 1]}…"
