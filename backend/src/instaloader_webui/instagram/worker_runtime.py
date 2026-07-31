@@ -1,5 +1,6 @@
 """Process-local Instaloader clients for the persistent worker."""
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +13,17 @@ from instaloader_webui.instagram.session_store import (
 )
 
 SessionRevision = tuple[str, datetime]
+
+_MAX_CONTEXT_ERROR_INPUT_LENGTH = 8192
+_MAX_CONTEXT_ERROR_LENGTH = 2048
+_URL_QUERY_OR_FRAGMENT = re.compile(
+    r"(?P<base>[A-Za-z][A-Za-z0-9+.-]*://[^\s?#]+)[?#][^\s]*"
+)
+_SENSITIVE_ERROR_FIELD = re.compile(
+    r"\b(?:cookie|sessionid|csrftoken|igsh)\b"
+    r"\s*(?:(?:=|:)\s*)?(?:\"[^\"]*\"|'[^']*'|[^\s,;]*)?",
+    flags=re.IGNORECASE,
+)
 
 
 class InstagramSessionRevisionError(RuntimeError):
@@ -166,7 +178,7 @@ class WorkerInstaloaderRuntime:
 
     @staticmethod
     def _build_loader(staging_directory: Path) -> Instaloader:
-        return Instaloader(
+        loader = Instaloader(
             dirname_pattern=str(staging_directory),
             filename_pattern="{shortcode}",
             download_pictures=True,
@@ -179,3 +191,22 @@ class WorkerInstaloaderRuntime:
             quiet=True,
             rate_controller=_WorkerRateController,
         )
+        original_error = loader.context.error
+
+        def safe_error(msg: object, repeat_at_end: bool = True) -> None:
+            original_error(
+                _sanitize_context_error(msg),
+                repeat_at_end=repeat_at_end,
+            )
+
+        loader.context.error = safe_error  # type: ignore[method-assign]
+        return loader
+
+
+def _sanitize_context_error(message: object) -> str:
+    text = str(message)[:_MAX_CONTEXT_ERROR_INPUT_LENGTH]
+    text = _URL_QUERY_OR_FRAGMENT.sub(r"\g<base>?[redacted]", text)
+    text = _SENSITIVE_ERROR_FIELD.sub("[redacted]", text)
+    if len(text) <= _MAX_CONTEXT_ERROR_LENGTH:
+        return text
+    return f"{text[: _MAX_CONTEXT_ERROR_LENGTH - 1]}…"
