@@ -211,7 +211,6 @@ def test_story_schema_downgrade_removes_warning_jobs_and_dependent_batches(
                 ")"
             )
         )
-
     command.downgrade(config, "0007_followee_imports")
 
     inspector = inspect(build_engine(test_settings.database_path))
@@ -234,3 +233,70 @@ def test_story_schema_downgrade_removes_warning_jobs_and_dependent_batches(
     job_columns = {column["name"]: column for column in inspector.get_columns("jobs")}
     assert job_columns["state"]["type"].length == 16
     assert "phase" not in job_columns
+
+
+def test_story_schema_downgrade_removes_non_shortcode_media_identities(
+    test_settings,
+) -> None:
+    config = migration_config(test_settings.database_path)
+    command.upgrade(config, "0007_followee_imports")
+    insert_legacy_library_fixture(test_settings.database_path)
+    command.upgrade(config, "head")
+
+    with build_engine(test_settings.database_path).begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO media_items ("
+                "id, instagram_media_id, shortcode, identity_type, identity_value, "
+                "owner_profile_id, kind, caption, accessibility_caption, published_at, "
+                "original_url, story_expires_at, downloaded_at, created_at, updated_at"
+                ") VALUES ("
+                "'story-identity-post', NULL, NULL, 'story_media_id', '987654321', "
+                "'profile-1', 'post', '', '', '2026-07-31T00:00:00+00:00', "
+                "'https://example.invalid/story', NULL, NULL, "
+                "'2026-07-31T00:00:00+00:00', '2026-07-31T00:00:00+00:00'"
+                ")"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO media_items ("
+                "id, instagram_media_id, shortcode, identity_type, identity_value, "
+                "owner_profile_id, kind, caption, accessibility_caption, published_at, "
+                "original_url, story_expires_at, downloaded_at, created_at, updated_at"
+                ") VALUES ("
+                "'shortcode-identity-post', NULL, NULL, 'shortcode', "
+                "'backfilled-shortcode', 'profile-1', 'post', '', '', "
+                "'2026-07-31T00:00:00+00:00', 'https://example.invalid/post', "
+                "NULL, NULL, '2026-07-31T00:00:00+00:00', "
+                "'2026-07-31T00:00:00+00:00'"
+                ")"
+            )
+        )
+
+    command.downgrade(config, "0007_followee_imports")
+
+    with build_engine(test_settings.database_path).connect() as connection:
+        assert (
+            connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM media_items WHERE id = 'story-identity-post'"
+                )
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(
+                text("SELECT COUNT(*) FROM media_items WHERE id = 'media-1'")
+            ).scalar_one()
+            == 1
+        )
+        assert (
+            connection.execute(
+                text(
+                    "SELECT shortcode FROM media_items "
+                    "WHERE id = 'shortcode-identity-post'"
+                )
+            ).scalar_one()
+            == "backfilled-shortcode"
+        )

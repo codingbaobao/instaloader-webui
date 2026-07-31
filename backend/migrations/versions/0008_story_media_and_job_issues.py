@@ -4,9 +4,12 @@ Revision ID: 0008_story_media_and_job_issues
 Revises: 0007_followee_imports
 Create Date: 2026-07-31 12:00:00
 
-Downgrading removes Story media, poster assets, and jobs completed with
-warnings (including their dependent followee-import batches) because those
-values cannot satisfy the earlier schema constraints.
+Downgrading removes Story media, poster assets, and media identities that cannot
+be represented by the earlier non-null, unique shortcode column. It backfills a
+missing shortcode from a shortcode identity only when doing so is unique. It
+also removes jobs completed with warnings (including their dependent
+followee-import batches) because those values cannot satisfy the earlier schema
+constraints.
 """
 
 from collections.abc import Sequence
@@ -141,6 +144,25 @@ def downgrade() -> None:
 
     op.execute(sa.text("DELETE FROM media_assets WHERE role = 'poster'"))
     op.execute(sa.text("DELETE FROM media_items WHERE kind = 'story'"))
+    op.execute(
+        sa.text(
+            "UPDATE media_items "
+            "SET shortcode = identity_value "
+            "WHERE identity_type = 'shortcode' "
+            "AND shortcode IS NULL "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM media_items AS existing "
+            "WHERE existing.shortcode = media_items.identity_value "
+            "AND existing.id != media_items.id"
+            ")"
+        )
+    )
+    op.execute(
+        sa.text(
+            "DELETE FROM media_items "
+            "WHERE identity_type = 'story_media_id' OR shortcode IS NULL"
+        )
+    )
     with op.batch_alter_table("media_assets", recreate="always") as batch_op:
         batch_op.drop_constraint("ck_media_assets_role", type_="check")
         batch_op.drop_column("role")
