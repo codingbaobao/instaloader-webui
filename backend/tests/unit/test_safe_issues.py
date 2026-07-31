@@ -33,6 +33,102 @@ def _identity() -> MediaIdentity:
     return MediaIdentity("shortcode", "DOqEJyxCRGJ")
 
 
+def _valid_issue(
+    *,
+    identity: MediaIdentity | None = None,
+    kind: str = "reel",
+    error_code: str = "instagram_unavailable",
+    safe_message: str = TRANSIENT,
+    exception_class_chain: tuple[str, ...] = ("ConnectionException",),
+) -> SafeMediaIssue:
+    return SafeMediaIssue(
+        identity=identity or _identity(),
+        kind=kind,
+        error_code=error_code,  # type: ignore[arg-type]
+        safe_message=safe_message,
+        exception_class_chain=exception_class_chain,
+    )
+
+
+@pytest.mark.parametrize(
+    ("identity", "kind"),
+    [
+        (
+            MediaIdentity("shortcode", "DOqEJyxCRGJ?igsh=identity-secret"),
+            "reel",
+        ),
+        (MediaIdentity("story_media_id", "123?Cookie=story-secret"), "story"),
+        (MediaIdentity("cookie_type", "type-secret"), "reel"),
+        (MediaIdentity("shortcode", "DOqEJyxCRGJ"), "reel Cookie: kind-secret"),
+    ],
+)
+def test_direct_issue_construction_rejects_secret_bearing_identity_or_kind(
+    identity: MediaIdentity,
+    kind: str,
+) -> None:
+    """Allowing unsafe issue fields would expose their values through repr/API."""
+    with pytest.raises(ValueError) as raised:
+        _valid_issue(identity=identity, kind=kind)
+
+    assert str(raised.value) == "Invalid safe media issue."
+    assert "secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("error_code", "safe_message"),
+    [
+        ("made_up_code", TRANSIENT),
+        ("instagram_unavailable", "Cookie: message-secret"),
+        ("instagram_unavailable", CHALLENGE),
+    ],
+)
+def test_direct_issue_construction_rejects_non_approved_code_or_message(
+    error_code: str,
+    safe_message: str,
+) -> None:
+    """A caller must not persist an arbitrary code or message through an issue."""
+    with pytest.raises(ValueError) as raised:
+        _valid_issue(error_code=error_code, safe_message=safe_message)
+
+    assert str(raised.value) == "Invalid safe media issue."
+    assert "secret" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("identity", "kind"),
+    [
+        (MediaIdentity("shortcode", "DOqEJyxCRGJ?igsh=secret"), "reel"),
+        (MediaIdentity("shortcode", "DOqEJyxCRGJ"), "reel Cookie: secret"),
+    ],
+)
+def test_classification_rejects_unsafe_issue_fields_before_returning_an_issue(
+    identity: MediaIdentity,
+    kind: str,
+) -> None:
+    """Returning an issue with a query or Cookie would make repr unsafe."""
+    with pytest.raises(ValueError) as raised:
+        classify_media_issue(
+            ConnectionException("unavailable"),
+            session_configured=True,
+            target="media",
+            identity=identity,
+            kind=kind,
+        )
+
+    assert str(raised.value) == "Invalid safe media issue."
+    assert "secret" not in str(raised.value)
+
+
+def test_direct_issue_construction_keeps_valid_story_identity() -> None:
+    """Rejecting valid Story identities would break safe Story warning persistence."""
+    issue = _valid_issue(
+        identity=MediaIdentity("story_media_id", "3952742051065980676"),
+        kind="story",
+    )
+
+    assert issue.identity == MediaIdentity("story_media_id", "3952742051065980676")
+
+
 def test_issue_keeps_class_names_but_not_exception_message() -> None:
     """Removing raw exception text must make this test fail."""
     cause = ConnectionException(
@@ -201,19 +297,19 @@ def test_log_media_issue_redacts_every_field_and_emits_one_line(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Logging raw identifiers, queries, or credential assignments must fail."""
-    issue = SafeMediaIssue(
-        identity=MediaIdentity(
-            "shortcode",
-            "DOqEJyxCRGJ?igsh=identity-secret#fragment",
-        ),
-        kind="reel\nCookie: cookie-secret",
-        error_code="instagram_unavailable",
-        safe_message="Instagram could not be reached. Try again later.",
-        exception_class_chain=(
-            "BadResponseException",
-            "ConnectionException",
-            "sessionid=chain-secret",
-        ),
+    issue = _valid_issue(
+        exception_class_chain=("BadResponseException", "ConnectionException"),
+    )
+    object.__setattr__(
+        issue,
+        "identity",
+        MediaIdentity("shortcode", "DOqEJyxCRGJ?igsh=identity-secret#fragment"),
+    )
+    object.__setattr__(issue, "kind", "reel\nCookie: cookie-secret")
+    object.__setattr__(
+        issue,
+        "exception_class_chain",
+        ("BadResponseException", "ConnectionException", "sessionid=chain-secret"),
     )
     logger = logging.getLogger("test.safe_issues")
 

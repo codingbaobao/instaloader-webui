@@ -87,11 +87,24 @@ _TRANSIENT_CLASSES = frozenset(
 _HTTP_REJECTION = re.compile(r"(?<!\d)(?:401|403)(?!\d)")
 _HTTP_RATE_LIMIT = re.compile(r"(?<!\d)429(?!\d)")
 _URL_QUERY_OR_FRAGMENT = re.compile(r"([^\s?#]+)[?#][^\s]*")
+_SHORTCODE_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}\Z")
+_STORY_MEDIA_ID_PATTERN = re.compile(r"[0-9]{1,32}\Z")
+_CLASS_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
 _SENSITIVE_VALUE = re.compile(
     r"\b(?:cookie|sessionid|csrftoken)\b(?:\s*(?:=|:)\s*[^\s,;]+)?",
     flags=re.IGNORECASE,
 )
 _WHITESPACE = re.compile(r"\s+")
+_SAFE_MESSAGES_BY_CODE: dict[str, frozenset[str]] = {
+    "challenge_required": frozenset({CHALLENGE}),
+    "instagram_rate_limited": frozenset({RATE_LIMITED}),
+    "instagram_session_rejected": frozenset({SESSION_REJECTED}),
+    "instagram_access_denied": frozenset({ANONYMOUS_REJECTED}),
+    "instagram_not_found": frozenset({MEDIA_NOT_FOUND, PROFILE_NOT_FOUND}),
+    "instagram_unavailable": frozenset({TRANSIENT}),
+    "asset_validation_failed": frozenset({ASSET_VALIDATION_FAILED}),
+}
+_VALID_KINDS = frozenset({"post", "reel", "story"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +116,18 @@ class SafeMediaIssue:
     error_code: IssueCode
     safe_message: str
     exception_class_chain: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Reject values that could leak outside the controlled issue boundary."""
+        safe_messages = _SAFE_MESSAGES_BY_CODE.get(self.error_code)
+        if (
+            not _is_safe_identity(self.identity)
+            or self.kind not in _VALID_KINDS
+            or safe_messages is None
+            or self.safe_message not in safe_messages
+            or not _is_safe_exception_class_chain(self.exception_class_chain)
+        ):
+            raise ValueError("Invalid safe media issue.")
 
 
 class MediaItemFailure(RuntimeError):
@@ -279,3 +304,27 @@ def _sanitize_log_field(value: object) -> str:
     text = _URL_QUERY_OR_FRAGMENT.sub(r"\1", text)
     text = _SENSITIVE_VALUE.sub("[redacted]", text)
     return _WHITESPACE.sub(" ", text).strip()
+
+
+def _is_safe_identity(identity: object) -> bool:
+    if not isinstance(identity, MediaIdentity):
+        return False
+    if not isinstance(identity.identity_type, str) or not isinstance(identity.value, str):
+        return False
+    if identity.identity_type == "shortcode":
+        return _SHORTCODE_PATTERN.fullmatch(identity.value) is not None
+    if identity.identity_type == "story_media_id":
+        return _STORY_MEDIA_ID_PATTERN.fullmatch(identity.value) is not None
+    return False
+
+
+def _is_safe_exception_class_chain(value: object) -> bool:
+    return (
+        isinstance(value, tuple)
+        and len(value) <= _MAX_EXCEPTION_CLASS_CHAIN_LENGTH
+        and all(
+            isinstance(class_name, str)
+            and _CLASS_NAME_PATTERN.fullmatch(class_name) is not None
+            for class_name in value
+        )
+    )

@@ -35,5 +35,5 @@ def classify_instaloader_error(
         session_configured=session_configured,
         target=target,
         identity=MediaIdentity("shortcode", "legacy"),
-        kind="media",
+        kind="post",
     ).safe_message
