@@ -227,6 +227,64 @@ def test_image_candidate_saves_one_content_asset_at_position_zero(
     ).exists()
 
 
+def test_image_candidate_saves_webp_as_complete_content_asset(
+    processor: MediaProcessor,
+    profile: ProfileSnapshot,
+    test_settings: Settings,
+) -> None:
+    # Break caught: filtering Instaloader's valid GraphImage WebP output
+    # reports asset_validation_failed and leaves the media unsaved.
+    resolved = _resolved_media(
+        profile=profile,
+        kind="post",
+        content_kinds=("image",),
+        download=_download_files((f"{SHORTCODE}.webp", b"webp")),
+    )
+
+    saved = processor.process(_candidate(resolved), job_id="job-webp")
+
+    assert saved.status == "saved"
+    assert [
+        (
+            asset.kind,
+            asset.role,
+            asset.position,
+            asset.mime_type,
+            asset.relative_path,
+        )
+        for asset in saved.media.assets
+    ] == [
+        (
+            "image",
+            "content",
+            0,
+            "image/webp",
+            (
+                Path("profiles")
+                / (profile.instagram_user_id or "")
+                / SHORTCODE
+                / f"{SHORTCODE}.webp"
+            ).as_posix(),
+        )
+    ]
+    assert (
+        test_settings.media_root / saved.media.assets[0].relative_path
+    ).read_bytes() == b"webp"
+
+    existing = processor.process(
+        _candidate(
+            resolved,
+            resolve=lambda: (_ for _ in ()).throw(
+                AssertionError("complete WebP media must not resolve")
+            ),
+        ),
+        job_id="job-webp-existing",
+    )
+
+    assert existing.status == "existing"
+    assert existing.media == saved.media
+
+
 def test_video_candidate_maps_jpg_to_poster_not_content(
     processor: MediaProcessor,
     profile: ProfileSnapshot,

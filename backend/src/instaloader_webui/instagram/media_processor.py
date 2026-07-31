@@ -30,14 +30,14 @@ from instaloader_webui.instagram.safe_issues import (
     classify_media_issue,
 )
 
-_SUPPORTED_SUFFIXES = frozenset({".jpg", ".mp4"})
+_SUPPORTED_SUFFIXES = frozenset({".jpg", ".mp4", ".webp"})
 _SEQUENCE_SUFFIX = re.compile(r"_(?P<sequence>[1-9][0-9]*)\Z")
 
 
 @dataclass(frozen=True, slots=True)
 class _StagedAsset:
     path: Path
-    mime_type: Literal["image/jpeg", "video/mp4"]
+    mime_type: Literal["image/jpeg", "image/webp", "video/mp4"]
     kind: Literal["image", "video"]
     role: Literal["content", "poster"]
     position: int
@@ -198,10 +198,12 @@ class MediaProcessor:
                 raise self._asset_validation_failure(candidate)
             expected_kind = resolved.content_kinds[position]
             suffix = path.suffix.casefold()
-            if expected_kind == "image" and suffix == ".jpg":
+            if expected_kind == "image" and suffix in {".jpg", ".webp"}:
                 kind: Literal["image", "video"] = "image"
                 role: Literal["content", "poster"] = "content"
-                mime_type: Literal["image/jpeg", "video/mp4"] = "image/jpeg"
+                mime_type: Literal[
+                    "image/jpeg", "image/webp", "video/mp4"
+                ] = ("image/webp" if suffix == ".webp" else "image/jpeg")
             elif expected_kind == "video" and suffix == ".mp4":
                 kind = "video"
                 role = "content"
@@ -379,6 +381,11 @@ class MediaProcessor:
             asset.kind == "image"
             and asset.mime_type == "image/jpeg"
             and suffix == ".jpg"
+        ) or (
+            asset.kind == "image"
+            and asset.role == "content"
+            and asset.mime_type == "image/webp"
+            and suffix == ".webp"
         ) or (
             asset.kind == "video"
             and asset.role == "content"
