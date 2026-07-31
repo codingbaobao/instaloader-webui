@@ -1,23 +1,28 @@
-"""Normalize public Instaloader downloads into the local media library."""
+"""Resolve public Instaloader inputs for the shared local media processor."""
 
-from collections.abc import Callable, Iterable
+import os
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import os
 from pathlib import Path
-import shutil
 from typing import Literal
 
 from instaloader import Instaloader, InstaloaderException, Post, Profile
 
 from instaloader_webui.db.library_repositories import (
     LibraryRepository,
+    MediaIdentity,
     MediaSnapshot,
-    NormalizedAsset,
-    NormalizedMedia,
     ProfileSnapshot,
 )
 from instaloader_webui.instagram.errors import classify_instaloader_error
+from instaloader_webui.instagram.media_processor import MediaProcessor
+from instaloader_webui.instagram.media_types import (
+    ContentKind,
+    MediaCandidate,
+    ResolvedMedia,
+)
 from instaloader_webui.instagram.session_store import InstagramSessionStoreError
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.profile_avatars import (
@@ -40,13 +45,6 @@ class PublicProfile:
     full_name: str
     biography: str
     profile_pic_url: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class AssetFinalization:
-    assets: tuple[NormalizedAsset, ...]
-    final_directory: Path
-    backup_directory: Path | None
 
 
 class PublicInstaloaderAdapter:
@@ -99,44 +97,35 @@ class PublicInstaloaderAdapter:
     ) -> MediaSnapshot:
         """Download one public media item and persist its finalized local assets."""
         kind = self._normalize_kind(expected_kind)
-        existing = self._library.find_media_by_shortcode(shortcode)
-        if existing is not None and self._has_local_assets(existing):
-            if kind == "reel" and existing.kind != "reel":
-                updated = self._library.set_media_kind(
-                    shortcode=shortcode,
-                    kind="reel",
-                    now=datetime.now(UTC),
-                )
-                if updated is not None:
-                    existing = updated
-            self._report(
-                len(existing.assets),
-                len(existing.assets),
-                "Media is already saved; skipped duplicate download.",
-            )
-            return existing
-
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
             loader, session_configured = self._acquire_loader(staging_directory)
-            self._report(0, None, "Loading public Instagram media.")
-            post = Post.from_shortcode(loader.context, shortcode)
-            return self._download_post(
-                loader=loader,
-                post=post,
-                job_id=job_id,
+            candidate = MediaCandidate(
+                identity=MediaIdentity("shortcode", shortcode),
                 kind=kind,
-                original_url=original_url,
+                session_configured=session_configured,
+                resolve=lambda: self._resolve_shortcode(
+                    loader=loader,
+                    shortcode=shortcode,
+                    kind=kind,
+                    original_url=original_url,
+                ),
             )
-        except InstaloaderException as error:
-            raise PublicInstagramAdapterError(
-                classify_instaloader_error(
-                    error,
-                    session_configured=session_configured,
-                    target="media",
+            result = self._processor(loader).process(candidate, job_id=job_id)
+            if result.status == "existing":
+                self._report(
+                    len(result.media.assets),
+                    len(result.media.assets),
+                    "Media is already saved; skipped duplicate download.",
                 )
-            ) from error
+            else:
+                self._report(
+                    len(result.media.assets),
+                    len(result.media.assets),
+                    "Saved public Instagram media.",
+                )
+            return result.media
         finally:
             self._remove_directory(staging_directory)
 
@@ -279,7 +268,7 @@ class PublicInstaloaderAdapter:
                     loader=loader,
                     post=post,
                     job_id=job_id,
-                    kind=kind,
+                    kind=self._normalize_kind(kind),
                 )
                 self._report(
                     inspected,
@@ -291,78 +280,94 @@ class PublicInstaloaderAdapter:
     def _sync_post(
         self, *, loader: Instaloader, post: Post, job_id: str, kind: MediaKind
     ) -> None:
-        existing = self._library.find_media_by_shortcode(post.shortcode)
-        if existing is not None and self._has_local_assets(existing):
-            if kind == "reel" and existing.kind != "reel":
-                self._library.set_media_kind(
-                    shortcode=post.shortcode,
-                    kind="reel",
-                    now=datetime.now(UTC),
-                )
-            return
-        self._download_post(
+        candidate = MediaCandidate(
+            identity=MediaIdentity("shortcode", post.shortcode),
+            kind=kind,
+            session_configured=loader.context.is_logged_in,
+            resolve=lambda: self._resolve_post(
+                loader=loader,
+                post=post,
+                kind=kind,
+                original_url=self._canonical_original_url(post.shortcode, kind),
+            ),
+        )
+        self._processor(loader).process(candidate, job_id=job_id)
+
+    def _resolve_shortcode(
+        self,
+        *,
+        loader: Instaloader,
+        shortcode: str,
+        kind: MediaKind,
+        original_url: str | None,
+    ) -> ResolvedMedia:
+        self._report(0, None, "Loading public Instagram media.")
+        post = Post.from_shortcode(loader.context, shortcode)
+        return self._resolve_post(
             loader=loader,
             post=post,
-            job_id=job_id,
             kind=kind,
-            original_url=self._canonical_original_url(post.shortcode, kind),
+            original_url=original_url,
         )
 
-    def _download_post(
+    def _resolve_post(
         self,
         *,
         loader: Instaloader,
         post: Post,
-        job_id: str,
         kind: MediaKind,
         original_url: str | None,
-    ) -> MediaSnapshot:
-        staging_directory = self._staging_directory(job_id)
-        self._recreate_directory(staging_directory)
+    ) -> ResolvedMedia:
         owner = self._upsert_owner(
             loader=loader,
             profile=post.owner_profile,
-            staging_directory=staging_directory,
+            staging_directory=Path(loader.dirname_pattern),
         )
-        self._report(0, None, f"Downloading public Instagram media {post.shortcode}.")
-        loader.download_post(post, target=owner.username)
-        staged_assets = self._discover_assets(staging_directory, post.shortcode)
-        if not staged_assets:
+        if not owner.instagram_user_id:
             raise PublicInstagramAdapterError(
-                "Instagram did not produce a local media file."
+                "Instagram media owner metadata is incomplete."
             )
-        finalization = self._finalize_assets(
-            staged_assets=staged_assets,
-            instagram_user_id=owner.instagram_user_id,
+
+        def download(active_loader: Instaloader, target: str) -> None:
+            active_loader.download_post(post, target=target)
+
+        return ResolvedMedia(
+            identity=MediaIdentity("shortcode", post.shortcode),
+            kind=kind,
+            instagram_media_id=str(post.mediaid),
             shortcode=post.shortcode,
-            job_id=job_id,
+            profile_id=owner.id,
+            instagram_user_id=owner.instagram_user_id,
+            owner_username=owner.username,
+            caption=post.caption or "",
+            accessibility_caption=post.accessibility_caption or "",
+            published_at=post.date_utc.replace(tzinfo=UTC),
+            story_expires_at=None,
+            original_url=(
+                original_url
+                or self._canonical_original_url(post.shortcode, kind)
+            ),
+            content_kinds=self._post_content_kinds(post),
+            download=download,
         )
-        try:
-            persisted = self._library.upsert_media(
-                normalized=NormalizedMedia(
-                    instagram_media_id=str(post.mediaid),
-                    shortcode=post.shortcode,
-                    kind=kind,
-                    caption=post.caption or "",
-                    accessibility_caption=post.accessibility_caption or "",
-                    published_at=post.date_utc.replace(tzinfo=UTC),
-                    original_url=original_url
-                    or self._canonical_original_url(post.shortcode, kind),
-                ),
-                profile_id=owner.id,
-                assets=finalization.assets,
-                now=datetime.now(UTC),
+
+    @staticmethod
+    def _post_content_kinds(post: Post) -> tuple[ContentKind, ...]:
+        if post.typename == "GraphSidecar":
+            return tuple(
+                "video" if node.is_video else "image"
+                for node in post.get_sidecar_nodes()
             )
-        except Exception:
-            self._rollback_asset_finalization(finalization)
-            raise
-        self._commit_asset_finalization(finalization)
-        self._report(
-            len(finalization.assets),
-            len(finalization.assets),
-            "Saved public Instagram media.",
+        return ("video" if post.is_video else "image",)
+
+    def _processor(self, loader: Instaloader) -> MediaProcessor:
+        return MediaProcessor(
+            data_root=self._data_root,
+            media_root=self._media_root,
+            jobs_root=self._jobs_root,
+            library=self._library,
+            loader=loader,
         )
-        return persisted
 
     def _upsert_owner(
         self,
@@ -432,119 +437,12 @@ class PublicInstaloaderAdapter:
             profile_pic_url=profile.profile_pic_url,
         )
 
-    def _discover_assets(self, directory: Path, shortcode: str) -> tuple[Path, ...]:
-        files = tuple(
-            path
-            for path in directory.iterdir()
-            if path.is_file()
-            and path.suffix.casefold() in {".jpg", ".mp4"}
-            and path.name.startswith(shortcode)
-        )
-        return tuple(
-            sorted(files, key=lambda path: self._asset_sort_key(path, shortcode))
-        )
-
-    def _finalize_assets(
-        self,
-        *,
-        staged_assets: Iterable[Path],
-        instagram_user_id: str | None,
-        shortcode: str,
-        job_id: str,
-    ) -> AssetFinalization:
-        if not instagram_user_id:
-            raise PublicInstagramAdapterError(
-                "Instagram media owner metadata is incomplete."
-            )
-        final_directory = self._media_directory(instagram_user_id, shortcode)
-        replacement_directory = self._replacement_directory(
-            final_directory, shortcode, job_id
-        )
-        backup_directory = self._backup_directory(
-            final_directory, shortcode, job_id
-        )
-        self._remove_path(backup_directory)
-        self._recreate_directory(replacement_directory)
-        finalized_paths: list[Path] = []
-        preserved_directory: Path | None = None
-        new_final_installed = False
-        try:
-            for staged_asset in staged_assets:
-                final_path = replacement_directory / staged_asset.name
-                shutil.move(str(staged_asset), str(final_path))
-                finalized_paths.append(final_path)
-            if final_directory.exists():
-                final_directory.replace(backup_directory)
-                preserved_directory = backup_directory
-            replacement_directory.replace(final_directory)
-            new_final_installed = True
-            completed_paths = tuple(
-                final_directory / path.name for path in finalized_paths
-            )
-            assets = tuple(
-                NormalizedAsset(
-                    relative_path=path.relative_to(self._media_root).as_posix(),
-                    mime_type=(
-                        "image/jpeg"
-                        if path.suffix.casefold() == ".jpg"
-                        else "video/mp4"
-                    ),
-                    kind=(
-                        "image"
-                        if path.suffix.casefold() == ".jpg"
-                        else "video"
-                    ),
-                    position=position,
-                    file_size=path.stat().st_size,
-                )
-                for position, path in enumerate(completed_paths)
-            )
-        except Exception:
-            self._remove_directory(replacement_directory)
-            if new_final_installed or preserved_directory is not None:
-                self._rollback_asset_finalization(
-                    AssetFinalization(
-                        assets=(),
-                        final_directory=final_directory,
-                        backup_directory=preserved_directory,
-                    )
-                )
-            raise
-        return AssetFinalization(
-            assets=assets,
-            final_directory=final_directory,
-            backup_directory=preserved_directory,
-        )
-
-    @staticmethod
-    def _rollback_asset_finalization(finalization: AssetFinalization) -> None:
-        PublicInstaloaderAdapter._remove_path(finalization.final_directory)
-        if (
-            finalization.backup_directory is not None
-            and finalization.backup_directory.exists()
-        ):
-            finalization.backup_directory.replace(
-                finalization.final_directory
-            )
-
-    @staticmethod
-    def _commit_asset_finalization(finalization: AssetFinalization) -> None:
-        if finalization.backup_directory is not None:
-            PublicInstaloaderAdapter._remove_path(
-                finalization.backup_directory
-            )
-
     def _profile_is_syncable(self, profile_id: str) -> bool:
         profile = self._library.get_profile(profile_id)
         return (
             profile is not None
             and profile.tracked
             and profile.status == "active"
-        )
-
-    def _has_local_assets(self, media: MediaSnapshot) -> bool:
-        return bool(media.assets) and all(
-            self._asset_path(asset.relative_path).is_file() for asset in media.assets
         )
 
     def _record_sync_result(self, profile_id: str, *, succeeded: bool) -> None:
@@ -568,44 +466,6 @@ class PublicInstaloaderAdapter:
 
     def _staging_directory(self, job_id: str) -> Path:
         return self._contained_path(self._jobs_root, self._safe_component(job_id))
-
-    def _media_directory(self, instagram_user_id: str, shortcode: str) -> Path:
-        return self._contained_path(
-            self._media_root,
-            "profiles",
-            self._safe_component(instagram_user_id),
-            self._safe_component(shortcode),
-        )
-
-    def _replacement_directory(
-        self, final_directory: Path, shortcode: str, job_id: str
-    ) -> Path:
-        return self._contained_path(
-            final_directory.parent,
-            (
-                f".{self._safe_component(shortcode)}-"
-                f"{self._safe_component(job_id)}.partial"
-            ),
-        )
-
-    def _backup_directory(
-        self, final_directory: Path, shortcode: str, job_id: str
-    ) -> Path:
-        return self._contained_path(
-            final_directory.parent,
-            (
-                f".{self._safe_component(shortcode)}-"
-                f"{self._safe_component(job_id)}.backup"
-            ),
-        )
-
-    def _asset_path(self, relative_path: str) -> Path:
-        candidate = (self._media_root / relative_path).resolve()
-        if not candidate.is_relative_to(self._media_root):
-            raise PublicInstagramAdapterError(
-                "Stored media path is outside the library."
-            )
-        return candidate
 
     def _require_data_subdirectory(self, path: Path) -> Path:
         resolved = path.resolve()
@@ -640,16 +500,6 @@ class PublicInstaloaderAdapter:
         return f"https://www.instagram.com/{route}/{shortcode}/"
 
     @staticmethod
-    def _asset_sort_key(path: Path, shortcode: str) -> tuple[int, int, str]:
-        suffix = path.stem.removeprefix(shortcode)
-        if suffix.startswith("_") and suffix[1:].isdigit():
-            sequence = int(suffix[1:])
-        else:
-            sequence = 0
-        extension_rank = 0 if path.suffix.casefold() == ".jpg" else 1
-        return sequence, extension_rank, path.name
-
-    @staticmethod
     def _recreate_directory(directory: Path) -> None:
         PublicInstaloaderAdapter._remove_directory(directory)
         directory.mkdir(parents=True, exist_ok=False)
@@ -661,15 +511,6 @@ class PublicInstaloaderAdapter:
         if not directory.is_dir():
             raise PublicInstagramAdapterError("Worker staging path is not a directory.")
         shutil.rmtree(directory)
-
-    @staticmethod
-    def _remove_path(path: Path) -> None:
-        if not path.exists():
-            return
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
 
     def _report(self, current: int, total: int | None, status_text: str) -> None:
         self._progress(current, total, status_text)
