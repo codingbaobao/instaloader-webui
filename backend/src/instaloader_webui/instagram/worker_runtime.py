@@ -17,6 +17,15 @@ SessionRevision = tuple[str, datetime]
 class InstagramSessionRevisionError(RuntimeError):
     """The worker no longer has the Cookie revision required by a queued job."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_configured: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.session_configured = session_configured
+
 
 def _revision(username: str, imported_at: datetime) -> SessionRevision:
     normalized = (
@@ -118,6 +127,16 @@ class WorkerInstaloaderRuntime:
         if not session_configured:
             raise InstagramSessionRevisionError(
                 "An Instagram Cookie is required. Run followee discovery again."
+            )
+        return loader
+
+    def acquire_required_session(self, staging_directory: Path) -> Instaloader:
+        """Return a logged-in client for operations unavailable anonymously."""
+        loader, configured = self.acquire(staging_directory)
+        if not configured or not loader.context.is_logged_in:
+            raise InstagramSessionRevisionError(
+                "An imported Instagram Cookie is required for Stories.",
+                session_configured=configured,
             )
         return loader
 
