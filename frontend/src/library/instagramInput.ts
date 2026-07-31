@@ -1,6 +1,8 @@
 export type AddInputKind = "profile" | "media";
 
 const mediaPathTypes = new Set(["p", "reel", "tv"]);
+const storyUsernamePattern = /^[a-z0-9._]{1,30}$/i;
+const storyIdPattern = /^\d{1,32}$/;
 
 export function classifyAddInput(value: string): AddInputKind {
   let url: URL;
@@ -14,6 +16,9 @@ export function classifyAddInput(value: string): AddInputKind {
   if (
     url.protocol !== "https:"
     || (hostname !== "instagram.com" && hostname !== "www.instagram.com")
+    || url.username
+    || url.password
+    || url.port
   ) {
     return "profile";
   }
@@ -28,9 +33,8 @@ export function classifyAddInput(value: string): AddInputKind {
   }
   if (
     pathType?.toLowerCase() === "stories"
-    && identifier
-    && storyId
-    && /^\d+$/.test(storyId)
+    && storyUsernamePattern.test(identifier ?? "")
+    && storyIdPattern.test(storyId ?? "")
   ) {
     return "media";
   }

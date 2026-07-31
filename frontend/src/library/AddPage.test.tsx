@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
+import { classifyAddInput } from "./instagramInput";
 
 const authenticatedSession = {
   username: "owner",
@@ -52,6 +53,27 @@ function successEnvelope<T>(data: T) {
 }
 
 describe("AddPage", () => {
+  it.each([
+    [
+      "credential-bearing URL",
+      "https://account:secret@www.instagram.com/p/ABCDE12345/",
+    ],
+    [
+      "non-default port URL",
+      "https://www.instagram.com:8443/p/ABCDE12345/",
+    ],
+    [
+      "Story URL with an invalid username",
+      "https://www.instagram.com/stories/katerina-soria/3952742051065980676",
+    ],
+    [
+      "Story URL with a story ID longer than 32 digits",
+      "https://www.instagram.com/stories/katerina.soria/123456789012345678901234567890123",
+    ],
+  ])("keeps a %s profile-routed", (_description, input) => {
+    expect(classifyAddInput(input)).toBe("profile");
+  });
+
   it("queues a query-bearing Story URL as media", async () => {
     let mediaInput = "";
     let profileCalls = 0;
