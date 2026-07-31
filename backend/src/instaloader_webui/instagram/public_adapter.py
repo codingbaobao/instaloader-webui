@@ -77,6 +77,10 @@ class _MediaOwnerMismatchError(InstaloaderException):
     """Local and resolved Instagram owner identities do not match."""
 
 
+class _InactiveMediaOwnerError(InstaloaderException):
+    """Direct media must not attach to a Profile undergoing deletion."""
+
+
 @dataclass(frozen=True, slots=True)
 class PublicProfile:
     instagram_user_id: int
@@ -232,6 +236,15 @@ class PublicInstaloaderAdapter:
     ) -> MediaCandidate:
         identity = MediaIdentity("shortcode", parsed.shortcode)
         owner = self._existing_media_owner(identity)
+        if owner is not None and owner.status != "active":
+            raise self._media_item_failure(
+                _InactiveMediaOwnerError(
+                    "The requested Instagram media owner was not found."
+                ),
+                identity=identity,
+                kind=parsed.kind,
+                session_configured=session_configured,
+            )
         return MediaCandidate(
             identity=identity,
             kind=parsed.kind,
@@ -298,6 +311,15 @@ class PublicInstaloaderAdapter:
             ) from None
 
         owner = self._existing_media_owner(identity)
+        if owner is not None and owner.status != "active":
+            raise self._media_item_failure(
+                _InactiveMediaOwnerError(
+                    "The requested Instagram media owner was not found."
+                ),
+                identity=identity,
+                kind="story",
+                session_configured=True,
+            )
         if owner is not None and (
             owner.username.casefold() != parsed.username.casefold()
         ):
@@ -310,7 +332,17 @@ class PublicInstaloaderAdapter:
                 session_configured=True,
             )
         if owner is None:
-            owner = self._find_local_profile_by_username(parsed.username)
+            try:
+                owner = self._find_local_profile_by_username(
+                    parsed.username
+                )
+            except _InactiveMediaOwnerError as error:
+                raise self._media_item_failure(
+                    error,
+                    identity=identity,
+                    kind="story",
+                    session_configured=True,
+                ) from None
 
         return (
             MediaCandidate(
@@ -410,6 +442,7 @@ class PublicInstaloaderAdapter:
             instagram_user_id
         )
         if stored is not None:
+            self._require_active_owner(stored)
             return stored
         stored = self._find_local_profile_by_username(profile.username)
         if stored is None:
@@ -428,22 +461,39 @@ class PublicInstaloaderAdapter:
     ) -> ProfileSnapshot | None:
         stored = self._library.find_profile_by_username(username)
         if stored is not None:
+            self._require_active_owner(stored)
             return stored
         normalized = username.casefold()
-        return next(
-            (
-                profile
-                for profile in self._library.list_profiles()
-                if profile.username.casefold() == normalized
-            ),
+        matches = tuple(
+            profile
+            for profile in self._library.list_profiles()
+            if profile.username.casefold() == normalized
+        )
+        active = next(
+            (profile for profile in matches if profile.status == "active"),
             None,
         )
+        if active is not None:
+            return active
+        if matches:
+            raise _InactiveMediaOwnerError(
+                "The requested Instagram media owner was not found."
+            )
+        return None
+
+    @staticmethod
+    def _require_active_owner(owner: ProfileSnapshot) -> None:
+        if owner.status != "active":
+            raise _InactiveMediaOwnerError(
+                "The requested Instagram media owner was not found."
+            )
 
     @staticmethod
     def _validate_stable_owner(
         owner: ProfileSnapshot,
         profile: Profile,
     ) -> None:
+        PublicInstaloaderAdapter._require_active_owner(owner)
         matches = (
             owner.username.casefold() == profile.username.casefold()
             if owner.instagram_user_id is None

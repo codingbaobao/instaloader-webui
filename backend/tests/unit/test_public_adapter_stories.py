@@ -928,6 +928,132 @@ def test_username_only_local_profile_never_refreshes_avatar(
     assert repository.get_profile(stub.id) == stub
 
 
+@pytest.mark.parametrize(
+    ("kind", "local_username", "inactive_status"),
+    (
+        ("post", USERNAME, "deletion_pending"),
+        ("reel", USERNAME.upper(), "deletion_failed"),
+        ("story", USERNAME.upper(), "deletion_pending"),
+    ),
+)
+def test_inactive_local_profile_is_not_reused_for_new_direct_media(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    test_settings: Settings,
+    kind: str,
+    local_username: str,
+    inactive_status: str,
+) -> None:
+    # Break caught: exact and casefold local lookup must not attach new media
+    # to a Profile whose deletion workflow is already in progress or failed.
+    stub = repository.upsert_profile_stub(
+        username=local_username,
+        tracked=False,
+        now=NOW,
+    )
+    if inactive_status == "deletion_pending":
+        inactive = repository.mark_profile_for_deletion(stub.id, NOW)
+    else:
+        inactive = repository.mark_profile_deletion_failed(stub.id, NOW)
+    assert inactive is not None
+    owner = FakeProfile(
+        profile_pic_url="https://cdn.example/inactive-avatar.jpg",
+    )
+    loader = FakeLoader(logged_in=kind == "story")
+
+    def reject_avatar(_url: str) -> None:
+        raise AssertionError("inactive Profile must not refresh its avatar")
+
+    loader.context.get_raw = reject_avatar  # type: ignore[attr-defined]
+    if kind == "story":
+        patch_story_lookup(
+            monkeypatch,
+            FakeStoryItem(owner_profile=owner),
+        )
+        parsed: PostInput | ReelInput | StoryInput = story_input()
+        identity = MediaIdentity("story_media_id", STORY_MEDIA_ID)
+    else:
+        patch_post_lookup(
+            monkeypatch,
+            FakePost(owner_profile=owner),
+        )
+        route = "reel" if kind == "reel" else "p"
+        parsed = (
+            ReelInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/{route}/{SHORTCODE}/",
+            )
+            if kind == "reel"
+            else PostInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/{route}/{SHORTCODE}/",
+            )
+        )
+        identity = MediaIdentity("shortcode", SHORTCODE)
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=kind == "story",
+    )
+
+    with pytest.raises(MediaItemFailure) as caught:
+        adapter.download_input(parsed, f"job-inactive-{kind}")
+
+    assert caught.value.issue.error_code == "instagram_not_found"
+    assert repository.find_media_by_identity(identity) is None
+    assert repository.get_profile(stub.id) == inactive
+    assert loader.downloaded_posts == []
+
+
+def test_incomplete_media_linked_to_inactive_profile_is_not_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    test_settings: Settings,
+) -> None:
+    # Break caught: an existing media owner hint must not bypass Profile status
+    # and repair content into a Profile that is pending deletion.
+    stub = repository.upsert_profile_stub(
+        username=USERNAME,
+        tracked=False,
+        now=NOW,
+    )
+    identity = persist_incomplete_media(
+        repository=repository,
+        profile=stub,
+        kind="post",
+    )
+    inactive = repository.mark_profile_for_deletion(stub.id, NOW)
+    assert inactive is not None
+    loader = FakeLoader(logged_in=False)
+    patch_post_lookup(
+        monkeypatch,
+        FakePost(owner_profile=FakeProfile()),
+    )
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=False,
+    )
+
+    with pytest.raises(MediaItemFailure) as caught:
+        adapter.download_input(
+            PostInput(
+                shortcode=SHORTCODE,
+                canonical_url=f"https://www.instagram.com/p/{SHORTCODE}/",
+            ),
+            "job-inactive-existing",
+        )
+
+    remaining = repository.find_media_by_identity(identity)
+    assert caught.value.issue.error_code == "instagram_not_found"
+    assert remaining is not None
+    assert remaining.assets == ()
+    assert repository.get_profile(stub.id) == inactive
+    assert loader.downloaded_posts == []
+
+
 def test_direct_media_avatar_failure_remains_nonfatal(
     monkeypatch: pytest.MonkeyPatch,
     repository: LibraryRepository,
