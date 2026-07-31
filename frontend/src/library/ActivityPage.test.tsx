@@ -1,0 +1,207 @@
+import { HttpResponse, http } from "msw";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it } from "vitest";
+
+import { TestRouter } from "../test/TestRouter";
+import { server } from "../test/server";
+import type { JobSummary } from "./types";
+
+const authenticatedSession = {
+  username: "owner",
+  must_change_password: false,
+  expires_at: "2026-08-02T00:00:00Z",
+  csrf_token: "c".repeat(64),
+};
+
+const baseJob: JobSummary = {
+  id: "job-1",
+  type: "profile_sync",
+  state: "running",
+  payload: {},
+  progress_current: 0,
+  progress_total: null,
+  status_text: "Syncing profile.",
+  error: null,
+  phase: null,
+  issue_count: 0,
+  issues: [],
+  created_at: "2026-07-31T08:00:00Z",
+  started_at: "2026-07-31T08:00:01Z",
+  completed_at: null,
+  updated_at: "2026-07-31T08:00:02Z",
+};
+
+function jobFixture(overrides: Partial<JobSummary> = {}): JobSummary {
+  return { ...baseJob, ...overrides };
+}
+
+function successEnvelope<T>(data: T) {
+  return { success: true, data, error: null, meta: {} };
+}
+
+describe("ActivityPage", () => {
+  it("shows a scanning phase without a false count, percentage, or progress bar", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            phase: "scanning_media",
+            progress_current: 2,
+            progress_total: null,
+            status_text: "Scanning Instagram posts and reels…",
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Scanning Instagram posts and reels…"),
+    ).toBeVisible();
+    expect(screen.queryByText("Progress pending")).not.toBeInTheDocument();
+    expect(screen.queryByText(/2 of/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("loads and shows only safe warning details after expansion", async () => {
+    const warningJob = jobFixture({
+      state: "completed_with_warnings",
+      payload: {
+        input: "https://www.instagram.com/reel/DOqEJyxCRGJ/?sessionid=secret",
+      },
+      progress_current: 2,
+      progress_total: 2,
+      status_text: "Downloaded 1 of 2 media items.",
+      error: "Traceback: BadResponseException for /?__a=1",
+      phase: "completed",
+      issue_count: 1,
+      completed_at: "2026-07-31T08:00:04Z",
+    });
+    const warningDetail = {
+      ...warningJob,
+      issues: [
+        {
+          identity_type: "shortcode",
+          identity_value: "DOqEJyxCRGJ",
+          shortcode: "DOqEJyxCRGJ",
+          story_media_id: null,
+          media_kind: "reel",
+          error_code: "instagram_unavailable",
+          safe_message: "Instagram could not be reached. Try again later.",
+          exception_class_chain: [
+            "BadResponseException",
+            "ConnectionException",
+          ],
+          occurred_at: "2026-07-31T08:00:03Z",
+          request_url: "https://www.instagram.com/reel/DOqEJyxCRGJ/?__a=1",
+          raw_exception: "Traceback: sessionid=secret",
+          raw_html: "<script>stealCookies()</script>",
+        },
+      ],
+    };
+    let detailRequests = 0;
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([warningJob])),
+      ),
+      http.get("/api/jobs/job-1", () => {
+        detailRequests += 1;
+        return HttpResponse.json(successEnvelope(warningDetail));
+      }),
+    );
+
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    expect(await screen.findByText("Completed with warnings")).toBeVisible();
+    expect(screen.getByRole("button", { name: "View 1 warning" })).toBeVisible();
+    expect(screen.getByText("2 of 2")).toBeVisible();
+    expect(screen.getByText("100%")).toBeVisible();
+    expect(detailRequests).toBe(0);
+    expect(screen.queryByText("DOqEJyxCRGJ")).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "View 1 warning" }),
+    );
+
+    expect(await screen.findByText("DOqEJyxCRGJ")).toBeVisible();
+    expect(screen.getByText("Reel")).toBeVisible();
+    expect(screen.getByText("instagram_unavailable")).toBeVisible();
+    expect(
+      screen.getByText("Instagram could not be reached. Try again later."),
+    ).toBeVisible();
+    expect(
+      screen.getByText("BadResponseException → ConnectionException"),
+    ).toBeVisible();
+    expect(screen.getByText(/July 31, 2026/)).toBeVisible();
+    expect(detailRequests).toBe(1);
+    expect(screen.queryByText(/sessionid=/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/__a=1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Traceback/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/stealCookies/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the warning summary when detail loading fails", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            state: "completed_with_warnings",
+            progress_current: 1,
+            progress_total: 1,
+            status_text: "Finished with one warning.",
+            phase: "completed",
+            issue_count: 1,
+            completed_at: "2026-07-31T08:00:04Z",
+          }),
+        ])),
+      ),
+      http.get("/api/jobs/job-1", () =>
+        HttpResponse.json(
+          {
+            success: false,
+            data: null,
+            error: {
+              code: "job_detail_unavailable",
+              message: "Traceback: request failed for /?sessionid=secret&__a=1",
+            },
+            meta: {},
+          },
+          { status: 503 },
+        ),
+      ),
+    );
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View 1 warning" }),
+    );
+
+    expect(
+      await screen.findByRole("alert"),
+    ).toHaveTextContent("Warning details could not be loaded. Please try again.");
+    expect(screen.getByText("Completed with warnings")).toBeVisible();
+    expect(screen.getByText("Finished with one warning.")).toBeVisible();
+    expect(screen.getByRole("button", { name: /warning/i })).toBeVisible();
+    expect(screen.queryByText(/sessionid=/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/__a=1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Traceback/)).not.toBeInTheDocument();
+  });
+});

@@ -60,6 +60,18 @@ export type ProfileSummary = Readonly<{
 /** The backend's profile list and detail DTOs have the same fields. */
 export type ProfileDetail = ProfileSummary;
 
+export type JobIssue = Readonly<{
+  identity_type: "shortcode" | "story_media_id";
+  identity_value: string;
+  shortcode: string | null;
+  story_media_id: string | null;
+  media_kind: MediaKind;
+  error_code: string;
+  safe_message: string;
+  exception_class_chain: readonly string[];
+  occurred_at: string;
+}>;
+
 export type JobSummary = Readonly<{
   id: string;
   type: string;
@@ -69,11 +81,17 @@ export type JobSummary = Readonly<{
   progress_total: number | null;
   status_text: string;
   error: string | null;
+  phase: string | null;
+  issue_count: number;
+  issues: readonly JobIssue[];
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
   updated_at: string;
 }>;
+
+/** The job detail endpoint adds issue records to the shared job shape. */
+export type JobDetail = JobSummary;
 
 export type LibrarySettings = Readonly<{
   id: string;
