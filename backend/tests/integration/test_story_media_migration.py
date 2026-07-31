@@ -18,7 +18,9 @@ def migration_config(database_path: Path) -> Config:
     return config
 
 
-def test_migration_preserves_existing_job_runner_logger_state(test_settings) -> None:
+def test_ini_backed_migration_preserves_existing_job_runner_logger_state(
+    test_settings,
+) -> None:
     logger = logging.getLogger("instaloader_webui.services.job_runner")
     original_state = (
         logger.disabled,
