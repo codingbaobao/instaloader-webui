@@ -308,6 +308,36 @@ def test_video_candidate_maps_jpg_to_poster_not_content(
     ]
 
 
+def test_video_candidate_ignores_extra_webp_instead_of_treating_it_as_poster(
+    processor: MediaProcessor,
+    profile: ProfileSnapshot,
+) -> None:
+    # Break caught: globally treating WebP as supported makes an unrelated
+    # video thumbnail fail validation instead of preserving valid MP4 content.
+    resolved = _resolved_media(
+        profile=profile,
+        content_kinds=("video",),
+        download=_download_files(
+            (f"{SHORTCODE}.mp4", b"video"),
+            (f"{SHORTCODE}.webp", b"extra-webp"),
+        ),
+    )
+
+    result = processor.process(_candidate(resolved), job_id="job-video-webp")
+
+    assert result.status == "saved"
+    assert [
+        (
+            asset.kind,
+            asset.role,
+            asset.position,
+            asset.mime_type,
+            Path(asset.relative_path).suffix,
+        )
+        for asset in result.media.assets
+    ] == [("video", "content", 0, "video/mp4", ".mp4")]
+
+
 def test_sidecar_sequence_maps_content_and_posters_to_logical_positions(
     processor: MediaProcessor,
     profile: ProfileSnapshot,

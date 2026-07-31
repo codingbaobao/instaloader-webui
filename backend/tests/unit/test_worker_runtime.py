@@ -73,3 +73,38 @@ def test_context_error_keeps_warning_output_bounded(
     assert stderr.startswith("429 retrying ")
     assert len(stderr.rstrip("\n")) <= 2048
     assert loader.context.error_log == [stderr.strip()]
+
+
+def test_context_error_redacts_repr_style_secret_mappings(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Break caught: quoted mapping keys bypass simple key=value redaction and
+    # disclose cookie values from exception repr strings.
+    runtime = WorkerInstaloaderRuntime(
+        cast(InstagramSessionStore, EmptySessionStore())
+    )
+    loader, _configured = runtime.acquire(tmp_path / "staging")
+
+    loader.context.error(
+        "429 request rejected "
+        "cookies={'SeSsIoNiD': 'dummy-one-marker', "
+        "'csrftoken': 'dummy-two-marker'} "
+        'headers={"COOKIE": "dummy-three-marker"}'
+    )
+
+    stderr = capsys.readouterr().err
+    runtime.close()
+
+    assert "429 request rejected" in stderr
+    assert len(stderr.rstrip("\n")) <= 2048
+    for forbidden in (
+        "sessionid",
+        "csrftoken",
+        "cookie",
+        "dummy-one-marker",
+        "dummy-two-marker",
+        "dummy-three-marker",
+    ):
+        assert forbidden.casefold() not in stderr.casefold()
+    assert loader.context.error_log == [stderr.strip()]

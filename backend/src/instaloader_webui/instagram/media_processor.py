@@ -190,6 +190,14 @@ class MediaProcessor:
         seen_descriptors: set[tuple[str, str, int]] = set()
         for path in supported_files:
             position = self._logical_position(path, resolved)
+            suffix = path.suffix.casefold()
+            if suffix == ".webp" and (
+                position is None
+                or position < 0
+                or position >= len(resolved.content_kinds)
+                or resolved.content_kinds[position] != "image"
+            ):
+                continue
             if (
                 position is None
                 or position < 0
@@ -197,7 +205,6 @@ class MediaProcessor:
             ):
                 raise self._asset_validation_failure(candidate)
             expected_kind = resolved.content_kinds[position]
-            suffix = path.suffix.casefold()
             if expected_kind == "image" and suffix in {".jpg", ".webp"}:
                 kind: Literal["image", "video"] = "image"
                 role: Literal["content", "poster"] = "content"
