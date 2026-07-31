@@ -135,7 +135,18 @@ class Profile(Base):
 class MediaItem(Base):
     __tablename__ = "media_items"
     __table_args__ = (
-        CheckConstraint("kind IN ('post', 'reel')", name="ck_media_items_kind"),
+        UniqueConstraint(
+            "identity_type",
+            "identity_value",
+            name="uq_media_items_identity",
+        ),
+        CheckConstraint(
+            "identity_type IN ('shortcode', 'story_media_id')",
+            name="ck_media_items_identity_type",
+        ),
+        CheckConstraint(
+            "kind IN ('post', 'reel', 'story')", name="ck_media_items_kind"
+        ),
         Index(
             "ix_media_items_owner_profile_published_at",
             "owner_profile_id",
@@ -145,7 +156,9 @@ class MediaItem(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     instagram_media_id: Mapped[str | None] = mapped_column(String(64), unique=True)
-    shortcode: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    shortcode: Mapped[str | None] = mapped_column(String(64))
+    identity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    identity_value: Mapped[str] = mapped_column(String(64), nullable=False)
     owner_profile_id: Mapped[str] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
@@ -154,6 +167,7 @@ class MediaItem(Base):
     accessibility_caption: Mapped[str] = mapped_column(Text, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     original_url: Mapped[str] = mapped_column(Text, nullable=False)
+    story_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     downloaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -163,6 +177,7 @@ class MediaAsset(Base):
     __tablename__ = "media_assets"
     __table_args__ = (
         CheckConstraint("kind IN ('image', 'video')", name="ck_media_assets_kind"),
+        CheckConstraint("role IN ('content', 'poster')", name="ck_media_assets_role"),
         Index("ix_media_assets_media_item_position", "media_item_id", "position"),
     )
 
@@ -173,6 +188,7 @@ class MediaAsset(Base):
     relative_path: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -186,7 +202,8 @@ class Job(Base):
             name="ck_jobs_type",
         ),
         CheckConstraint(
-            "state IN ('pending', 'running', 'succeeded', 'failed')",
+            "state IN ('pending', 'running', 'succeeded', 'failed', "
+            "'completed_with_warnings')",
             name="ck_jobs_state",
         ),
         Index("ix_jobs_state_created_at", "state", "created_at"),
@@ -194,16 +211,43 @@ class Job(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
-    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
     payload_text: Mapped[str] = mapped_column(Text, nullable=False)
     progress_current: Mapped[int] = mapped_column(Integer, nullable=False)
     progress_total: Mapped[int | None] = mapped_column(Integer)
     status_text: Mapped[str] = mapped_column(Text, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
+    phase: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class JobIssue(Base):
+    __tablename__ = "job_issues"
+    __table_args__ = (
+        Index("ix_job_issues_job_id_occurred_at", "job_id", "occurred_at"),
+        Index(
+            "ix_job_issues_identity_type_identity_value",
+            "identity_type",
+            "identity_value",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    identity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    identity_value: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    safe_message: Mapped[str] = mapped_column(Text, nullable=False)
+    exception_class_chain_text: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class FolloweeImportBatch(Base):
