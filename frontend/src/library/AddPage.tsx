@@ -4,13 +4,10 @@ import { Link } from "react-router-dom";
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
 import { addMedia, addProfile } from "./api";
+import { classifyAddInput } from "./instagramInput";
 import type { JobSummary, ProfileDetail } from "./types";
 
 type AddPageProps = Readonly<{ session: SessionData }>;
-
-function isMediaInput(value: string): boolean {
-  return /\/(?:p|reel|tv)\//i.test(value.trim());
-}
 
 function jobLabel(job: JobSummary): string {
   return `${job.type.replaceAll("_", " ")} · ${job.state}`;
@@ -27,7 +24,7 @@ export function AddPage({ session }: AddPageProps) {
     event.preventDefault();
     const value = input.trim();
     if (!value) {
-      setError("Enter an Instagram profile or media URL.");
+      setError("Enter a public Instagram profile, post, Reel, Story, or TV URL.");
       return;
     }
     setSubmitting(true);
@@ -35,7 +32,7 @@ export function AddPage({ session }: AddPageProps) {
     setJob(null);
     setCreatedProfile(null);
     try {
-      if (isMediaInput(value)) {
+      if (classifyAddInput(value) === "media") {
         setJob(await addMedia(value, session.csrf_token));
       } else {
         const created = await addProfile(value, session.csrf_token);
@@ -54,7 +51,7 @@ export function AddPage({ session }: AddPageProps) {
     <section className="library-page narrow-page" aria-labelledby="add-title">
       <p className="eyebrow">Add to library</p>
       <h1 id="add-title">Save public Instagram media</h1>
-      <p className="page-intro">Paste a public profile, post, reel, or TV link. Nothing private is supported.</p>
+      <p className="page-intro">Paste a public profile, post, Reel, Story, or TV link. Nothing private is supported.</p>
 
       <form className="add-form" onSubmit={(event) => void submit(event)}>
         <label htmlFor="instagram-input">Instagram link or profile</label>
@@ -62,11 +59,11 @@ export function AddPage({ session }: AddPageProps) {
           autoComplete="off"
           id="instagram-input"
           maxLength={2048}
-          placeholder="@instagram or https://www.instagram.com/reel/..."
+          placeholder="@instagram or https://www.instagram.com/stories/..."
           value={input}
           onChange={(event) => setInput(event.target.value)}
         />
-        <p className="field-hint">Examples: @instagram, instagram.com/natgeo, /p/, /reel/, or /tv/ links.</p>
+        <p className="field-hint">Examples: @instagram, instagram.com/natgeo, /p/, /reel/, /stories/, or /tv/ links. Only public links can be queued.</p>
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         <button className="primary-button" disabled={submitting} type="submit">
           {submitting ? "Adding…" : "Add to library"}
