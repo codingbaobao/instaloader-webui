@@ -33,25 +33,28 @@ function successEnvelope<T>(data: T) {
   return { success: true, data, error: null, meta: {} };
 }
 
+function renderProfile(mediaQueries: string[] = []) {
+  server.use(
+    http.get("/api/profiles/profile-1", () =>
+      HttpResponse.json(successEnvelope(profileFixture)),
+    ),
+    http.get("/api/media", ({ request }) => {
+      mediaQueries.push(new URL(request.url).search);
+      return HttpResponse.json(successEnvelope([]));
+    }),
+  );
+  render(
+    <TestRouter
+      initialPath="/profiles/profile-1"
+      initialSession={authenticatedSession}
+    />,
+  );
+  return mediaQueries;
+}
+
 describe("ProfilePage", () => {
   it("shows all media tabs, links safely to the profile, and requests Stories", async () => {
-    const mediaQueries: string[] = [];
-    server.use(
-      http.get("/api/profiles/profile-1", () =>
-        HttpResponse.json(successEnvelope(profileFixture)),
-      ),
-      http.get("/api/media", ({ request }) => {
-        mediaQueries.push(new URL(request.url).search);
-        return HttpResponse.json(successEnvelope([]));
-      }),
-    );
-    render(
-      <TestRouter
-        initialPath="/profiles/profile-1"
-        initialSession={authenticatedSession}
-      />,
-    );
-
+    const mediaQueries = renderProfile();
     const postsTab = await screen.findByRole("tab", { name: "Posts" });
     expect(postsTab).toBeVisible();
     expect(screen.getByRole("tab", { name: "Reels" })).toBeVisible();
@@ -69,6 +72,61 @@ describe("ProfilePage", () => {
     expect(instagramLink).toHaveAttribute("rel", "noopener noreferrer");
 
     await userEvent.click(storyTab);
+
+    await waitFor(() => {
+      expect(mediaQueries.at(-1)).toContain("kind=story");
+    });
+  });
+
+  it("connects the tabs to their panel and keeps only the selected tab in the tab order", async () => {
+    renderProfile();
+
+    const postsTab = await screen.findByRole("tab", { name: "Posts" });
+    const reelsTab = screen.getByRole("tab", { name: "Reels" });
+    const storyTab = screen.getByRole("tab", { name: "Story" });
+    const panel = screen.getByRole("tabpanel");
+
+    expect(panel).toHaveAttribute("id", "profile-media-panel");
+    expect(panel).toHaveAttribute("aria-labelledby", "posts-tab");
+    expect(postsTab).toHaveAttribute("aria-controls", "profile-media-panel");
+    expect(reelsTab).toHaveAttribute("aria-controls", "profile-media-panel");
+    expect(storyTab).toHaveAttribute("aria-controls", "profile-media-panel");
+    expect(postsTab).toHaveAttribute("tabindex", "0");
+    expect(reelsTab).toHaveAttribute("tabindex", "-1");
+    expect(storyTab).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("moves focus and selection with Arrow, Home, and End keys", async () => {
+    const mediaQueries = renderProfile();
+    const user = userEvent.setup();
+    const postsTab = await screen.findByRole("tab", { name: "Posts" });
+    const reelsTab = screen.getByRole("tab", { name: "Reels" });
+    const storyTab = screen.getByRole("tab", { name: "Story" });
+
+    postsTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(reelsTab).toHaveFocus();
+    expect(reelsTab).toHaveAttribute("aria-selected", "true");
+    expect(reelsTab).toHaveAttribute("tabindex", "0");
+    expect(postsTab).toHaveAttribute("tabindex", "-1");
+
+    await user.keyboard("{ArrowLeft}");
+    expect(postsTab).toHaveFocus();
+    expect(postsTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{ArrowLeft}");
+    expect(storyTab).toHaveFocus();
+    expect(storyTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{Home}");
+    expect(postsTab).toHaveFocus();
+    expect(postsTab).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{End}");
+    expect(storyTab).toHaveFocus();
+    expect(storyTab).toHaveAttribute("aria-selected", "true");
+    expect(storyTab).toHaveAttribute("tabindex", "0");
+    expect(reelsTab).toHaveAttribute("tabindex", "-1");
 
     await waitFor(() => {
       expect(mediaQueries.at(-1)).toContain("kind=story");
