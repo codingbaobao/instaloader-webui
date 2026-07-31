@@ -190,7 +190,11 @@ class MediaProcessor:
         seen_descriptors: set[tuple[str, str, int]] = set()
         for path in supported_files:
             position = self._logical_position(path, resolved)
-            if position is None or position >= len(resolved.content_kinds):
+            if (
+                position is None
+                or position < 0
+                or position >= len(resolved.content_kinds)
+            ):
                 raise self._asset_validation_failure(candidate)
             expected_kind = resolved.content_kinds[position]
             suffix = path.suffix.casefold()
@@ -248,7 +252,10 @@ class MediaProcessor:
             if not stem.startswith(prefix):
                 return None
             sequence_text = stem.removeprefix(prefix)
-            return int(sequence_text) - 1 if sequence_text.isdigit() else None
+            if not sequence_text.isdigit():
+                return None
+            sequence = int(sequence_text)
+            return sequence - 1 if sequence >= 1 else None
         if len(resolved.content_kinds) == 1:
             return 0
         match = _SEQUENCE_SUFFIX.search(stem)

@@ -400,6 +400,30 @@ def test_unmatched_supported_sidecar_file_is_an_item_failure(
     assert repository.find_media_by_identity(resolved.identity) is None
 
 
+@pytest.mark.parametrize("sequence", ["0", "00"])
+def test_zero_sequence_supported_file_is_rejected_without_persisting_media(
+    processor: MediaProcessor,
+    repository: LibraryRepository,
+    profile: ProfileSnapshot,
+    sequence: str,
+) -> None:
+    # Break caught: sequence zero maps a video poster to logical position -1.
+    resolved = _resolved_media(
+        profile=profile,
+        content_kinds=("video",),
+        download=_download_files(
+            (f"{SHORTCODE}.mp4", b"valid-video"),
+            (f"{SHORTCODE}_{sequence}.jpg", b"invalid-poster"),
+        ),
+    )
+
+    with pytest.raises(MediaItemFailure) as raised:
+        processor.process(_candidate(resolved), job_id=f"job-sequence-{sequence}")
+
+    assert raised.value.issue.error_code == "asset_validation_failed"
+    assert repository.find_media_by_identity(resolved.identity) is None
+
+
 def test_each_process_recreates_and_removes_its_identity_staging_directory(
     processor: MediaProcessor,
     profile: ProfileSnapshot,
