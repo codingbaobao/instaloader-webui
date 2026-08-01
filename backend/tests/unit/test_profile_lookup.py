@@ -393,6 +393,8 @@ def test_legacy_complete_list_without_exact_match_is_profile_not_found(
         },
         _users("not-a-mapping"),
         _users({"id": 123}),
+        _users({"username": "Broken"}),
+        _users(_node("Target"), {"username": "Broken"}),
         _users({"id": 123, "username": ""}),
         _users({"id": 123, "username": 456}),
     ],

@@ -172,6 +172,8 @@ def _validate_legacy_payload(payload: object) -> list[Mapping[str, object]]:
         node_username = node.get("username")
         if not isinstance(node_username, str) or not node_username:
             raise _LegacyProfileLookupSchemaError(_SCHEMA_ERROR_MESSAGE)
+        if "id" not in node and "pk" not in node:
+            raise _LegacyProfileLookupSchemaError(_SCHEMA_ERROR_MESSAGE)
         validated_users.append(node)
     return validated_users
 
