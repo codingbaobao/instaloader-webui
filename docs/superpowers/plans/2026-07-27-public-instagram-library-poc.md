@@ -1,5 +1,11 @@
 # Public Instagram Library POC Implementation Plan
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute its Alembic, migration, database-upgrade/downgrade, or
+> migration-startup instructions. Current pre-1.0 builds support only fresh
+> SQLite databases; for a schema-marker change, follow the
+> [current policy](../../../README.md#pre-10-database-schema-policy).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build an end-to-end public Instagram archive that accepts profile and post/reel input, downloads through the unmodified sibling Instaloader package, and displays persisted media in the React WebUI.

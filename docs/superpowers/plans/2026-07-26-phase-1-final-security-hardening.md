@@ -1,5 +1,11 @@
 # Phase 1 Final Security Hardening Implementation Plan
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute its Alembic, migration, database-upgrade/downgrade, or
+> migration-startup instructions. Current pre-1.0 builds support only fresh
+> SQLite databases; for a schema-marker change, follow the
+> [current policy](../../../README.md#pre-10-database-schema-policy).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` or `superpowers:executing-plans`
 > to implement this plan task-by-task. Steps use checkbox syntax for tracking.
