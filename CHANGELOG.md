@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.1.1...v0.2.0) (2026-08-01)
+
+
+### Features
+
+* improve Story and Reel sync reliability ([#2](https://github.com/codingbaobao/instaloader-webui/issues/2)) ([816b3ee](https://github.com/codingbaobao/instaloader-webui/commit/816b3eeb8720450344e24ceb331703bd648bb205))
+
 ## [0.1.1](https://github.com/codingbaobao/instaloader-webui/compare/v0.1.0...v0.1.1) (2026-07-30)
 
 
