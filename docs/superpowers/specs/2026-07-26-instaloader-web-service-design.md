@@ -5,9 +5,9 @@ Status: Approved
 
 > **Status — superseded for schema work (2026-08-01):** This is a historical
 > design record. Do not execute its Alembic, migration,
-> database-upgrade/downgrade, or migration-startup instructions. Current
-> pre-1.0 builds support only fresh SQLite databases; for a schema-marker
-> change, follow the [current policy](../../../README.md#pre-10-database-schema-policy).
+> database-upgrade/downgrade, or migration-startup instructions. The current
+> pre-1.0 runtime supports only the exact fresh schema and does not migrate
+> older databases.
 
 ## 1. Purpose
 

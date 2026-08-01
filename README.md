@@ -161,60 +161,6 @@ application secret remain consistent. In particular,
 and restored together: the session is encrypted from the application secret and
 cannot be recovered with a different one.
 
-### Pre-1.0 database schema policy
-
-Before `1.0.0`, database schema migrations and backward compatibility are
-intentionally unsupported. A release that changes the schema marker requires a
-fresh SQLite database; do not attempt an Alembic upgrade or downgrade.
-
-Before deploying that release, stop both services using the command for the
-deployment type. Choose exactly one variant; do not run both.
-
-```sh
-# Published image deployment
-docker compose down
-```
-
-```sh
-# Local source-build deployment
-docker compose \
-  --file compose.yaml \
-  --file compose.build.yaml \
-  down
-```
-
-Then delete and recreate only the SQLite database files under `database/` (the
-database and any `-wal`/`-shm` sidecars). For a data root at
-`/your/chosen/path`, the deletion scope is:
-
-```sh
-rm -f /your/chosen/path/database/app.sqlite3 \
-  /your/chosen/path/database/app.sqlite3-wal \
-  /your/chosen/path/database/app.sqlite3-shm
-```
-
-Start the same deployment type again:
-
-```sh
-# Published image deployment
-docker compose up -d
-```
-
-```sh
-# Local source-build deployment
-docker compose \
-  --file compose.yaml \
-  --file compose.build.yaml \
-  up -d --build
-```
-
-The next startup creates the current schema. This removes database-backed
-administrators, web sessions, job history, and library metadata. Do not delete
-`secrets/app_secret_key`, `secrets/instagram_session.enc`, or `media/` for a
-database reset; delete those only when you explicitly intend a full data reset.
-If backing up or restoring the whole data root, keep the application secret and
-encrypted Instagram session paired as described above.
-
 ## Administrator manual acceptance
 
 Live Instagram access must be accepted by an administrator with their own valid
