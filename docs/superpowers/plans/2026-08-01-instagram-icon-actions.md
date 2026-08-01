@@ -64,11 +64,11 @@ expect(instagramLink.querySelector("svg")).toHaveAttribute(
 );
 ```
 
-Add `within` and `userEvent`, then add a media action test:
+Add `within` and `userEvent`, then add focused media action and confirmation
+tests:
 
 ```tsx
-it("groups icon-only media actions and preserves delete confirmation", async () => {
-  const user = userEvent.setup();
+it("renders icon-only media actions with accessible names", async () => {
   renderViewer(reelFixture);
 
   expect(
@@ -91,7 +91,17 @@ it("groups icon-only media actions and preserves delete confirmation", async () 
     "data-tooltip",
     "Delete downloaded media",
   );
+});
 
+it("keeps delete confirmation before media removal", async () => {
+  const user = userEvent.setup();
+  renderViewer(reelFixture);
+
+  await screen.findByRole("heading", { name: "Reel" });
+  const actions = screen.getByRole("group", { name: "Media actions" });
+  const deleteButton = within(actions).getByRole("button", {
+    name: "Delete downloaded media",
+  });
   await user.click(deleteButton);
   expect(
     screen.getByRole("dialog", { name: "Delete this media item?" }),
