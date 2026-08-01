@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from io import BytesIO
@@ -9,7 +10,11 @@ from types import SimpleNamespace
 from typing import Any, Literal, cast
 
 import pytest
-from instaloader import BadResponseException
+from instaloader import (
+    BadResponseException,
+    Profile,
+    TooManyRequestsException,
+)
 
 from instaloader_webui.config import Settings
 from instaloader_webui.db.library_repositories import (
@@ -440,12 +445,19 @@ class AdapterLoader:
         events: list[str],
         response: AvatarResponse | BaseException,
         logged_in: bool = True,
+        legacy_profile_node: dict[str, object] | None = None,
     ) -> None:
         self.events = events
         self.response = response
+        self.legacy_profile_node = legacy_profile_node
+        self.legacy_query_calls: list[
+            tuple[str, Mapping[str, object]]
+        ] = []
         self.context = SimpleNamespace(
             is_logged_in=logged_in,
+            iphone_support=False,
             get_raw=self.get_raw,
+            doc_id_graphql_query=self.doc_id_graphql_query,
         )
         self.dirname_pattern = ""
 
@@ -459,6 +471,23 @@ class AdapterLoader:
         assert userids == [AdapterProfile().userid]
         self.events.append("scan:stories")
         return ()
+
+    def doc_id_graphql_query(
+        self,
+        doc_id: str,
+        variables: Mapping[str, object],
+    ) -> dict[str, object]:
+        self.legacy_query_calls.append((doc_id, variables))
+        self.events.append("lookup:legacy")
+        if self.legacy_profile_node is None:
+            raise AssertionError("legacy Profile lookup was not expected")
+        return {
+            "data": {
+                "xdt_api__v1__fbsearch__non_profiled_serp": {
+                    "users": [self.legacy_profile_node],
+                }
+            }
+        }
 
 
 class AdapterRuntime:
@@ -531,7 +560,9 @@ def make_profile_adapter(
     test_settings: Settings,
     repository: LibraryRepository,
     loader: AdapterLoader,
-    profile_lookup_resolver: RecordingProfileLookupResolver,
+    profile_lookup_resolver: (
+        ProfileLookupResolver | RecordingProfileLookupResolver
+    ),
     configured: bool = True,
     issues: list[SafeMediaIssue] | None = None,
     progress: list[tuple[Any, ...]] | None = None,
@@ -646,6 +677,122 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert refreshed.last_sync_attempted_at is not None
     assert refreshed.last_sync_succeeded_at is not None
     assert response.closed is True
+
+
+def test_profile_sync_real_fallback_continues_through_profile_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: testing sync only with a recording resolver can hide a
+    # failure between the real typed-429 legacy result and normal profile work.
+    events: list[str] = []
+    progress: list[tuple[Any, ...]] = []
+    native_calls: list[tuple[object, str]] = []
+    legacy_node = {
+        "id": AdapterProfile().userid,
+        "username": AdapterProfile().username,
+        "is_private": False,
+        "followed_by_viewer": True,
+        "full_name": "Fallback Profile",
+        "biography": "Fallback biography",
+        "profile_pic_url_hd": "https://cdn.example/fallback-avatar.jpg",
+    }
+
+    def native_lookup(context: object, username: str) -> Profile:
+        native_calls.append((context, username))
+        events.append("lookup:native")
+        raise TooManyRequestsException("private native rate-limit detail")
+
+    def get_reels(_profile: Profile) -> tuple[object, ...]:
+        events.append("scan:reels")
+        return ()
+
+    def get_posts(_profile: Profile) -> tuple[object, ...]:
+        events.append("scan:posts")
+        return ()
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    monkeypatch.setattr(Profile, "get_reels", get_reels)
+    monkeypatch.setattr(Profile, "get_posts", get_posts)
+    loader = AdapterLoader(
+        events=events,
+        response=AvatarResponse(),
+        legacy_profile_node=legacy_node,
+    )
+    logger_name = "test.profile_sync.real_fallback"
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=ProfileLookupResolver(
+            "fallback",
+            logging.getLogger(logger_name),
+        ),
+        progress=progress,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        result = adapter.sync_profile(tracked_profile.id, "job-real-fallback")
+
+    assert result == ProfileSyncResult(
+        processed=0,
+        total=0,
+        issue_count=0,
+        stopped=False,
+    )
+    assert native_calls == [(loader.context, tracked_profile.username)]
+    assert loader.legacy_query_calls == [
+        (
+            "26347858941511777",
+            {"hasQuery": True, "query": tracked_profile.username},
+        )
+    ]
+    assert events == [
+        "session:acquire",
+        "lookup:native",
+        "lookup:legacy",
+        "avatar:https://cdn.example/fallback-avatar.jpg",
+        "scan:stories",
+        "scan:reels",
+        "scan:posts",
+    ]
+    assert [event[2] for event in progress] == [
+        "profile_preflight",
+        "saving_stories",
+        "scanning_media",
+        "processing_reels",
+    ]
+    refreshed = profile_repository.get_profile(tracked_profile.id)
+    assert refreshed is not None
+    assert refreshed.instagram_user_id == str(legacy_node["id"])
+    assert refreshed.full_name == "Fallback Profile"
+    assert profile_avatar_path(
+        test_settings.media_root,
+        tracked_profile.id,
+    ).read_bytes() == b"avatar-image"
+    lookup_records = [
+        record for record in caplog.records if record.name == logger_name
+    ]
+    assert [
+        (
+            record.__dict__["mode"],
+            record.__dict__["path"],
+            record.__dict__["outcome"],
+            record.__dict__["status_class"],
+        )
+        for record in lookup_records
+    ] == [
+        ("fallback", "native", "fallback", "rate_limited"),
+        ("fallback", "legacy", "success", "success"),
+    ]
+    assert all(
+        record.getMessage() == "instagram_profile_lookup"
+        for record in lookup_records
+    )
+    assert tracked_profile.username not in caplog.text
 
 
 def test_profile_sync_requires_session_before_profile_or_avatar_lookup(
