@@ -26,6 +26,7 @@
 - `frontend/src/library/ProfilePage.test.tsx` — profile link semantics and icon-only regression coverage.
 - `frontend/src/library/MediaViewerPage.tsx` — grouped Instagram and delete icon actions.
 - `frontend/src/library/MediaViewerPage.test.tsx` — media link, delete control, and confirmation coverage.
+- `frontend/src/test/setup.ts` — jsdom support for the native dialog methods exercised by confirmation tests.
 - `frontend/src/styles/global.css` — shared neutral icon action, destructive modifier, tooltip, and viewer action-row styling.
 
 ### Task 1: Implement Accessible Instagram and Delete Icon Actions
@@ -35,6 +36,7 @@
 - Modify: `frontend/src/library/ProfilePage.tsx:7-15,195-209`
 - Modify: `frontend/src/library/MediaViewerPage.tsx:6-16,135-141`
 - Modify: `frontend/src/styles/global.css:104-125,289-305,341-345`
+- Modify: `frontend/src/test/setup.ts:1-9`
 - Test: `frontend/src/library/ProfilePage.test.tsx:44-76`
 - Test: `frontend/src/library/MediaViewerPage.test.tsx:1-4,131-152`
 
@@ -42,6 +44,7 @@
 - Produces: `InstagramIcon(): JSX.Element`
 - Produces: `TrashIcon(): JSX.Element`
 - Produces: CSS classes `icon-action`, `icon-action-danger`, and `action-icon`
+- Produces: test-only jsdom implementations of `HTMLDialogElement.showModal()` and `HTMLDialogElement.close()` when absent
 - Preserves: profile and media URL sources, safe external-link attributes, and `ConfirmDialog` deletion flow
 
 - [ ] **Step 1: Write failing profile and media action tests**
@@ -275,13 +278,33 @@ Replace the profile text-link rules and specialize the media action row:
 Keep the existing global `:focus-visible` outline so icon actions receive the
 same three-pixel keyboard focus treatment as the rest of the application.
 
-- [ ] **Step 6: Run the focused tests and verify the GREEN state**
+- [ ] **Step 6: Support native dialog behavior in jsdom**
+
+The confirmation test exposes that jsdom does not implement the native dialog
+methods. Add guarded test-environment implementations without changing
+production dialog code:
+
+```tsx
+if (HTMLDialogElement.prototype.showModal === undefined) {
+  HTMLDialogElement.prototype.showModal = function showModal() {
+    this.open = true;
+  };
+}
+
+if (HTMLDialogElement.prototype.close === undefined) {
+  HTMLDialogElement.prototype.close = function close() {
+    this.open = false;
+  };
+}
+```
+
+- [ ] **Step 7: Run the focused tests and verify the GREEN state**
 
 Run the Step 2 command again.
 
 Expected: 2 test files pass with all profile and media action assertions green.
 
-- [ ] **Step 7: Run frontend verification**
+- [ ] **Step 8: Run frontend verification**
 
 Run from `frontend/`:
 
@@ -295,7 +318,7 @@ npx --yes node@22 ./node_modules/vite/bin/vite.js build
 Expected: 10 test files pass, ESLint exits zero, TypeScript exits zero, and
 Vite produces the production build without errors.
 
-- [ ] **Step 8: Commit the implementation**
+- [ ] **Step 9: Commit the implementation**
 
 ```bash
 git add \
@@ -304,6 +327,7 @@ git add \
   frontend/src/library/ProfilePage.test.tsx \
   frontend/src/library/MediaViewerPage.tsx \
   frontend/src/library/MediaViewerPage.test.tsx \
+  frontend/src/test/setup.ts \
   frontend/src/styles/global.css
 git commit -m "feat: use icon actions for instagram links"
 ```

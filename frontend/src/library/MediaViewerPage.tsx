@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
+import { InstagramIcon, TrashIcon } from "./ActionIcons";
 import { deleteMedia, getMedia, getProfile, mediaAssetUrl } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDateTime } from "./dateFormatters";
@@ -134,9 +135,26 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
             {mediaDisplayIdentifier(media)}
           </p>
           <p className="viewer-caption">{media.caption || media.accessibility_caption || "No caption was saved for this public item."}</p>
-          <a className="text-link" href={media.original_url} rel="noopener noreferrer" target="_blank">Open original on Instagram</a>
-          <div className="viewer-actions">
-            <button className="danger-button danger-button-outline" type="button" onClick={() => setDeleteOpen(true)}>Delete downloaded media</button>
+          <div aria-label="Media actions" className="viewer-actions" role="group">
+            <a
+              aria-label="Open original on Instagram"
+              className="icon-action"
+              data-tooltip="Open original on Instagram"
+              href={media.original_url}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              <InstagramIcon />
+            </a>
+            <button
+              aria-label="Delete downloaded media"
+              className="icon-action icon-action-danger"
+              data-tooltip="Delete downloaded media"
+              type="button"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <TrashIcon />
+            </button>
           </div>
           {actionError ? <p className="form-error" role="alert">{actionError}</p> : null}
         </article>
