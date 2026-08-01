@@ -1,5 +1,6 @@
 import { HttpResponse, http } from "msw";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { TestRouter } from "../test/TestRouter";
@@ -147,5 +148,64 @@ describe("MediaViewerPage", () => {
       "https://www.instagram.com/stories/katerina.soria/3952742051065980676/",
     );
     expect(screen.getByText(/3952742051065980676/)).toBeVisible();
+  });
+
+  it("renders icon-only media actions with accessible names", async () => {
+    renderViewer(reelFixture);
+
+    expect(
+      await screen.findByRole("heading", { name: "Reel" }),
+    ).toBeVisible();
+    const actions = screen.getByRole("group", { name: "Media actions" });
+    const instagramLink = within(actions).getByRole("link", {
+      name: "Open original on Instagram",
+    });
+    expect(instagramLink).toHaveAttribute(
+      "href",
+      "https://www.instagram.com/reel/REEL123/",
+    );
+    expect(instagramLink).toHaveAttribute("target", "_blank");
+    expect(instagramLink).toHaveAttribute("rel", "noopener noreferrer");
+    expect(instagramLink).toHaveAttribute(
+      "data-tooltip",
+      "Open original on Instagram",
+    );
+    expect(instagramLink).not.toHaveTextContent("Open original on Instagram");
+    expect(instagramLink.querySelector("svg")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+
+    const deleteButton = within(actions).getByRole("button", {
+      name: "Delete downloaded media",
+    });
+    expect(deleteButton).not.toHaveTextContent("Delete downloaded media");
+    expect(deleteButton).toHaveAttribute(
+      "data-tooltip",
+      "Delete downloaded media",
+    );
+    expect(deleteButton.querySelector("svg")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+  });
+
+  it("keeps delete confirmation before media removal", async () => {
+    const user = userEvent.setup();
+    renderViewer(reelFixture);
+
+    await screen.findByRole("heading", { name: "Reel" });
+    const actions = screen.getByRole("group", { name: "Media actions" });
+    const deleteButton = within(actions).getByRole("button", {
+      name: "Delete downloaded media",
+    });
+    await user.click(deleteButton);
+
+    expect(
+      screen.getByRole("dialog", { name: "Delete this media item?" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Delete media" }),
+    ).toBeVisible();
   });
 });

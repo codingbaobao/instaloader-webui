@@ -15,6 +15,7 @@ import {
   setProfileSyncEnabled,
   syncProfile,
 } from "./api";
+import { InstagramIcon } from "./ActionIcons";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate } from "./dateFormatters";
 import { MediaGrid } from "./MediaGrid";
@@ -198,12 +199,13 @@ export function ProfilePage({ session }: ProfilePageProps) {
             <h1 id="profile-title">@{profile.username}</h1>
             <a
               aria-label={`Open @${profile.username} on Instagram`}
-              className="profile-instagram-link"
+              className="icon-action"
+              data-tooltip={`Open @${profile.username} on Instagram`}
               href={`https://www.instagram.com/${encodeURIComponent(profile.username)}/`}
               rel="noopener noreferrer"
               target="_blank"
             >
-              Instagram
+              <InstagramIcon />
             </a>
             <span className={`status-badge status-badge-${profile.status}`}>{profile.status}</span>
             <span

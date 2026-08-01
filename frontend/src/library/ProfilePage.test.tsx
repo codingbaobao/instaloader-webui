@@ -70,6 +70,19 @@ describe("ProfilePage", () => {
     );
     expect(instagramLink).toHaveAttribute("target", "_blank");
     expect(instagramLink).toHaveAttribute("rel", "noopener noreferrer");
+    expect(instagramLink).toHaveAttribute(
+      "data-tooltip",
+      "Open @katerina.soria on Instagram",
+    );
+    expect(instagramLink).not.toHaveTextContent("Instagram");
+    expect(instagramLink.querySelector("svg")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(instagramLink.querySelector("svg")).toHaveAttribute(
+      "focusable",
+      "false",
+    );
 
     await userEvent.click(storyTab);
 
