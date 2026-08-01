@@ -334,6 +334,24 @@ def test_fallback_rejects_inaccessible_http_status_metadata(
     assert _query_calls(context) == []
 
 
+def test_fallback_rejects_boolean_http_429_status_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treating bool, an int subclass, as an integer HTTP status must fail."""
+    context = _context(_users(_node("Target")))
+    native_error = _http_error(True)
+    native_calls = _install_native(monkeypatch, result=native_error)
+
+    with pytest.raises(HTTPError) as raised:
+        ProfileLookupResolver("fallback", logging.getLogger(__name__)).resolve(
+            context, "Target"
+        )
+
+    assert raised.value is native_error
+    assert native_calls == [(context, "Target")]
+    assert _query_calls(context) == []
+
+
 def test_legacy_casefold_exact_match_returns_profile_bound_to_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,6 +392,37 @@ def test_legacy_complete_list_without_exact_match_is_profile_not_found(
             context, "Target"
         )
 
+    assert len(_query_calls(context)) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _users(
+            {"id": object(), "username": "Broken"},
+            _node("Target"),
+        ),
+        _users(
+            _node("Target"),
+            {"pk": True, "username": "Broken"},
+        ),
+    ],
+)
+def test_legacy_validates_every_node_identifier_before_exact_match(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+) -> None:
+    """Trusting or skipping any unusable user node around a match must fail."""
+    context = _context(payload)
+    _install_native(monkeypatch, result=AssertionError("native must not run"))
+
+    with pytest.raises(InstaloaderException) as raised:
+        ProfileLookupResolver("legacy", logging.getLogger(__name__)).resolve(
+            context, "Target"
+        )
+
+    assert not isinstance(raised.value, ProfileNotExistsException)
+    assert str(raised.value) == "Instagram profile lookup response was unavailable."
     assert len(_query_calls(context)) == 1
 
 

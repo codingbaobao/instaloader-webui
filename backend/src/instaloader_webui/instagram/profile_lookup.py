@@ -172,10 +172,22 @@ def _validate_legacy_payload(payload: object) -> list[Mapping[str, object]]:
         node_username = node.get("username")
         if not isinstance(node_username, str) or not node_username:
             raise _LegacyProfileLookupSchemaError(_SCHEMA_ERROR_MESSAGE)
-        if "id" not in node and "pk" not in node:
+        profile_identifier = node.get("id") or node.get("pk")
+        if not _is_valid_profile_identifier(profile_identifier):
             raise _LegacyProfileLookupSchemaError(_SCHEMA_ERROR_MESSAGE)
         validated_users.append(node)
     return validated_users
+
+
+def _is_valid_profile_identifier(value: object) -> bool:
+    if type(value) is int:
+        return cast(int, value) > 0
+    return (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and int(value) > 0
+    )
 
 
 def _is_bounded_typed_rate_limit(error: BaseException) -> bool:
