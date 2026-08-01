@@ -427,6 +427,34 @@ def test_legacy_validates_every_node_identifier_before_exact_match(
 
 
 @pytest.mark.parametrize(
+    "node",
+    [
+        {"id": 0, "pk": 1, "username": "Target"},
+        {"id": False, "pk": 1, "username": "Target"},
+        {"id": "", "pk": 1, "username": "Target"},
+        {"pk": 0, "username": "Target"},
+        {"id": 1, "pk": False, "username": "Target"},
+    ],
+)
+def test_legacy_rejects_each_present_invalid_identifier(
+    monkeypatch: pytest.MonkeyPatch,
+    node: Mapping[str, object],
+) -> None:
+    """Hiding an invalid id or pk behind the other identifier must fail."""
+    context = _context(_users(node))
+    _install_native(monkeypatch, result=AssertionError("native must not run"))
+
+    with pytest.raises(InstaloaderException) as raised:
+        ProfileLookupResolver("legacy", logging.getLogger(__name__)).resolve(
+            context, "Target"
+        )
+
+    assert not isinstance(raised.value, ProfileNotExistsException)
+    assert str(raised.value) == "Instagram profile lookup response was unavailable."
+    assert len(_query_calls(context)) == 1
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         None,
