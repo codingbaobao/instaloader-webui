@@ -18,6 +18,7 @@ from instaloader_webui.instagram.followee_discovery import (
     FolloweeDiscoveryAdapter,
     FolloweeDiscoveryError,
 )
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
@@ -53,6 +54,7 @@ class JobRunner:
         jobs: JobRepository,
         followee_imports: FolloweeImportRepository,
         loader_runtime: WorkerInstaloaderRuntime,
+        profile_lookup_resolver: ProfileLookupResolver,
     ) -> None:
         self._data_root = data_root
         self._media_root = media_root.resolve()
@@ -61,6 +63,7 @@ class JobRunner:
         self._jobs = jobs
         self._followee_imports = followee_imports
         self._loader_runtime = loader_runtime
+        self._profile_lookup_resolver = profile_lookup_resolver
 
     def run(self, job: JobSnapshot) -> None:
         """Dispatch a claimed job and persist success or a concise failure."""
@@ -182,6 +185,7 @@ class JobRunner:
             jobs_root=self._jobs_root,
             library=self._library,
             loader_runtime=self._loader_runtime,
+            profile_lookup_resolver=self._profile_lookup_resolver,
             progress=lambda current, total, phase, status_text: self._progress(
                 job,
                 current,

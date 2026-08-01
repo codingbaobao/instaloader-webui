@@ -17,6 +17,7 @@ from instaloader_webui.db.library_repositories import (
     ProfileSnapshot,
 )
 from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
 from instaloader_webui.instagram.safe_issues import MediaItemFailure
 from instaloader_webui.instagram.worker_runtime import (
@@ -32,7 +33,7 @@ from instaloader_webui.services.instagram_inputs import (
 NOW = datetime(2026, 7, 31, 8, 0, tzinfo=UTC)
 # Instaloader 4.15.3 returns naive UTC values for these two Story properties.
 PUBLISHED_AT = datetime(2026, 7, 31, 6, 0)  # noqa: DTZ001
-EXPIRES_AT = datetime(2026, 8, 1, 6, 0)  # noqa: DTZ001
+EXPIRES_AT = datetime(2036, 8, 1, 6, 0)  # noqa: DTZ001
 STORY_MEDIA_ID = "3952742051065980676"
 SHORTCODE = "DOqEJyxCRGJ"
 USERNAME = "katerina.soria"
@@ -149,6 +150,11 @@ class FakeRuntime:
         )
 
 
+class RejectingProfileLookupResolver:
+    def resolve(self, _context: object, _username: str) -> FakeProfile:
+        raise AssertionError("direct media must not resolve a Profile username")
+
+
 @pytest.fixture
 def repository(
     session_factory,
@@ -192,6 +198,10 @@ def make_adapter(
         loader_runtime=FakeRuntime(  # type: ignore[arg-type]
             loader,
             configured=configured,
+        ),
+        profile_lookup_resolver=cast(
+            ProfileLookupResolver,
+            RejectingProfileLookupResolver(),
         ),
     )
 

@@ -38,6 +38,7 @@ from instaloader_webui.instagram.media_types import (
     MediaCandidate,
     ResolvedMedia,
 )
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.profile_sync import (
     IssueCallback,
     ProfileSyncCoordinator,
@@ -148,6 +149,7 @@ class PublicInstaloaderAdapter:
         library: LibraryRepository,
         progress: ProgressCallback,
         loader_runtime: WorkerInstaloaderRuntime,
+        profile_lookup_resolver: ProfileLookupResolver,
         issue: IssueCallback | None = None,
     ) -> None:
         self._data_root = data_root.resolve()
@@ -158,6 +160,7 @@ class PublicInstaloaderAdapter:
         self._progress_supports_phase = self._supports_phase(progress)
         self._issue = issue or (lambda _issue: None)
         self._loader_runtime = loader_runtime
+        self._profile_lookup_resolver = profile_lookup_resolver
 
     def fetch_profile(self, username: str) -> PublicProfile:
         """Load normalized metadata for one publicly accessible profile."""
@@ -165,7 +168,10 @@ class PublicInstaloaderAdapter:
             self._metadata_staging_directory()
         )
         try:
-            profile = Profile.from_username(loader.context, username)
+            profile = self._profile_lookup_resolver.resolve(
+                loader.context,
+                username,
+            )
             return self._normalize_profile(
                 profile,
                 authenticated=session_configured,
@@ -701,7 +707,10 @@ class PublicInstaloaderAdapter:
                 "Refreshing public Instagram profile.",
                 phase="profile_preflight",
             )
-            profile = Profile.from_username(loader.context, stored_profile.username)
+            profile = self._profile_lookup_resolver.resolve(
+                loader.context,
+                stored_profile.username,
+            )
             profile_data = self._normalize_profile(
                 profile,
                 authenticated=True,

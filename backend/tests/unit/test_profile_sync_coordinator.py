@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
+from typing import Any, Literal, cast
 
 import pytest
 from instaloader import BadResponseException
@@ -19,6 +19,7 @@ from instaloader_webui.db.library_repositories import (
 from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.instagram.errors import ANONYMOUS_REJECTED, TRANSIENT
 from instaloader_webui.instagram.media_types import MediaCandidate, MediaKind
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
@@ -471,6 +472,7 @@ class AdapterRuntime:
         self.configured = configured
 
     def acquire(self, staging_directory: Path) -> tuple[AdapterLoader, bool]:
+        self.loader.events.append("session:acquire")
         self.loader.dirname_pattern = str(staging_directory)
         return self.loader, self.configured
 
@@ -485,6 +487,25 @@ class AdapterRuntime:
                 session_configured=configured,
             )
         return loader
+
+
+class RecordingProfileLookupResolver:
+    def __init__(
+        self,
+        result: AdapterProfile | BaseException,
+        *,
+        events: list[str],
+    ) -> None:
+        self._result = result
+        self._events = events
+        self.calls: list[tuple[object, str]] = []
+
+    def resolve(self, context: object, username: str) -> AdapterProfile:
+        self.calls.append((context, username))
+        self._events.append(f"resolve:{username}")
+        if isinstance(self._result, BaseException):
+            raise self._result
+        return self._result
 
 
 @pytest.fixture
@@ -510,39 +531,67 @@ def make_profile_adapter(
     test_settings: Settings,
     repository: LibraryRepository,
     loader: AdapterLoader,
+    profile_lookup_resolver: RecordingProfileLookupResolver,
     configured: bool = True,
     issues: list[SafeMediaIssue] | None = None,
+    progress: list[tuple[Any, ...]] | None = None,
 ) -> PublicInstaloaderAdapter:
     return PublicInstaloaderAdapter(
         data_root=test_settings.data_root,
         media_root=test_settings.media_root,
         jobs_root=test_settings.jobs_root,
         library=repository,
-        progress=lambda *_args: None,
+        progress=lambda *args: (progress if progress is not None else []).append(
+            args
+        ),
         issue=(issues if issues is not None else []).append,
         loader_runtime=AdapterRuntime(  # type: ignore[arg-type]
             loader,
             configured=configured,
         ),
-    )
-
-
-def patch_profile_lookup(
-    monkeypatch: pytest.MonkeyPatch,
-    upstream: AdapterProfile,
-) -> None:
-    monkeypatch.setattr(
-        "instaloader_webui.instagram.public_adapter.Profile.from_username",
-        lambda context, username: (
-            upstream
-            if username == upstream.username
-            else (_ for _ in ()).throw(AssertionError("wrong username"))
+        profile_lookup_resolver=cast(
+            ProfileLookupResolver,
+            profile_lookup_resolver,
         ),
     )
 
 
-def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
+def test_fetch_profile_uses_injected_resolver_and_normalizes_result(
     monkeypatch: pytest.MonkeyPatch,
+    profile_repository: LibraryRepository,
+    test_settings: Settings,
+) -> None:
+    # Break caught: bypassing the injected lookup resolver would restore the
+    # rate-limited native Profile.from_username boundary in fetch_profile().
+    events: list[str] = []
+    upstream = AdapterProfile(events=events)
+    resolver = RecordingProfileLookupResolver(upstream, events=events)
+    monkeypatch.setattr(
+        "instaloader_webui.instagram.public_adapter.Profile.from_username",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("native lookup must stay inside the resolver")
+        ),
+    )
+    loader = AdapterLoader(events=events, response=AvatarResponse())
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=resolver,
+    )
+
+    profile = adapter.fetch_profile(upstream.username)
+
+    assert profile.instagram_user_id == upstream.userid
+    assert profile.username == upstream.username
+    assert profile.full_name == upstream.full_name
+    assert profile.biography == upstream.biography
+    assert profile.profile_pic_url == upstream.profile_pic_url
+    assert resolver.calls == [(loader.context, upstream.username)]
+    assert events == ["session:acquire", f"resolve:{upstream.username}"]
+
+
+def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     profile_repository: LibraryRepository,
     tracked_profile,
     test_settings: Settings,
@@ -551,12 +600,16 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     # the standard profile_pic_url that Instaloader exposes and delays Stories.
     events: list[str] = []
     upstream = AdapterProfile(events=events)
+    resolver = RecordingProfileLookupResolver(upstream, events=events)
     response = AvatarResponse()
-    patch_profile_lookup(monkeypatch, upstream)
+    progress: list[tuple[Any, ...]] = []
+    loader = AdapterLoader(events=events, response=response)
     adapter = make_profile_adapter(
         test_settings=test_settings,
         repository=profile_repository,
-        loader=AdapterLoader(events=events, response=response),
+        loader=loader,
+        profile_lookup_resolver=resolver,
+        progress=progress,
     )
 
     result = adapter.sync_profile(tracked_profile.id, "job-avatar")
@@ -569,11 +622,20 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
         stopped=False,
     )
     assert events == [
+        "session:acquire",
+        f"resolve:{upstream.username}",
         "avatar:https://cdn.example/avatar-standard.jpg",
         "scan:stories",
         "scan:reels",
         "scan:posts",
     ]
+    assert [event[2] for event in progress] == [
+        "profile_preflight",
+        "saving_stories",
+        "scanning_media",
+        "processing_reels",
+    ]
+    assert resolver.calls == [(loader.context, upstream.username)]
     assert profile_avatar_path(
         test_settings.media_root,
         tracked_profile.id,
@@ -587,20 +649,19 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
 
 
 def test_profile_sync_requires_session_before_profile_or_avatar_lookup(
-    monkeypatch: pytest.MonkeyPatch,
     profile_repository: LibraryRepository,
     tracked_profile,
     test_settings: Settings,
 ) -> None:
     # Break caught: anonymous profile metadata can appear readable, but profile
     # sync cannot enumerate Stories and must reject the session at preflight.
-    profile_lookups: list[str] = []
-    monkeypatch.setattr(
-        "instaloader_webui.instagram.public_adapter.Profile.from_username",
-        lambda _context, username: profile_lookups.append(username),
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
     )
     loader = AdapterLoader(
-        events=[],
+        events=events,
         response=AvatarResponse(),
         logged_in=False,
     )
@@ -608,13 +669,15 @@ def test_profile_sync_requires_session_before_profile_or_avatar_lookup(
         test_settings=test_settings,
         repository=profile_repository,
         loader=loader,
+        profile_lookup_resolver=resolver,
         configured=False,
     )
 
     with pytest.raises(PublicInstagramAdapterError, match=ANONYMOUS_REJECTED):
         adapter.sync_profile(tracked_profile.id, "job-no-session")
 
-    assert profile_lookups == []
+    assert resolver.calls == []
+    assert events == ["session:acquire"]
     failed = profile_repository.get_profile(tracked_profile.id)
     assert failed is not None
     assert failed.last_sync_attempted_at is not None
@@ -635,7 +698,6 @@ def test_profile_sync_requires_session_before_profile_or_avatar_lookup(
     ],
 )
 def test_profile_sync_avatar_failure_is_fatal_before_story_enumeration(
-    monkeypatch: pytest.MonkeyPatch,
     profile_repository: LibraryRepository,
     tracked_profile,
     test_settings: Settings,
@@ -645,11 +707,15 @@ def test_profile_sync_avatar_failure_is_fatal_before_story_enumeration(
     # Break caught: downgrading strict profile-sync avatar failures would scan
     # and save media for a Profile whose required preflight is incomplete.
     events: list[str] = []
-    patch_profile_lookup(monkeypatch, AdapterProfile(events=events))
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
+    )
     adapter = make_profile_adapter(
         test_settings=test_settings,
         repository=profile_repository,
         loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
     )
 
     with pytest.raises(PublicInstagramAdapterError, match=message):
@@ -662,6 +728,36 @@ def test_profile_sync_avatar_failure_is_fatal_before_story_enumeration(
     assert failed.last_sync_succeeded_at is None
 
 
+def test_profile_sync_classifies_resolver_failure_before_avatar_or_coordinator(
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: resolving outside the existing adapter boundary can leak a
+    # terminal lookup exception or begin avatar/Story work after lookup fails.
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        BadResponseException("sensitive upstream response"),
+        events=events,
+    )
+    loader = AdapterLoader(events=events, response=AvatarResponse())
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=resolver,
+    )
+
+    with pytest.raises(PublicInstagramAdapterError, match=TRANSIENT):
+        adapter.sync_profile(tracked_profile.id, "job-lookup-failure")
+
+    assert resolver.calls == [(loader.context, tracked_profile.username)]
+    assert events == [
+        "session:acquire",
+        f"resolve:{tracked_profile.username}",
+    ]
+
+
 def test_profile_sync_warning_result_still_records_success(
     monkeypatch: pytest.MonkeyPatch,
     profile_repository: LibraryRepository,
@@ -672,7 +768,10 @@ def test_profile_sync_warning_result_still_records_success(
     # successful sync timestamp even though the coordinator finished.
     events: list[str] = []
     issues: list[SafeMediaIssue] = []
-    patch_profile_lookup(monkeypatch, AdapterProfile(events=events))
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
+    )
     warning = SafeMediaIssue(
         identity=MediaIdentity("shortcode", "warning-item"),
         kind="reel",
@@ -697,6 +796,7 @@ def test_profile_sync_warning_result_still_records_success(
         test_settings=test_settings,
         repository=profile_repository,
         loader=AdapterLoader(events=events, response=AvatarResponse()),
+        profile_lookup_resolver=resolver,
         issues=issues,
     )
 

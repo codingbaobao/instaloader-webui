@@ -2,6 +2,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal, cast
 
 import pytest
 from instaloader import ConnectionException, Instaloader
@@ -17,7 +18,13 @@ from instaloader_webui.db.library_repositories import (
 )
 from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.instagram.media_processor import MediaProcessor
-from instaloader_webui.instagram.media_types import MediaCandidate, ResolvedMedia
+from instaloader_webui.instagram.media_types import (
+    ContentKind,
+    MediaCandidate,
+    MediaKind,
+    ResolvedMedia,
+)
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
 from instaloader_webui.instagram.safe_issues import MediaItemFailure
 from instaloader_webui.services.profile_avatars import profile_avatar_path
@@ -98,8 +105,8 @@ def _resolved_media(
     *,
     profile: ProfileSnapshot,
     identity: MediaIdentity | None = None,
-    kind: str = "reel",
-    content_kinds: tuple[str, ...] = ("video",),
+    kind: MediaKind = "reel",
+    content_kinds: tuple[ContentKind, ...] = ("video",),
     download: DownloadAction | None = None,
     profile_id: str | None = None,
 ) -> ResolvedMedia:
@@ -156,8 +163,17 @@ def _persist_existing(
     repository: LibraryRepository,
     profile: ProfileSnapshot,
     media_root: Path,
-    kind: str,
-    assets: tuple[tuple[str, str, int, str, bytes], ...],
+    kind: MediaKind,
+    assets: tuple[
+        tuple[
+            str,
+            ContentKind,
+            int,
+            Literal["content", "poster"],
+            bytes,
+        ],
+        ...,
+    ],
 ):
     final_directory = (
         media_root
@@ -715,6 +731,12 @@ def test_download_shortcode_compatibility_resolves_sidecar_kinds_for_processor(
             loader.dirname_pattern = str(staging_directory)
             return loader, False
 
+    class RejectingProfileLookupResolver:
+        def resolve(self, _context: object, _username: str) -> object:
+            raise AssertionError(
+                "direct media must not resolve a Profile username"
+            )
+
     adapter = PublicInstaloaderAdapter(
         data_root=test_settings.data_root,
         media_root=test_settings.media_root,
@@ -722,6 +744,10 @@ def test_download_shortcode_compatibility_resolves_sidecar_kinds_for_processor(
         library=repository,
         progress=lambda _current, _total, _status: None,
         loader_runtime=StaticRuntime(),  # type: ignore[arg-type]
+        profile_lookup_resolver=cast(
+            ProfileLookupResolver,
+            RejectingProfileLookupResolver(),
+        ),
     )
 
     saved = adapter.download_shortcode(

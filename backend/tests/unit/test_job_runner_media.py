@@ -17,6 +17,7 @@ from instaloader_webui.db.library_repositories import (
 )
 from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.instagram.media_types import MediaCandidate
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
@@ -49,11 +50,17 @@ def jobs(session_factory) -> JobRepository:
 
 
 @pytest.fixture
+def profile_lookup_resolver() -> ProfileLookupResolver:
+    return cast(ProfileLookupResolver, object())
+
+
+@pytest.fixture
 def runner(
     test_settings,
     library: LibraryRepository,
     jobs: JobRepository,
     session_factory,
+    profile_lookup_resolver: ProfileLookupResolver,
 ) -> JobRunner:
     return JobRunner(
         data_root=test_settings.data_root,
@@ -63,6 +70,7 @@ def runner(
         jobs=jobs,
         followee_imports=FolloweeImportRepository(session_factory),
         loader_runtime=cast(WorkerInstaloaderRuntime, object()),
+        profile_lookup_resolver=profile_lookup_resolver,
     )
 
 
@@ -101,6 +109,42 @@ def _claimed_single_media(
     assert claimed is not None
     assert claimed.id == queued.id
     return claimed
+
+
+def test_job_runner_passes_same_resolver_to_every_created_adapter(
+    runner: JobRunner,
+    jobs: JobRepository,
+    profile_lookup_resolver: ProfileLookupResolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: constructing resolvers per job or omitting the shared
+    # composition dependency makes adapter behavior diverge across jobs.
+    injected: list[ProfileLookupResolver] = []
+
+    class RecordingAdapter:
+        def download_input(self, _parsed: object, _job_id: str) -> None:
+            return None
+
+    def fake_adapter(**kwargs):
+        injected.append(kwargs["profile_lookup_resolver"])
+        return RecordingAdapter()
+
+    monkeypatch.setattr(
+        job_runner_module,
+        "PublicInstaloaderAdapter",
+        fake_adapter,
+    )
+    payload: dict[str, object] = {
+        "kind": "post",
+        "shortcode": "CmzV2H-rrlI",
+        "canonical_url": "https://www.instagram.com/p/CmzV2H-rrlI/",
+    }
+
+    runner.run(_claimed_single_media(jobs, payload))
+    runner.run(_claimed_single_media(jobs, payload))
+
+    assert len(injected) == 2
+    assert all(resolver is profile_lookup_resolver for resolver in injected)
 
 
 def test_profile_sync_with_item_issues_completes_with_warnings(
