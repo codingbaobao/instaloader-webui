@@ -1,5 +1,11 @@
 # Phase 1 Final Fix Round 1 Report
 
+> **Status — superseded for schema work (2026-08-01):** This report preserves
+> historical migration-era evidence. Its migration commands and behavior are
+> superseded and must not be executed as current guidance. The current pre-1.0
+> runtime supports only the exact fresh schema and does not migrate older
+> databases.
+
 Date: 2026-07-26
 Scope: backend authentication/security hardening and the minimum related
 Docker, Compose, README, test-tooling, migration, and smoke-test changes.

@@ -1,5 +1,10 @@
 # Phase 1 Foundation and Administrator Authentication Implementation Plan
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute its Alembic, migration, database-upgrade/downgrade, or
+> migration-startup instructions. The current pre-1.0 runtime supports only
+> the exact fresh schema and does not migrate older databases.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Docker-runnable FastAPI and React foundation in which one bootstrapped administrator can log in, change the initial password, maintain an opaque server-side session, and log out.

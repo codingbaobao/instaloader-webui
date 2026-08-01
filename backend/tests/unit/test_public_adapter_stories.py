@@ -16,7 +16,7 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
     ProfileSnapshot,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
 from instaloader_webui.instagram.safe_issues import MediaItemFailure
@@ -160,7 +160,7 @@ def repository(
     session_factory,
     test_settings: Settings,
 ) -> LibraryRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LibraryRepository(session_factory)
 
 

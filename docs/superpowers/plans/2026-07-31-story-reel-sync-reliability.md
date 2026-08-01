@@ -1,5 +1,10 @@
 # Story, Reel Classification, and Resilient Sync Implementation Plan
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute its Alembic, migration, database-upgrade/downgrade, or
+> migration-startup instructions. The current pre-1.0 runtime supports only
+> the exact fresh schema and does not migrate older databases.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add direct and profile-synced Instagram Stories, repair Reel classification and poster handling, and make profile sync finish with structured warnings when individual media items fail.

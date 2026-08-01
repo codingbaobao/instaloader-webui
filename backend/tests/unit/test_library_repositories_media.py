@@ -9,14 +9,14 @@ from instaloader_webui.db.library_repositories import (
     NormalizedAsset,
     NormalizedMedia,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 
 NOW = datetime(2026, 7, 31, 8, 0, tzinfo=UTC)
 
 
 @pytest.fixture
 def repository(session_factory, test_settings) -> LibraryRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LibraryRepository(session_factory)
 
 

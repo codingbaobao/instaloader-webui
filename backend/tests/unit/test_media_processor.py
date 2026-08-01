@@ -16,7 +16,7 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
     ProfileSnapshot,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.media_processor import MediaProcessor
 from instaloader_webui.instagram.media_types import (
     ContentKind,
@@ -37,7 +37,7 @@ DownloadAction = Callable[[Instaloader, str], None]
 
 @pytest.fixture
 def repository(session_factory, test_settings: Settings) -> LibraryRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LibraryRepository(session_factory)
 
 

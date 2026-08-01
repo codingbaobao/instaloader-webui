@@ -20,7 +20,7 @@ from instaloader_webui.db.library_repositories import (
     NormalizedAsset,
     NormalizedMedia,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.errors import SESSION_REJECTED, TRANSIENT
 from instaloader_webui.instagram.media_types import MediaCandidate
 from instaloader_webui.instagram.profile_lookup import (
@@ -50,7 +50,7 @@ NOW = datetime(2026, 7, 31, 8, 0, tzinfo=UTC)
 
 @pytest.fixture
 def library(session_factory, test_settings) -> LibraryRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LibraryRepository(session_factory)
 
 

@@ -1,5 +1,10 @@
 # Instaloader Personal Web Service Roadmap
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute its Alembic, migration, database-upgrade/downgrade, or
+> migration-startup instructions. The current pre-1.0 runtime supports only
+> the exact fresh schema and does not migrate older databases.
+
 > **For agentic workers:** Execute each phase from its own detailed implementation plan. Do not begin a later phase until the preceding phase passes its review and verification gate.
 
 **Goal:** Deliver the approved personal Instagram archive WebUI as four independently testable increments.

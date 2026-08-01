@@ -1,12 +1,11 @@
 import logging
-import shutil
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import pytest
 from fastapi import Depends
 
-import instaloader_webui.db.migrations as migration_module
+from instaloader_webui import main as main_module
 from instaloader_webui.api.dependencies import (
     RequestSession,
     require_authenticated_session,
@@ -696,7 +695,7 @@ async def test_argon2_overload_returns_stable_retryable_response(
     assert response.headers["Cache-Control"] == "no-store"
 
 
-async def test_lifespan_migrations_are_independent_of_working_directory(
+async def test_lifespan_schema_bootstrap_is_independent_of_working_directory(
     test_settings: Settings, tmp_path, monkeypatch, test_client_factory
 ) -> None:
     unrelated_directory = tmp_path / "unrelated"
@@ -709,31 +708,32 @@ async def test_lifespan_migrations_are_independent_of_working_directory(
     assert response.status_code == 200
 
 
-async def test_lifespan_uses_packaged_migration_assets(
-    test_settings: Settings, tmp_path, monkeypatch, test_client_factory
+async def test_lifespan_initializes_schema_before_building_repositories(
+    test_settings: Settings, monkeypatch, test_client_factory
 ) -> None:
-    packaged_root = tmp_path / "installed" / "instaloader_webui"
-    packaged_migrations = packaged_root / "migrations"
-    source_migrations = migration_module.Path(migration_module.__file__).parents[3] / (
-        "migrations"
-    )
-    shutil.copytree(source_migrations, packaged_migrations)
-    monkeypatch.setattr(
-        migration_module,
-        "files",
-        lambda _package: packaged_root,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        migration_module,
-        "__file__",
-        str(tmp_path / "unrelated" / "site-packages" / "module.py"),
-    )
+    # Break caught: constructing repository engines before the shared bootstrap
+    # lets web startup race or query an absent schema.
+    startup_events: list[str] = []
+    real_initializer = main_module.initialize_database
+    real_build_engine = main_module.build_engine
 
-    async with test_client_factory(test_settings) as packaged_client:
-        response = await packaged_client.get("/api/health")
+    def tracked_initializer(settings: Settings) -> None:
+        startup_events.append("initialize")
+        real_initializer(settings)
+
+    def tracked_build_engine(database_path):
+        startup_events.append("engine")
+        assert startup_events == ["initialize", "engine"]
+        return real_build_engine(database_path)
+
+    monkeypatch.setattr(main_module, "initialize_database", tracked_initializer)
+    monkeypatch.setattr(main_module, "build_engine", tracked_build_engine)
+
+    async with test_client_factory(test_settings) as initialized_client:
+        response = await initialized_client.get("/api/health")
 
     assert response.status_code == 200
+    assert startup_events == ["initialize", "engine"]
 
 
 async def test_authentication_failures_do_not_log_passwords(client, caplog) -> None:

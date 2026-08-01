@@ -41,12 +41,12 @@ from instaloader_webui.db.library_repositories import (
     LibraryRepository,
     SettingsRepository,
 )
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import (
     AdminRepository,
     LoginFailureRepository,
     WebSessionRepository,
 )
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.session_service import InstagramSessionService
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
@@ -61,7 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        run_migrations(resolved)
+        initialize_database(resolved)
         resolved.media_root.mkdir(parents=True, exist_ok=True)
         resolved.jobs_root.mkdir(parents=True, exist_ok=True)
         app_secret = load_or_create_app_secret(resolved.data_root)

@@ -16,6 +16,16 @@ from sqlalchemy.orm import Mapped, mapped_column
 from instaloader_webui.db.base import Base
 
 
+class SchemaMarker(Base):
+    __tablename__ = "schema_marker"
+    __table_args__ = (
+        CheckConstraint("id = 'global'", name="ck_schema_marker_singleton"),
+    )
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class AdminUser(Base):
     __tablename__ = "admin_users"
 

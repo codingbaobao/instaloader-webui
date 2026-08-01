@@ -8,15 +8,15 @@ from instaloader_webui.db.library_repositories import (
     JobIssueInput,
     JobRepository,
 )
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.models import Job, JobIssue
+from instaloader_webui.db.schema import initialize_database
 
 NOW = datetime(2026, 7, 31, 8, 0, tzinfo=UTC)
 
 
 @pytest.fixture
 def jobs(session_factory, test_settings) -> JobRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return JobRepository(session_factory)
 
 

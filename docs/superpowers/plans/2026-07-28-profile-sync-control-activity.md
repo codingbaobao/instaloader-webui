@@ -1,5 +1,10 @@
 # Profile Sync Control and Activity Repair Implementation Plan
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> plan. Do not execute any migration or schema-startup instruction in this
+> plan. The current pre-1.0 runtime supports only the exact fresh schema and
+> does not migrate older databases.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add persistent per-profile Stop Sync and Resume Sync behavior, skip complete duplicate media downloads, and make Activity reliably render jobs with ten-second polling plus immediate refresh.

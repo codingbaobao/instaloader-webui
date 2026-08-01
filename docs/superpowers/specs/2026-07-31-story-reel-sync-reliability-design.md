@@ -1,5 +1,11 @@
 # Story Support, Reel Classification, and Resilient Profile Sync
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> design record. Do not execute its Alembic, migration,
+> database-upgrade/downgrade, or migration-startup instructions. The current
+> pre-1.0 runtime supports only the exact fresh schema and does not migrate
+> older databases.
+
 ## Goal
 
 Extend the existing Instagram library so it can save Stories, distinguish

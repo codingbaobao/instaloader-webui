@@ -49,8 +49,9 @@ From `instaloader-webui/`:
 
    `web` serves the UI at `http://host-address:8080` by default, while `worker`
    uses the exact same image to process downloads and scheduled profile syncs.
-   The worker waits for the web health check before starting so the web service
-   completes the initial migration first. Set `IW_HTTP_BIND=127.0.0.1` when a
+   The worker waits for the web health check for orderly startup. Both services
+   initialize or verify the current schema independently, so this dependency is
+   not required for schema correctness. Set `IW_HTTP_BIND=127.0.0.1` when a
    same-host reverse proxy is the only intended client, and use `IW_HTTP_PORT`
    to change the host port.
 

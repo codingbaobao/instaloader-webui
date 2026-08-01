@@ -3,6 +3,12 @@
 Date: 2026-07-26  
 Status: Approved
 
+> **Status — superseded for schema work (2026-08-01):** This is a historical
+> design record. Do not execute its Alembic, migration,
+> database-upgrade/downgrade, or migration-startup instructions. The current
+> pre-1.0 runtime supports only the exact fresh schema and does not migrate
+> older databases.
+
 ## 1. Purpose
 
 Build a self-hosted, single-user web service on top of Instaloader without modifying the existing `instaloader/` source code.
