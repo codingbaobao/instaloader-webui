@@ -1,5 +1,10 @@
 # Migration Logging Fix Report
 
+> **Status — superseded for schema work (2026-08-01):** This report preserves
+> historical migration-era evidence. Its Alembic commands and behavior are
+> superseded by the [current pre-1.0 fresh-schema-only policy](../../../README.md#pre-10-database-schema-policy)
+> and must not be executed as current guidance.
+
 ## Root Cause
 
 The ini-backed Alembic path loads `backend/alembic.ini` through
