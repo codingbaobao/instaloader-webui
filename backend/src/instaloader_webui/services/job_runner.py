@@ -1,14 +1,15 @@
 """Execute claimed public-library jobs in the single worker process."""
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from instaloader_webui.db.followee_import_repositories import (
     FolloweeImportRepository,
 )
 from instaloader_webui.db.library_repositories import (
+    JobIssueInput,
     JobRepository,
     JobSnapshot,
     LibraryRepository,
@@ -17,14 +18,27 @@ from instaloader_webui.instagram.followee_discovery import (
     FolloweeDiscoveryAdapter,
     FolloweeDiscoveryError,
 )
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
 )
+from instaloader_webui.instagram.safe_issues import (
+    MediaItemFailure,
+    SafeMediaIssue,
+    log_media_issue,
+)
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
+from instaloader_webui.services.instagram_inputs import (
+    PostInput,
+    ReelInput,
+    StoryInput,
+)
 from instaloader_webui.services.profile_avatars import profile_avatar_path
 
 _MAXIMUM_ERROR_LENGTH = 240
+_MEDIA_ISSUE_REPORTING_FAILED = "Media issue reporting failed."
+_LOGGER = logging.getLogger(__name__)
 
 
 class JobRunner:
@@ -40,6 +54,7 @@ class JobRunner:
         jobs: JobRepository,
         followee_imports: FolloweeImportRepository,
         loader_runtime: WorkerInstaloaderRuntime,
+        profile_lookup_resolver: ProfileLookupResolver,
     ) -> None:
         self._data_root = data_root
         self._media_root = media_root.resolve()
@@ -48,26 +63,29 @@ class JobRunner:
         self._jobs = jobs
         self._followee_imports = followee_imports
         self._loader_runtime = loader_runtime
+        self._profile_lookup_resolver = profile_lookup_resolver
 
     def run(self, job: JobSnapshot) -> None:
         """Dispatch a claimed job and persist success or a concise failure."""
         try:
             self._progress(job, 0, None, "Starting worker job.")
-            self._dispatch(job)
-        except Exception as error:
-            safe_error = shorten_job_error(error)
+            warning_count = self._dispatch(job)
+        except MediaItemFailure as failure:
             try:
-                self._record_profile_sync_failure(job)
-                self._record_profile_deletion_failure(job)
-                self._record_followee_discovery_failure(job, safe_error)
-            except Exception:
-                # The original operation failure remains the job's useful outcome.
-                pass
-            self._jobs.fail(
-                job_id=job.id,
-                error=safe_error,
-                now=datetime.now(UTC),
-            )
+                self._record_media_issue(job, failure.issue)
+            except Exception:  # noqa: BLE001
+                self._fail_job(
+                    job,
+                    RuntimeError(_MEDIA_ISSUE_REPORTING_FAILED),
+                )
+            else:
+                self._jobs.fail(
+                    job_id=job.id,
+                    error=failure.issue.safe_message,
+                    now=datetime.now(UTC),
+                )
+        except Exception as error:  # noqa: BLE001
+            self._fail_job(job, error)
         else:
             completed = self._jobs.get(job.id)
             status_text = (
@@ -75,39 +93,55 @@ class JobRunner:
                 if completed is not None and completed.status_text
                 else "Worker job completed."
             )
-            self._jobs.succeed(
-                job_id=job.id,
-                status_text=status_text,
-                now=datetime.now(UTC),
-            )
+            now = datetime.now(UTC)
+            if warning_count:
+                self._jobs.complete_with_warnings(
+                    job_id=job.id,
+                    status_text=f"Completed with {warning_count} warning(s).",
+                    now=now,
+                )
+            else:
+                self._jobs.succeed(
+                    job_id=job.id,
+                    status_text=status_text,
+                    now=now,
+                )
 
-    def _dispatch(self, job: JobSnapshot) -> None:
+    def _fail_job(self, job: JobSnapshot, error: Exception) -> None:
+        safe_error = shorten_job_error(error)
+        try:
+            self._record_profile_sync_failure(job)
+            self._record_profile_deletion_failure(job)
+            self._record_followee_discovery_failure(job, safe_error)
+        except Exception:  # noqa: BLE001, S110
+            # The original operation failure remains the job's useful outcome.
+            pass
+        self._jobs.fail(
+            job_id=job.id,
+            error=safe_error,
+            now=datetime.now(UTC),
+        )
+
+    def _dispatch(self, job: JobSnapshot) -> int:
         if job.type == "profile_sync":
             profile_id = _required_payload_text(job, "profile_id")
-            self._adapter(job).sync_profile(profile_id, job.id)
-            return
+            result = self._adapter(job).sync_profile(profile_id, job.id)
+            return result.issue_count
         if job.type == "single_media":
-            shortcode = _required_payload_text(job, "shortcode")
-            original_url = _required_payload_text(job, "original_url")
-            self._adapter(job).download_shortcode(
-                shortcode,
-                job.id,
-                expected_kind=_expected_kind(original_url),
-                original_url=original_url,
-            )
-            return
+            self._adapter(job).download_input(_decode_media_input(job), job.id)
+            return 0
         if job.type == "delete_media":
             self._delete_media(job, _required_payload_text(job, "media_id"))
-            return
+            return 0
         if job.type == "delete_profile":
             self._delete_profile(job, _required_payload_text(job, "profile_id"))
-            return
+            return 0
         if job.type == "followee_discovery":
             self._discover_followees(
                 job,
                 _required_payload_text(job, "batch_id"),
             )
-            return
+            return 0
         raise ValueError(f"Unsupported worker job type: {job.type}")
 
     def _discover_followees(self, job: JobSnapshot, batch_id: str) -> None:
@@ -151,9 +185,15 @@ class JobRunner:
             jobs_root=self._jobs_root,
             library=self._library,
             loader_runtime=self._loader_runtime,
-            progress=lambda current, total, status_text: self._progress(
-                job, current, total, status_text
+            profile_lookup_resolver=self._profile_lookup_resolver,
+            progress=lambda current, total, phase, status_text: self._progress(
+                job,
+                current,
+                total,
+                status_text,
+                phase=phase,
             ),
+            issue=lambda issue: self._record_media_issue(job, issue),
         )
 
     def _delete_media(self, job: JobSnapshot, media_id: str) -> None:
@@ -199,6 +239,8 @@ class JobRunner:
         current: int,
         total: int | None,
         status_text: str,
+        *,
+        phase: str | None = None,
     ) -> None:
         self._jobs.update_progress(
             job_id=job.id,
@@ -206,7 +248,27 @@ class JobRunner:
             total=total,
             status_text=status_text,
             now=datetime.now(UTC),
+            phase=phase,
         )
+
+    def _record_media_issue(
+        self,
+        job: JobSnapshot,
+        issue: SafeMediaIssue,
+    ) -> None:
+        self._jobs.record_issue(
+            job_id=job.id,
+            issue=JobIssueInput(
+                identity_type=issue.identity.identity_type,
+                identity_value=issue.identity.value,
+                media_kind=issue.kind,
+                error_code=issue.error_code,
+                safe_message=issue.safe_message,
+                exception_class_chain=issue.exception_class_chain,
+            ),
+            now=datetime.now(UTC),
+        )
+        log_media_issue(_LOGGER, job_id=job.id, issue=issue)
 
     def _record_profile_sync_failure(self, job: JobSnapshot) -> None:
         if job.type != "profile_sync":
@@ -296,8 +358,30 @@ def _required_payload_text(job: JobSnapshot, key: str) -> str:
     return value
 
 
-def _expected_kind(original_url: str) -> str:
-    path_parts = tuple(
-        part.casefold() for part in urlsplit(original_url).path.split("/") if part
-    )
-    return "reel" if path_parts[:1] == ("reel",) else "post"
+def _decode_media_input(job: JobSnapshot) -> PostInput | ReelInput | StoryInput:
+    media_kind = _required_payload_text(job, "media_kind")
+    identity_type = _required_payload_text(job, "identity_type")
+    identity_value = _required_payload_text(job, "identity_value")
+    original_url = _required_payload_text(job, "original_url")
+
+    if media_kind in {"post", "reel"}:
+        shortcode = _required_payload_text(job, "shortcode")
+        if identity_type != "shortcode" or identity_value != shortcode:
+            raise ValueError("Worker job has inconsistent media identity.")
+        input_type = ReelInput if media_kind == "reel" else PostInput
+        return input_type(shortcode=shortcode, canonical_url=original_url)
+
+    if media_kind == "story":
+        story_media_id = _required_payload_text(job, "story_media_id")
+        if (
+            identity_type != "story_media_id"
+            or identity_value != story_media_id
+        ):
+            raise ValueError("Worker job has inconsistent media identity.")
+        return StoryInput(
+            username=_required_payload_text(job, "username"),
+            story_media_id=story_media_id,
+            canonical_url=original_url,
+        )
+
+    raise ValueError("Worker job has unsupported media kind.")

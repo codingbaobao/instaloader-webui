@@ -1,5 +1,6 @@
 """Process-local Instaloader clients for the persistent worker."""
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,9 +14,28 @@ from instaloader_webui.instagram.session_store import (
 
 SessionRevision = tuple[str, datetime]
 
+_MAX_CONTEXT_ERROR_INPUT_LENGTH = 8192
+_MAX_CONTEXT_ERROR_LENGTH = 2048
+_SENSITIVE_CONTEXT_ERROR_WARNING = (
+    "Instagram warning omitted because it contained sensitive details."
+)
+_SENSITIVE_ERROR_MARKERS = ("cookie", "sessionid", "csrftoken", "igsh")
+_URL_QUERY_OR_FRAGMENT = re.compile(
+    r"(?P<base>[A-Za-z][A-Za-z0-9+.-]*://[^\s?#]+)[?#][^\s]*"
+)
+
 
 class InstagramSessionRevisionError(RuntimeError):
     """The worker no longer has the Cookie revision required by a queued job."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_configured: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.session_configured = session_configured
 
 
 def _revision(username: str, imported_at: datetime) -> SessionRevision:
@@ -121,6 +141,16 @@ class WorkerInstaloaderRuntime:
             )
         return loader
 
+    def acquire_required_session(self, staging_directory: Path) -> Instaloader:
+        """Return a logged-in client for operations unavailable anonymously."""
+        loader, configured = self.acquire(staging_directory)
+        if not configured or not loader.context.is_logged_in:
+            raise InstagramSessionRevisionError(
+                "An imported Instagram Cookie is required for Stories.",
+                session_configured=configured,
+            )
+        return loader
+
     def close(self) -> None:
         """Close all cached clients exactly once."""
         if self._closed:
@@ -147,7 +177,7 @@ class WorkerInstaloaderRuntime:
 
     @staticmethod
     def _build_loader(staging_directory: Path) -> Instaloader:
-        return Instaloader(
+        loader = Instaloader(
             dirname_pattern=str(staging_directory),
             filename_pattern="{shortcode}",
             download_pictures=True,
@@ -160,3 +190,25 @@ class WorkerInstaloaderRuntime:
             quiet=True,
             rate_controller=_WorkerRateController,
         )
+        original_error = loader.context.error
+
+        def safe_error(msg: object, repeat_at_end: bool = True) -> None:
+            original_error(
+                _sanitize_context_error(msg),
+                repeat_at_end=repeat_at_end,
+            )
+
+        loader.context.error = safe_error  # type: ignore[method-assign]
+        return loader
+
+
+def _sanitize_context_error(message: object) -> str:
+    raw_text = str(message)
+    normalized = raw_text.casefold()
+    if any(marker in normalized for marker in _SENSITIVE_ERROR_MARKERS):
+        return _SENSITIVE_CONTEXT_ERROR_WARNING
+    text = raw_text[:_MAX_CONTEXT_ERROR_INPUT_LENGTH]
+    text = _URL_QUERY_OR_FRAGMENT.sub(r"\g<base>?[redacted]", text)
+    if len(text) <= _MAX_CONTEXT_ERROR_LENGTH:
+        return text
+    return f"{text[: _MAX_CONTEXT_ERROR_LENGTH - 1]}…"

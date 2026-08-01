@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from instaloader_webui.db.library_repositories import (
     AppSettingsSnapshot,
     AssetSnapshot,
+    JobIssueSnapshot,
     JobSnapshot,
     MediaSnapshot,
     ProfileSnapshot,
@@ -24,6 +25,7 @@ class AssetResponse(BaseModel):
     relative_path: str
     mime_type: str
     kind: str
+    role: str
     position: int
     file_size: int
     created_at: datetime
@@ -34,13 +36,17 @@ class MediaResponse(BaseModel):
 
     id: str
     instagram_media_id: str | None
-    shortcode: str
+    shortcode: str | None
+    story_media_id: str | None
+    identity_type: str
+    identity_value: str
     owner_profile_id: str
     kind: str
     caption: str
     accessibility_caption: str
     published_at: datetime
     original_url: str
+    story_expires_at: datetime | None
     downloaded_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -65,6 +71,20 @@ class ProfileResponse(BaseModel):
     media_count: int
 
 
+class JobIssueResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    identity_type: str
+    identity_value: str
+    shortcode: str | None
+    story_media_id: str | None
+    media_kind: str
+    error_code: str
+    safe_message: str
+    exception_class_chain: tuple[str, ...]
+    occurred_at: datetime
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -76,6 +96,9 @@ class JobResponse(BaseModel):
     progress_total: int | None
     status_text: str
     error: str | None
+    phase: str | None
+    issue_count: int
+    issues: tuple[JobIssueResponse, ...]
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
@@ -108,6 +131,7 @@ def serialize_asset(asset: AssetSnapshot) -> AssetResponse:
         relative_path=asset.relative_path,
         mime_type=asset.mime_type,
         kind=asset.kind,
+        role=asset.role,
         position=asset.position,
         file_size=asset.file_size,
         created_at=asset.created_at,
@@ -119,12 +143,16 @@ def serialize_media(media: MediaSnapshot) -> MediaResponse:
         id=media.id,
         instagram_media_id=media.instagram_media_id,
         shortcode=media.shortcode,
+        story_media_id=media.story_media_id,
+        identity_type=media.identity_type,
+        identity_value=media.identity_value,
         owner_profile_id=media.owner_profile_id,
         kind=media.kind,
         caption=media.caption,
         accessibility_caption=media.accessibility_caption,
         published_at=media.published_at,
         original_url=media.original_url,
+        story_expires_at=media.story_expires_at,
         downloaded_at=media.downloaded_at,
         created_at=media.created_at,
         updated_at=media.updated_at,
@@ -132,9 +160,7 @@ def serialize_media(media: MediaSnapshot) -> MediaResponse:
     )
 
 
-def serialize_profile(
-    profile: ProfileSnapshot, *, media_count: int
-) -> ProfileResponse:
+def serialize_profile(profile: ProfileSnapshot, *, media_count: int) -> ProfileResponse:
     return ProfileResponse(
         id=profile.id,
         instagram_user_id=profile.instagram_user_id,
@@ -152,6 +178,20 @@ def serialize_profile(
     )
 
 
+def serialize_job_issue(issue: JobIssueSnapshot) -> JobIssueResponse:
+    return JobIssueResponse(
+        identity_type=issue.identity_type,
+        identity_value=issue.identity_value,
+        shortcode=issue.shortcode,
+        story_media_id=issue.story_media_id,
+        media_kind=issue.media_kind,
+        error_code=issue.error_code,
+        safe_message=issue.safe_message,
+        exception_class_chain=issue.exception_class_chain,
+        occurred_at=issue.occurred_at,
+    )
+
+
 def serialize_job(job: JobSnapshot) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -162,6 +202,9 @@ def serialize_job(job: JobSnapshot) -> JobResponse:
         progress_total=job.progress_total,
         status_text=job.status_text,
         error=job.error,
+        phase=job.phase,
+        issue_count=job.issue_count,
+        issues=tuple(serialize_job_issue(issue) for issue in job.issues),
         created_at=job.created_at,
         started_at=job.started_at,
         completed_at=job.completed_at,

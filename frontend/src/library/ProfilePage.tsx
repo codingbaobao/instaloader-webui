@@ -1,4 +1,9 @@
-import { useCallback, useState } from "react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useRef,
+  useState,
+} from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "../app/api";
@@ -14,15 +19,51 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate } from "./dateFormatters";
 import { MediaGrid } from "./MediaGrid";
 import { ProfileAvatar } from "./ProfileAvatar";
-import type { JobSummary } from "./types";
+import type { JobSummary, MediaKind } from "./types";
 import { usePolling } from "./usePolling";
 
 type ProfilePageProps = Readonly<{ session: SessionData }>;
-type MediaTab = "post" | "reel";
+type MediaTab = MediaKind;
+
+const mediaTabs: readonly Readonly<{
+  kind: MediaTab;
+  id: string;
+  label: string;
+  emptyTitle: string;
+  emptyDetail: string;
+}>[] = [
+  {
+    kind: "post",
+    id: "posts-tab",
+    label: "Posts",
+    emptyTitle: "No posts yet",
+    emptyDetail: "No posts have been saved from this profile yet.",
+  },
+  {
+    kind: "reel",
+    id: "reels-tab",
+    label: "Reels",
+    emptyTitle: "No reels yet",
+    emptyDetail: "No reels have been saved from this profile yet.",
+  },
+  {
+    kind: "story",
+    id: "story-tab",
+    label: "Story",
+    emptyTitle: "No stories yet",
+    emptyDetail: "No stories have been saved from this profile yet.",
+  },
+];
 
 export function ProfilePage({ session }: ProfilePageProps) {
   const { profileId = "" } = useParams();
   const navigate = useNavigate();
+  const tabRefs = useRef<Record<MediaTab, HTMLButtonElement | null>>({
+    post: null,
+    reel: null,
+    story: null,
+  });
+  const selectedTabRef = useRef<MediaTab>("post");
   const [tab, setTab] = useState<MediaTab>("post");
   const [actionJob, setActionJob] = useState<JobSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -35,12 +76,13 @@ export function ProfilePage({ session }: ProfilePageProps) {
     if (!profileId) {
       throw new Error("The profile was not found.");
     }
+    const requestedTab = selectedTabRef.current;
     const [profile, media] = await Promise.all([
       getProfile(profileId, signal),
-      listMedia({ profileId, kind: tab, limit: 200 }, signal),
+      listMedia({ profileId, kind: requestedTab, limit: 200 }, signal),
     ]);
-    return { profile, media };
-  }, [profileId, tab]);
+    return { profile, media, mediaKind: requestedTab };
+  }, [profileId]);
   const { data, error, loading, reload } = usePolling(loadProfile, 0, true);
 
   async function requestSync() {
@@ -93,6 +135,42 @@ export function ProfilePage({ session }: ProfilePageProps) {
     }
   }
 
+  function selectTab(nextTab: MediaTab) {
+    if (nextTab === tab) {
+      return;
+    }
+    selectedTabRef.current = nextTab;
+    setTab(nextTab);
+    void reload();
+  }
+
+  function handleTabKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentIndex: number,
+  ) {
+    let nextIndex: number;
+    switch (event.key) {
+      case "ArrowLeft":
+        nextIndex = (currentIndex - 1 + mediaTabs.length) % mediaTabs.length;
+        break;
+      case "ArrowRight":
+        nextIndex = (currentIndex + 1) % mediaTabs.length;
+        break;
+      case "Home":
+        nextIndex = 0;
+        break;
+      case "End":
+        nextIndex = mediaTabs.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    const nextTab = mediaTabs[nextIndex];
+    selectTab(nextTab.kind);
+    tabRefs.current[nextTab.kind]?.focus();
+  }
+
   if (data === null) {
     return (
       <section className="library-page narrow-page" aria-live="polite">
@@ -107,7 +185,9 @@ export function ProfilePage({ session }: ProfilePageProps) {
     );
   }
 
-  const { profile, media } = data;
+  const { profile } = data;
+  const media = data.mediaKind === tab ? data.media : [];
+  const activeTab = mediaTabs.find((item) => item.kind === tab) ?? mediaTabs[0];
   return (
     <section className="library-page profile-page" aria-labelledby="profile-title">
       <Link className="back-link" to="/profiles">Back to profiles</Link>
@@ -116,6 +196,15 @@ export function ProfilePage({ session }: ProfilePageProps) {
         <div className="profile-header-main">
           <div className="profile-title-row">
             <h1 id="profile-title">@{profile.username}</h1>
+            <a
+              aria-label={`Open @${profile.username} on Instagram`}
+              className="profile-instagram-link"
+              href={`https://www.instagram.com/${encodeURIComponent(profile.username)}/`}
+              rel="noopener noreferrer"
+              target="_blank"
+            >
+              Instagram
+            </a>
             <span className={`status-badge status-badge-${profile.status}`}>{profile.status}</span>
             <span
               className={
@@ -156,8 +245,27 @@ export function ProfilePage({ session }: ProfilePageProps) {
       </header>
 
       <div className="media-tabs" role="tablist" aria-label="Profile media">
-        <button className={tab === "post" ? "media-tab media-tab-active" : "media-tab"} id="posts-tab" role="tab" type="button" aria-selected={tab === "post"} onClick={() => setTab("post")}>Posts</button>
-        <button className={tab === "reel" ? "media-tab media-tab-active" : "media-tab"} id="reels-tab" role="tab" type="button" aria-selected={tab === "reel"} onClick={() => setTab("reel")}>Reels</button>
+        {mediaTabs.map((item, index) => (
+          <button
+            aria-controls="profile-media-panel"
+            aria-selected={tab === item.kind}
+            className={
+              tab === item.kind ? "media-tab media-tab-active" : "media-tab"
+            }
+            id={item.id}
+            key={item.kind}
+            ref={(element) => {
+              tabRefs.current[item.kind] = element;
+            }}
+            role="tab"
+            tabIndex={tab === item.kind ? 0 : -1}
+            type="button"
+            onClick={() => selectTab(item.kind)}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
+          >
+            {item.label}
+          </button>
+        ))}
       </div>
       {error ? (
         <div className="inline-error" role="alert">
@@ -165,11 +273,16 @@ export function ProfilePage({ session }: ProfilePageProps) {
           <button className="text-button" type="button" onClick={() => void reload()}>Try again</button>
         </div>
       ) : null}
-      <div aria-labelledby={tab === "post" ? "posts-tab" : "reels-tab"} role="tabpanel">
+      <div
+        aria-labelledby={activeTab.id}
+        id="profile-media-panel"
+        role="tabpanel"
+        tabIndex={0}
+      >
         <MediaGrid
           media={media}
-          emptyDetail={`No ${tab === "post" ? "posts" : "reels"} have been saved from this profile yet.`}
-          emptyTitle={`No ${tab === "post" ? "posts" : "reels"} yet`}
+          emptyDetail={activeTab.emptyDetail}
+          emptyTitle={activeTab.emptyTitle}
         />
       </div>
       <ConfirmDialog

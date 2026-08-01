@@ -1,5 +1,6 @@
 """Entrypoint for the persistent single-process public-library worker."""
 
+import logging
 import time
 from datetime import UTC, datetime
 
@@ -15,9 +16,14 @@ from instaloader_webui.db.library_repositories import (
     SettingsRepository,
 )
 from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.job_runner import JobRunner, enqueue_due_profile_syncs
+
+_PROFILE_LOOKUP_LOGGER = logging.getLogger(
+    "instaloader_webui.instagram.profile_lookup"
+)
 
 
 def main() -> None:
@@ -37,6 +43,10 @@ def main() -> None:
     app_secret = load_or_create_app_secret(settings.data_root)
     instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
     loader_runtime = WorkerInstaloaderRuntime(instagram_sessions)
+    profile_lookup_resolver = ProfileLookupResolver(
+        settings.instagram_profile_lookup_mode,
+        _PROFILE_LOOKUP_LOGGER,
+    )
     runner = JobRunner(
         data_root=settings.data_root,
         media_root=settings.media_root,
@@ -45,6 +55,7 @@ def main() -> None:
         jobs=jobs,
         followee_imports=followee_imports,
         loader_runtime=loader_runtime,
+        profile_lookup_resolver=profile_lookup_resolver,
     )
     jobs.recover_interrupted(datetime.now(UTC))
 

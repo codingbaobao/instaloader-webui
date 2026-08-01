@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,7 @@ class Settings(BaseSettings):
     admin_password_file: Path | None = None
     session_cookie_secure: bool = False
     profile_sync_interval_minutes: int = Field(default=360, gt=0)
+    instagram_profile_lookup_mode: Literal["native", "fallback", "legacy"] = "fallback"
 
     @computed_field
     @property

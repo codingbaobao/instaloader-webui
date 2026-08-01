@@ -1,7 +1,13 @@
 import { Link } from "react-router-dom";
 
 import { mediaAssetUrl } from "./api";
-import type { MediaAsset, MediaSummary } from "./types";
+import {
+  contentAssets,
+  mediaDisplayIdentifier,
+  mediaLabel,
+  thumbnailAsset,
+} from "./mediaPresentation";
+import type { MediaSummary } from "./types";
 
 type MediaGridProps = Readonly<{
   media: readonly MediaSummary[];
@@ -9,20 +15,17 @@ type MediaGridProps = Readonly<{
   emptyDetail?: string;
 }>;
 
-function firstAsset(media: MediaSummary): MediaAsset | null {
-  return media.assets[0] ?? null;
-}
-
 function MediaThumbnail({ media }: Readonly<{ media: MediaSummary }>) {
-  const asset = firstAsset(media);
+  const asset = thumbnailAsset(media);
   if (asset === null) {
     return <span className="media-thumbnail-empty">Preparing media</span>;
   }
   const source = mediaAssetUrl(media.id, asset.id);
+  const identifier = mediaDisplayIdentifier(media);
   if (asset.kind === "video") {
     return (
       <video
-        aria-label={`Video from ${media.shortcode}`}
+        aria-label={`Video from ${identifier}`}
         className="media-thumbnail-media"
         muted
         playsInline
@@ -33,7 +36,10 @@ function MediaThumbnail({ media }: Readonly<{ media: MediaSummary }>) {
   }
   return (
     <img
-      alt={media.accessibility_caption || `Instagram post ${media.shortcode}`}
+      alt={
+        media.accessibility_caption
+        || `Instagram ${mediaLabel(media)} ${identifier}`
+      }
       className="media-thumbnail-media"
       loading="lazy"
       src={source}
@@ -60,15 +66,17 @@ export function MediaGrid({
     <div className="media-grid" aria-label="Media library">
       {media.map((item) => (
         <Link
-          aria-label={`Open ${item.kind} ${item.shortcode}`}
+          aria-label={`Open ${mediaLabel(item)} ${mediaDisplayIdentifier(item)}`}
           className="media-grid-item"
           key={item.id}
           to={`/media/${encodeURIComponent(item.id)}`}
         >
           <MediaThumbnail media={item} />
           <span className="media-grid-overlay" aria-hidden="true">
-            <span>{item.kind === "reel" ? "Reel" : "Post"}</span>
-            {item.assets.length > 1 ? <span>{item.assets.length} items</span> : null}
+            <span>{mediaLabel(item)}</span>
+            {contentAssets(item).length > 1 ? (
+              <span>{contentAssets(item).length} items</span>
+            ) : null}
           </span>
         </Link>
       ))}

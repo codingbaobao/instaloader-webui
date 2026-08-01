@@ -272,6 +272,8 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 .status-badge-pending, .status-badge-running { color: #175cd3; background: #eff8ff; }
 
+.status-badge-completed_with_warnings { color: #93370d; background: #fffaeb; }
+
 .status-badge-failed { color: #b42318; background: #fef3f2; }
 
 .status-badge-deleting, .status-badge-untracked { color: #6941c6; background: #f4f3ff; }
@@ -285,6 +287,10 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 .profile-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 
 .profile-title-row h1 { margin: 0; font-size: clamp(26px, 4vw, 34px); }
+
+.profile-instagram-link { color: #656565; font-size: 13px; font-weight: 750; text-decoration: none; }
+
+.profile-instagram-link:hover { color: #111; text-decoration: underline; }
 
 .profile-full-name { margin: 10px 0 3px; font-weight: 750; }
 
@@ -349,6 +355,40 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 .job-progress-copy { display: flex; justify-content: space-between; margin: 17px 0 5px; color: #656565; font-size: 12px; font-weight: 700; }
 
 .job-card progress { width: 100%; height: 7px; overflow: hidden; border: 0; border-radius: 8px; background: #e8e8e8; accent-color: #0095f6; }
+
+.job-issues { margin-top: 17px; padding-top: 15px; border-top: 1px solid #ececec; }
+
+.job-issues-toggle { color: #93370d; }
+
+.job-issues-content { margin-top: 12px; }
+
+.job-issues-content .loading-copy { margin: 0; }
+
+.job-issues-error { margin: 0; padding: 10px 12px; border: 1px solid #f0b8b3; border-radius: 8px; color: #8f1b13 !important; background: #fff5f4; font-size: 13px; }
+
+.job-issues-empty { margin: 0; color: #737373 !important; font-size: 13px; }
+
+.job-issue-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+
+.job-issue { min-width: 0; padding: 14px; border: 1px solid #f2d7a9; border-radius: 10px; background: #fffdf6; }
+
+.job-issue-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+
+.job-issue-heading time { color: #737373; font-size: 12px; }
+
+.job-issue-kind { color: #7a2e0e; font-size: 13px; font-weight: 800; }
+
+.job-issue-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 18px; margin: 0; }
+
+.job-issue-fields div { min-width: 0; }
+
+.job-issue-fields dt { margin-bottom: 3px; color: #737373; font-size: 11px; font-weight: 750; text-transform: uppercase; }
+
+.job-issue-fields dd { margin: 0; overflow-wrap: anywhere; color: #383838; font-size: 13px; line-height: 1.45; }
+
+.job-issue-fields code { font-size: 12px; }
+
+.job-issue-message, .job-issue-chain { grid-column: 1 / -1; }
 
 .job-date { margin-top: 13px !important; color: #8a8a8a !important; font-size: 12px; }
 
@@ -508,6 +548,9 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
   .settings-sync-now { align-items: flex-start; flex-direction: column; }
   .instagram-session-card { padding: 20px; }
   .instagram-session-status dl { grid-template-columns: 1fr; }
+  .job-card-heading, .job-issue-heading { align-items: flex-start; flex-direction: column; }
+  .job-issue-fields { grid-template-columns: 1fr; }
+  .job-issue-message, .job-issue-chain { grid-column: auto; }
   .job-result { grid-template-columns: 1fr; }
   .result-actions { grid-column: auto; }
   .followee-import-summary { grid-template-columns: 1fr; }

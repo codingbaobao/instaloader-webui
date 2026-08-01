@@ -1,36 +1,93 @@
-"""Normalize public Instaloader downloads into the local media library."""
+"""Resolve public Instaloader inputs for the shared local media processor."""
 
-from collections.abc import Callable, Iterable
+from __future__ import annotations
+
+import os
+import shutil
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import os
+from inspect import signature
 from pathlib import Path
-import shutil
-from typing import Literal
+from typing import Literal, cast
 
-from instaloader import Instaloader, InstaloaderException, Post, Profile
+from instaloader import (
+    BadResponseException,
+    Instaloader,
+    InstaloaderException,
+    Post,
+    Profile,
+    StoryItem,
+)
 
 from instaloader_webui.db.library_repositories import (
     LibraryRepository,
+    MediaIdentity,
     MediaSnapshot,
-    NormalizedAsset,
-    NormalizedMedia,
     ProfileSnapshot,
 )
-from instaloader_webui.instagram.errors import classify_instaloader_error
+from instaloader_webui.instagram.errors import (
+    ANONYMOUS_REJECTED,
+    MEDIA_NOT_FOUND,
+    SESSION_REJECTED,
+    classify_instaloader_error,
+)
+from instaloader_webui.instagram.media_processor import MediaProcessor
+from instaloader_webui.instagram.media_types import (
+    ContentKind,
+    MediaCandidate,
+    ResolvedMedia,
+)
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_sync import (
+    IssueCallback,
+    ProfileSyncCoordinator,
+    ProfileSyncResult,
+)
+from instaloader_webui.instagram.safe_issues import (
+    MediaItemFailure,
+    SafeMediaIssue,
+    classify_media_issue,
+)
 from instaloader_webui.instagram.session_store import InstagramSessionStoreError
-from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
+from instaloader_webui.instagram.worker_runtime import (
+    InstagramSessionRevisionError,
+    WorkerInstaloaderRuntime,
+)
+from instaloader_webui.services.instagram_inputs import (
+    PostInput,
+    ReelInput,
+    StoryInput,
+)
 from instaloader_webui.services.profile_avatars import (
     PROFILE_AVATAR_MEDIA_TYPE,
     profile_avatar_path,
 )
 
 MediaKind = Literal["post", "reel"]
-ProgressCallback = Callable[[int, int | None, str], None]
+DirectMediaInput = PostInput | ReelInput | StoryInput
+ProgressCallback = Callable[..., None]
+_MISSING_STORY_METADATA = "Fetching StoryItem metadata failed."
 
 
 class PublicInstagramAdapterError(RuntimeError):
     """A concise, user-safe failure while accessing public Instagram content."""
+
+
+class _StoryOwnerMismatchError(InstaloaderException):
+    """The resolved Story does not belong to the canonical URL owner."""
+
+
+class _StoryExpiredError(InstaloaderException):
+    """The resolved Story is no longer available for download."""
+
+
+class _MediaOwnerMismatchError(InstaloaderException):
+    """Local and resolved Instagram owner identities do not match."""
+
+
+class _InactiveMediaOwnerError(InstaloaderException):
+    """Direct media must not attach to a Profile undergoing deletion."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,10 +100,41 @@ class PublicProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class AssetFinalization:
-    assets: tuple[NormalizedAsset, ...]
-    final_directory: Path
-    backup_directory: Path | None
+class _PublicProfileMediaSource:
+    adapter: PublicInstaloaderAdapter
+    loader: Instaloader
+    owner: ProfileSnapshot
+
+    def iter_stories(self, profile: object) -> Iterator[MediaCandidate]:
+        return self.adapter._iter_story_candidates(
+            loader=self.loader,
+            profile=cast(Profile, profile),
+            owner=self.owner,
+        )
+
+    def iter_reels(self, profile: object) -> Iterator[MediaCandidate]:
+        typed_profile = cast(Profile, profile)
+        return (
+            self.adapter._profile_post_candidate(
+                loader=self.loader,
+                post=post,
+                kind="reel",
+                owner=self.owner,
+            )
+            for post in typed_profile.get_reels()
+        )
+
+    def iter_posts(self, profile: object) -> Iterator[MediaCandidate]:
+        typed_profile = cast(Profile, profile)
+        return (
+            self.adapter._profile_post_candidate(
+                loader=self.loader,
+                post=post,
+                kind="post",
+                owner=self.owner,
+            )
+            for post in typed_profile.get_posts()
+        )
 
 
 class PublicInstaloaderAdapter:
@@ -61,13 +149,18 @@ class PublicInstaloaderAdapter:
         library: LibraryRepository,
         progress: ProgressCallback,
         loader_runtime: WorkerInstaloaderRuntime,
+        profile_lookup_resolver: ProfileLookupResolver,
+        issue: IssueCallback | None = None,
     ) -> None:
         self._data_root = data_root.resolve()
         self._media_root = self._require_data_subdirectory(media_root)
         self._jobs_root = self._require_data_subdirectory(jobs_root)
         self._library = library
         self._progress = progress
+        self._progress_supports_phase = self._supports_phase(progress)
+        self._issue = issue or (lambda _issue: None)
         self._loader_runtime = loader_runtime
+        self._profile_lookup_resolver = profile_lookup_resolver
 
     def fetch_profile(self, username: str) -> PublicProfile:
         """Load normalized metadata for one publicly accessible profile."""
@@ -75,7 +168,10 @@ class PublicInstaloaderAdapter:
             self._metadata_staging_directory()
         )
         try:
-            profile = Profile.from_username(loader.context, username)
+            profile = self._profile_lookup_resolver.resolve(
+                loader.context,
+                username,
+            )
             return self._normalize_profile(
                 profile,
                 authenticated=session_configured,
@@ -99,65 +195,525 @@ class PublicInstaloaderAdapter:
     ) -> MediaSnapshot:
         """Download one public media item and persist its finalized local assets."""
         kind = self._normalize_kind(expected_kind)
-        existing = self._library.find_media_by_shortcode(shortcode)
-        if existing is not None and self._has_local_assets(existing):
-            if kind == "reel" and existing.kind != "reel":
-                updated = self._library.set_media_kind(
-                    shortcode=shortcode,
-                    kind="reel",
-                    now=datetime.now(UTC),
-                )
-                if updated is not None:
-                    existing = updated
-            self._report(
-                len(existing.assets),
-                len(existing.assets),
-                "Media is already saved; skipped duplicate download.",
+        canonical_url = (
+            original_url
+            or self._canonical_original_url(shortcode, kind)
+        )
+        parsed: PostInput | ReelInput
+        if kind == "reel":
+            parsed = ReelInput(
+                shortcode=shortcode,
+                canonical_url=canonical_url,
             )
-            return existing
+        else:
+            parsed = PostInput(
+                shortcode=shortcode,
+                canonical_url=canonical_url,
+            )
+        return self.download_input(parsed, job_id)
 
+    def download_input(
+        self,
+        parsed: DirectMediaInput,
+        job_id: str,
+    ) -> MediaSnapshot:
+        """Resolve one typed media input and persist its finalized local assets."""
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader, session_configured = self._acquire_loader(staging_directory)
-            self._report(0, None, "Loading public Instagram media.")
-            post = Post.from_shortcode(loader.context, shortcode)
-            return self._download_post(
-                loader=loader,
-                post=post,
-                job_id=job_id,
-                kind=kind,
-                original_url=original_url,
-            )
-        except InstaloaderException as error:
-            raise PublicInstagramAdapterError(
-                classify_instaloader_error(
-                    error,
-                    session_configured=session_configured,
-                    target="media",
+            if isinstance(parsed, StoryInput):
+                candidate, loader = self._direct_story_candidate(
+                    parsed=parsed,
+                    staging_directory=staging_directory,
                 )
-            ) from error
+            else:
+                loader, session_configured = self._acquire_loader(
+                    staging_directory
+                )
+                candidate = self._direct_post_candidate(
+                    loader=loader,
+                    parsed=parsed,
+                    staging_directory=staging_directory,
+                    session_configured=session_configured,
+                )
+            result = self._processor(loader).process(candidate, job_id=job_id)
+            if result.status == "existing":
+                self._report(
+                    len(result.media.assets),
+                    len(result.media.assets),
+                    "Media is already saved; skipped duplicate download.",
+                )
+            else:
+                self._report(
+                    len(result.media.assets),
+                    len(result.media.assets),
+                    "Saved public Instagram media.",
+                )
+            return result.media
         finally:
             self._remove_directory(staging_directory)
 
-    def sync_profile(self, profile_id: str, job_id: str) -> int:
+    def iter_story_candidates(
+        self,
+        profile: Profile,
+        profile_id: str,
+    ) -> Iterator[MediaCandidate]:
+        """Yield lightweight current-Story identities for one stored profile."""
+        stored_profile = self._library.get_profile(profile_id)
+        if stored_profile is None:
+            raise PublicInstagramAdapterError(
+                "The requested profile no longer exists."
+            )
+        loader = self._acquire_required_loader(
+            self._metadata_staging_directory()
+        )
+        yield from self._iter_story_candidates(
+            loader=loader,
+            profile=profile,
+            owner=stored_profile,
+        )
+
+    def _iter_story_candidates(
+        self,
+        *,
+        loader: Instaloader,
+        profile: Profile,
+        owner: ProfileSnapshot,
+    ) -> Iterator[MediaCandidate]:
+        for story in loader.get_stories(userids=[profile.userid]):
+            for item in story.get_items():
+                identity = MediaIdentity("story_media_id", str(item.mediaid))
+                yield self._story_candidate(
+                    loader=loader,
+                    item=item,
+                    owner=owner,
+                    identity=identity,
+                    original_url=self._canonical_story_url(
+                        owner.username,
+                        identity.value,
+                    ),
+                )
+
+    def _direct_post_candidate(
+        self,
+        *,
+        loader: Instaloader,
+        parsed: PostInput | ReelInput,
+        staging_directory: Path,
+        session_configured: bool,
+    ) -> MediaCandidate:
+        identity = MediaIdentity("shortcode", parsed.shortcode)
+        owner = self._existing_media_owner(identity)
+        if owner is not None and owner.status != "active":
+            raise self._media_item_failure(
+                _InactiveMediaOwnerError(
+                    "The requested Instagram media owner was not found."
+                ),
+                identity=identity,
+                kind=parsed.kind,
+                session_configured=session_configured,
+            )
+        return MediaCandidate(
+            identity=identity,
+            kind=parsed.kind,
+            session_configured=session_configured,
+            resolve=lambda: self._resolve_direct_post(
+                loader=loader,
+                owner=owner,
+                parsed=parsed,
+                staging_directory=staging_directory,
+            ),
+        )
+
+    def _resolve_direct_post(
+        self,
+        *,
+        loader: Instaloader,
+        owner: ProfileSnapshot | None,
+        parsed: PostInput | ReelInput,
+        staging_directory: Path,
+    ) -> ResolvedMedia:
+        post = Post.from_shortcode(loader.context, parsed.shortcode)
+        owner_profile = post.owner_profile
+        resolved_owner = owner
+        if resolved_owner is not None:
+            self._validate_stable_owner(resolved_owner, owner_profile)
+        else:
+            resolved_owner = self._find_reusable_owner(owner_profile)
+            if resolved_owner is None:
+                resolved_owner = self._upsert_owner(
+                    loader=loader,
+                    profile=owner_profile,
+                    staging_directory=staging_directory,
+                )
+        return self._resolve_post(
+            loader=loader,
+            post=post,
+            kind=parsed.kind,
+            original_url=parsed.canonical_url,
+            owner=resolved_owner,
+        )
+
+    def _direct_story_candidate(
+        self,
+        *,
+        parsed: StoryInput,
+        staging_directory: Path,
+    ) -> tuple[MediaCandidate, Instaloader]:
+        identity = MediaIdentity(
+            "story_media_id",
+            parsed.story_media_id,
+        )
+        try:
+            loader = self._loader_runtime.acquire_required_session(
+                staging_directory
+            )
+        except InstagramSessionRevisionError as error:
+            raise self._required_story_session_failure(
+                error,
+                identity=identity,
+            ) from None
+        except InstagramSessionStoreError:
+            raise PublicInstagramAdapterError(
+                "Instagram session storage is unreadable. An administrator must re-import the Cookie file."
+            ) from None
+
+        owner = self._existing_media_owner(identity)
+        if owner is not None and owner.status != "active":
+            raise self._media_item_failure(
+                _InactiveMediaOwnerError(
+                    "The requested Instagram media owner was not found."
+                ),
+                identity=identity,
+                kind="story",
+                session_configured=True,
+            )
+        if owner is not None and (
+            owner.username.casefold() != parsed.username.casefold()
+        ):
+            raise self._media_item_failure(
+                _StoryOwnerMismatchError(
+                    "The requested Story was not found."
+                ),
+                identity=identity,
+                kind="story",
+                session_configured=True,
+            )
+        if owner is None:
+            try:
+                owner = self._find_local_profile_by_username(
+                    parsed.username
+                )
+            except _InactiveMediaOwnerError as error:
+                raise self._media_item_failure(
+                    error,
+                    identity=identity,
+                    kind="story",
+                    session_configured=True,
+                ) from None
+
+        return (
+            MediaCandidate(
+                identity=identity,
+                kind="story",
+                session_configured=True,
+                resolve=lambda: self._resolve_direct_story(
+                    loader=loader,
+                    parsed=parsed,
+                    owner=owner,
+                    identity=identity,
+                    staging_directory=staging_directory,
+                ),
+            ),
+            loader,
+        )
+
+    def _resolve_direct_story(
+        self,
+        *,
+        loader: Instaloader,
+        parsed: StoryInput,
+        owner: ProfileSnapshot | None,
+        identity: MediaIdentity,
+        staging_directory: Path,
+    ) -> ResolvedMedia:
+        item = self._lookup_direct_story(
+            loader=loader,
+            identity=identity,
+        )
+        owner_profile = item.owner_profile
+        if (
+            str(item.mediaid) != parsed.story_media_id
+            or owner_profile.username.casefold() != parsed.username.casefold()
+        ):
+            raise _StoryOwnerMismatchError(
+                "The requested Story was not found."
+            )
+        resolved_owner = owner
+        if resolved_owner is not None:
+            self._validate_stable_owner(resolved_owner, owner_profile)
+        else:
+            resolved_owner = self._find_reusable_owner(owner_profile)
+            if resolved_owner is None:
+                resolved_owner = self._upsert_owner(
+                    loader=loader,
+                    profile=owner_profile,
+                    staging_directory=staging_directory,
+                )
+        return self._resolve_story(
+            loader=loader,
+            item=item,
+            owner=resolved_owner,
+            identity=identity,
+            original_url=parsed.canonical_url,
+        )
+
+    def _lookup_direct_story(
+        self,
+        *,
+        loader: Instaloader,
+        identity: MediaIdentity,
+    ) -> StoryItem:
+        try:
+            return StoryItem.from_mediaid(
+                loader.context,
+                int(identity.value),
+            )
+        except BadResponseException as error:
+            if str(error) != _MISSING_STORY_METADATA:
+                raise
+            raise MediaItemFailure(
+                SafeMediaIssue(
+                    identity=identity,
+                    kind="story",
+                    error_code="instagram_not_found",
+                    safe_message=MEDIA_NOT_FOUND,
+                    exception_class_chain=(error.__class__.__name__,),
+                )
+            ) from None
+
+    def _existing_media_owner(
+        self,
+        identity: MediaIdentity,
+    ) -> ProfileSnapshot | None:
+        media = self._library.find_media_by_identity(identity)
+        if media is None:
+            return None
+        return self._library.get_profile(media.owner_profile_id)
+
+    def _find_reusable_owner(
+        self,
+        profile: Profile,
+    ) -> ProfileSnapshot | None:
+        instagram_user_id = str(profile.userid)
+        stored = self._library.find_profile_by_instagram_user_id(
+            instagram_user_id
+        )
+        if stored is not None:
+            self._require_active_owner(stored)
+            return stored
+        stored = self._find_local_profile_by_username(profile.username)
+        if stored is None:
+            return None
+        if stored.instagram_user_id is None:
+            return stored
+        if stored.instagram_user_id != instagram_user_id:
+            raise _MediaOwnerMismatchError(
+                "The requested Instagram media item was not found."
+            )
+        return stored
+
+    def _find_local_profile_by_username(
+        self,
+        username: str,
+    ) -> ProfileSnapshot | None:
+        stored = self._library.find_profile_by_username(username)
+        if stored is not None:
+            self._require_active_owner(stored)
+            return stored
+        normalized = username.casefold()
+        matches = tuple(
+            profile
+            for profile in self._library.list_profiles()
+            if profile.username.casefold() == normalized
+        )
+        active = next(
+            (profile for profile in matches if profile.status == "active"),
+            None,
+        )
+        if active is not None:
+            return active
+        if matches:
+            raise _InactiveMediaOwnerError(
+                "The requested Instagram media owner was not found."
+            )
+        return None
+
+    @staticmethod
+    def _require_active_owner(owner: ProfileSnapshot) -> None:
+        if owner.status != "active":
+            raise _InactiveMediaOwnerError(
+                "The requested Instagram media owner was not found."
+            )
+
+    @staticmethod
+    def _validate_stable_owner(
+        owner: ProfileSnapshot,
+        profile: Profile,
+    ) -> None:
+        PublicInstaloaderAdapter._require_active_owner(owner)
+        matches = (
+            owner.username.casefold() == profile.username.casefold()
+            if owner.instagram_user_id is None
+            else owner.instagram_user_id == str(profile.userid)
+        )
+        if not matches:
+            raise _MediaOwnerMismatchError(
+                "The requested Instagram media item was not found."
+            )
+
+    def _story_candidate(
+        self,
+        *,
+        loader: Instaloader,
+        item: StoryItem,
+        owner: ProfileSnapshot,
+        identity: MediaIdentity,
+        original_url: str,
+    ) -> MediaCandidate:
+        return MediaCandidate(
+            identity=identity,
+            kind="story",
+            session_configured=True,
+            resolve=lambda: self._resolve_story(
+                loader=loader,
+                item=item,
+                owner=owner,
+                identity=identity,
+                original_url=original_url,
+            ),
+        )
+
+    def _resolve_story(
+        self,
+        *,
+        loader: Instaloader,
+        item: StoryItem,
+        owner: ProfileSnapshot,
+        identity: MediaIdentity,
+        original_url: str,
+    ) -> ResolvedMedia:
+        owner_profile = item.owner_profile
+        self._validate_stable_owner(owner, owner_profile)
+        instagram_user_id = str(owner_profile.userid)
+        published_at = self._as_utc(item.date_utc)
+        expires_at = self._as_utc(item.expiring_utc)
+        if expires_at <= datetime.now(UTC):
+            raise _StoryExpiredError(
+                "The requested Story was not found because it expired."
+            )
+        is_video = item.is_video
+        caption = item.caption or ""
+
+        def download(active_loader: Instaloader, target: str) -> None:
+            active_loader.download_storyitem(item, target=target)
+
+        return ResolvedMedia(
+            identity=identity,
+            kind="story",
+            instagram_media_id=identity.value,
+            shortcode=None,
+            profile_id=owner.id,
+            instagram_user_id=instagram_user_id,
+            owner_username=owner_profile.username,
+            caption=caption,
+            accessibility_caption="",
+            published_at=published_at,
+            story_expires_at=expires_at,
+            original_url=original_url,
+            content_kinds=("video" if is_video else "image",),
+            download=download,
+        )
+
+    @staticmethod
+    def _media_item_failure(
+        error: BaseException,
+        *,
+        identity: MediaIdentity,
+        kind: str,
+        session_configured: bool,
+    ) -> MediaItemFailure:
+        return MediaItemFailure(
+            classify_media_issue(
+                error,
+                session_configured=session_configured,
+                target="media",
+                identity=identity,
+                kind=kind,
+            )
+        )
+
+    @staticmethod
+    def _required_story_session_failure(
+        error: InstagramSessionRevisionError,
+        *,
+        identity: MediaIdentity,
+    ) -> MediaItemFailure:
+        session_configured = error.session_configured is True
+        return MediaItemFailure(
+            SafeMediaIssue(
+                identity=identity,
+                kind="story",
+                error_code=(
+                    "instagram_session_rejected"
+                    if session_configured
+                    else "instagram_access_denied"
+                ),
+                safe_message=(
+                    SESSION_REJECTED
+                    if session_configured
+                    else ANONYMOUS_REJECTED
+                ),
+                exception_class_chain=(error.__class__.__name__,),
+            )
+        )
+
+    def sync_profile(self, profile_id: str, job_id: str) -> ProfileSyncResult:
         """Refresh one tracked profile and download its missing public media."""
         stored_profile = self._library.get_profile(profile_id)
         if stored_profile is None:
             raise PublicInstagramAdapterError("The requested profile no longer exists.")
         if not stored_profile.tracked or stored_profile.status != "active":
-            self._report(0, 0, "Profile synchronization is stopped.")
-            return 0
+            self._report(
+                0,
+                0,
+                "Profile synchronization is stopped.",
+                phase="profile_preflight",
+            )
+            return ProfileSyncResult(
+                processed=0,
+                total=0,
+                issue_count=0,
+                stopped=True,
+            )
 
         staging_directory = self._staging_directory(job_id)
         self._recreate_directory(staging_directory)
         try:
-            loader, session_configured = self._acquire_loader(staging_directory)
-            self._report(0, None, "Refreshing public Instagram profile.")
-            profile = Profile.from_username(loader.context, stored_profile.username)
+            loader = self._acquire_required_loader(staging_directory)
+            self._report(
+                0,
+                None,
+                "Refreshing public Instagram profile.",
+                phase="profile_preflight",
+            )
+            profile = self._profile_lookup_resolver.resolve(
+                loader.context,
+                stored_profile.username,
+            )
             profile_data = self._normalize_profile(
                 profile,
-                authenticated=session_configured,
+                authenticated=True,
             )
             self._refresh_profile_avatar(
                 loader=loader,
@@ -165,7 +721,7 @@ class PublicInstaloaderAdapter:
                 profile_id=profile_id,
                 staging_directory=staging_directory,
             )
-            self._library.update_profile_metadata(
+            refreshed_profile = self._library.update_profile_metadata(
                 profile_id=profile_id,
                 instagram_user_id=str(profile_data.instagram_user_id),
                 username=profile_data.username,
@@ -174,10 +730,23 @@ class PublicInstaloaderAdapter:
                 profile_pic_url=profile_data.profile_pic_url,
                 now=datetime.now(UTC),
             )
-            inspected = self._sync_iterators(
-                loader=loader,
+            result = ProfileSyncCoordinator(
+                source=_PublicProfileMediaSource(
+                    adapter=self,
+                    loader=loader,
+                    owner=refreshed_profile,
+                ),
+                processor=self._processor(loader),
+                progress=lambda current, total, phase, status_text: self._report(
+                    current,
+                    total,
+                    status_text,
+                    phase=phase,
+                ),
+                record_issue=self._issue,
+                is_syncable=lambda: self._profile_is_syncable(profile_id),
+            ).run(
                 profile=profile,
-                profile_id=profile_id,
                 job_id=job_id,
             )
         except InstaloaderException as error:
@@ -185,7 +754,7 @@ class PublicInstaloaderAdapter:
             raise PublicInstagramAdapterError(
                 classify_instaloader_error(
                     error,
-                    session_configured=session_configured,
+                    session_configured=True,
                     target="profile",
                 )
             ) from error
@@ -194,7 +763,7 @@ class PublicInstaloaderAdapter:
             raise
         else:
             self._record_sync_result(profile_id, succeeded=True)
-            return inspected
+            return result
         finally:
             self._remove_directory(staging_directory)
 
@@ -241,128 +810,100 @@ class PublicInstaloaderAdapter:
         finally:
             response.close()
 
-    def _sync_iterators(
-        self,
-        *,
-        loader: Instaloader,
-        profile: Profile,
-        profile_id: str,
-        job_id: str,
-    ) -> int:
-        inspected = 0
-        for kind, iterator_factory in (
-            ("post", profile.get_posts),
-            ("reel", profile.get_reels),
-        ):
-            if not self._profile_is_syncable(profile_id):
-                self._report(
-                    inspected,
-                    inspected,
-                    "Profile synchronization stopped before the next media item.",
-                )
-                return inspected
-            iterator = iter(iterator_factory())
-            while True:
-                if not self._profile_is_syncable(profile_id):
-                    self._report(
-                        inspected,
-                        inspected,
-                        "Profile synchronization stopped before the next media item.",
-                    )
-                    return inspected
-                try:
-                    post = next(iterator)
-                except StopIteration:
-                    break
-                inspected += 1
-                self._sync_post(
-                    loader=loader,
-                    post=post,
-                    job_id=job_id,
-                    kind=kind,
-                )
-                self._report(
-                    inspected,
-                    None,
-                    f"Inspected public Instagram {kind} {inspected}.",
-                )
-        return inspected
-
-    def _sync_post(
-        self, *, loader: Instaloader, post: Post, job_id: str, kind: MediaKind
-    ) -> None:
-        existing = self._library.find_media_by_shortcode(post.shortcode)
-        if existing is not None and self._has_local_assets(existing):
-            if kind == "reel" and existing.kind != "reel":
-                self._library.set_media_kind(
-                    shortcode=post.shortcode,
-                    kind="reel",
-                    now=datetime.now(UTC),
-                )
-            return
-        self._download_post(
-            loader=loader,
-            post=post,
-            job_id=job_id,
-            kind=kind,
-            original_url=self._canonical_original_url(post.shortcode, kind),
-        )
-
-    def _download_post(
+    def _profile_post_candidate(
         self,
         *,
         loader: Instaloader,
         post: Post,
-        job_id: str,
+        kind: MediaKind,
+        owner: ProfileSnapshot | None,
+    ) -> MediaCandidate:
+        return MediaCandidate(
+            identity=MediaIdentity("shortcode", post.shortcode),
+            kind=kind,
+            session_configured=loader.context.is_logged_in,
+            resolve=lambda: self._resolve_post(
+                loader=loader,
+                post=post,
+                kind=kind,
+                original_url=self._canonical_original_url(post.shortcode, kind),
+                owner=owner,
+            ),
+        )
+
+    def _resolve_shortcode(
+        self,
+        *,
+        loader: Instaloader,
+        shortcode: str,
         kind: MediaKind,
         original_url: str | None,
-    ) -> MediaSnapshot:
-        staging_directory = self._staging_directory(job_id)
-        self._recreate_directory(staging_directory)
-        owner = self._upsert_owner(
+    ) -> ResolvedMedia:
+        self._report(0, None, "Loading public Instagram media.")
+        post = Post.from_shortcode(loader.context, shortcode)
+        return self._resolve_post(
+            loader=loader,
+            post=post,
+            kind=kind,
+            original_url=original_url,
+        )
+
+    def _resolve_post(
+        self,
+        *,
+        loader: Instaloader,
+        post: Post,
+        kind: MediaKind,
+        original_url: str | None,
+        owner: ProfileSnapshot | None = None,
+    ) -> ResolvedMedia:
+        resolved_owner = owner or self._upsert_owner(
             loader=loader,
             profile=post.owner_profile,
-            staging_directory=staging_directory,
+            staging_directory=Path(loader.dirname_pattern),
         )
-        self._report(0, None, f"Downloading public Instagram media {post.shortcode}.")
-        loader.download_post(post, target=owner.username)
-        staged_assets = self._discover_assets(staging_directory, post.shortcode)
-        if not staged_assets:
-            raise PublicInstagramAdapterError(
-                "Instagram did not produce a local media file."
-            )
-        finalization = self._finalize_assets(
-            staged_assets=staged_assets,
-            instagram_user_id=owner.instagram_user_id,
+        instagram_user_id = str(post.owner_profile.userid)
+
+        def download(active_loader: Instaloader, target: str) -> None:
+            active_loader.download_post(post, target=target)
+
+        return ResolvedMedia(
+            identity=MediaIdentity("shortcode", post.shortcode),
+            kind=kind,
+            instagram_media_id=str(post.mediaid),
             shortcode=post.shortcode,
-            job_id=job_id,
+            profile_id=resolved_owner.id,
+            instagram_user_id=instagram_user_id,
+            owner_username=post.owner_profile.username,
+            caption=post.caption or "",
+            accessibility_caption=post.accessibility_caption or "",
+            published_at=post.date_utc.replace(tzinfo=UTC),
+            story_expires_at=None,
+            original_url=(
+                original_url
+                or self._canonical_original_url(post.shortcode, kind)
+            ),
+            content_kinds=self._post_content_kinds(post),
+            download=download,
         )
-        try:
-            persisted = self._library.upsert_media(
-                normalized=NormalizedMedia(
-                    instagram_media_id=str(post.mediaid),
-                    shortcode=post.shortcode,
-                    kind=kind,
-                    caption=post.caption or "",
-                    accessibility_caption=post.accessibility_caption or "",
-                    published_at=post.date_utc.replace(tzinfo=UTC),
-                    original_url=original_url
-                    or self._canonical_original_url(post.shortcode, kind),
-                ),
-                profile_id=owner.id,
-                assets=finalization.assets,
-                now=datetime.now(UTC),
+
+    @staticmethod
+    def _post_content_kinds(post: Post) -> tuple[ContentKind, ...]:
+        if post.typename == "GraphSidecar":
+            return tuple(
+                "video" if node.is_video else "image"
+                for node in post.get_sidecar_nodes()
             )
-        except Exception:
-            self._rollback_asset_finalization(finalization)
-            raise
-        self._commit_asset_finalization(finalization)
-        self._report(
-            len(finalization.assets),
-            len(finalization.assets),
-            "Saved public Instagram media.",
+        return ("video" if post.is_video else "image",)
+
+    def _processor(self, loader: Instaloader) -> MediaProcessor:
+        return MediaProcessor(
+            data_root=self._data_root,
+            media_root=self._media_root,
+            jobs_root=self._jobs_root,
+            library=self._library,
+            loader=loader,
         )
-        return persisted
 
     def _upsert_owner(
         self,
@@ -432,119 +973,12 @@ class PublicInstaloaderAdapter:
             profile_pic_url=profile.profile_pic_url,
         )
 
-    def _discover_assets(self, directory: Path, shortcode: str) -> tuple[Path, ...]:
-        files = tuple(
-            path
-            for path in directory.iterdir()
-            if path.is_file()
-            and path.suffix.casefold() in {".jpg", ".mp4"}
-            and path.name.startswith(shortcode)
-        )
-        return tuple(
-            sorted(files, key=lambda path: self._asset_sort_key(path, shortcode))
-        )
-
-    def _finalize_assets(
-        self,
-        *,
-        staged_assets: Iterable[Path],
-        instagram_user_id: str | None,
-        shortcode: str,
-        job_id: str,
-    ) -> AssetFinalization:
-        if not instagram_user_id:
-            raise PublicInstagramAdapterError(
-                "Instagram media owner metadata is incomplete."
-            )
-        final_directory = self._media_directory(instagram_user_id, shortcode)
-        replacement_directory = self._replacement_directory(
-            final_directory, shortcode, job_id
-        )
-        backup_directory = self._backup_directory(
-            final_directory, shortcode, job_id
-        )
-        self._remove_path(backup_directory)
-        self._recreate_directory(replacement_directory)
-        finalized_paths: list[Path] = []
-        preserved_directory: Path | None = None
-        new_final_installed = False
-        try:
-            for staged_asset in staged_assets:
-                final_path = replacement_directory / staged_asset.name
-                shutil.move(str(staged_asset), str(final_path))
-                finalized_paths.append(final_path)
-            if final_directory.exists():
-                final_directory.replace(backup_directory)
-                preserved_directory = backup_directory
-            replacement_directory.replace(final_directory)
-            new_final_installed = True
-            completed_paths = tuple(
-                final_directory / path.name for path in finalized_paths
-            )
-            assets = tuple(
-                NormalizedAsset(
-                    relative_path=path.relative_to(self._media_root).as_posix(),
-                    mime_type=(
-                        "image/jpeg"
-                        if path.suffix.casefold() == ".jpg"
-                        else "video/mp4"
-                    ),
-                    kind=(
-                        "image"
-                        if path.suffix.casefold() == ".jpg"
-                        else "video"
-                    ),
-                    position=position,
-                    file_size=path.stat().st_size,
-                )
-                for position, path in enumerate(completed_paths)
-            )
-        except Exception:
-            self._remove_directory(replacement_directory)
-            if new_final_installed or preserved_directory is not None:
-                self._rollback_asset_finalization(
-                    AssetFinalization(
-                        assets=(),
-                        final_directory=final_directory,
-                        backup_directory=preserved_directory,
-                    )
-                )
-            raise
-        return AssetFinalization(
-            assets=assets,
-            final_directory=final_directory,
-            backup_directory=preserved_directory,
-        )
-
-    @staticmethod
-    def _rollback_asset_finalization(finalization: AssetFinalization) -> None:
-        PublicInstaloaderAdapter._remove_path(finalization.final_directory)
-        if (
-            finalization.backup_directory is not None
-            and finalization.backup_directory.exists()
-        ):
-            finalization.backup_directory.replace(
-                finalization.final_directory
-            )
-
-    @staticmethod
-    def _commit_asset_finalization(finalization: AssetFinalization) -> None:
-        if finalization.backup_directory is not None:
-            PublicInstaloaderAdapter._remove_path(
-                finalization.backup_directory
-            )
-
     def _profile_is_syncable(self, profile_id: str) -> bool:
         profile = self._library.get_profile(profile_id)
         return (
             profile is not None
             and profile.tracked
             and profile.status == "active"
-        )
-
-    def _has_local_assets(self, media: MediaSnapshot) -> bool:
-        return bool(media.assets) and all(
-            self._asset_path(asset.relative_path).is_file() for asset in media.assets
         )
 
     def _record_sync_result(self, profile_id: str, *, succeeded: bool) -> None:
@@ -563,49 +997,27 @@ class PublicInstaloaderAdapter:
                 "Instagram session storage is unreadable. An administrator must re-import the Cookie file."
             ) from None
 
+    def _acquire_required_loader(self, staging_directory: Path) -> Instaloader:
+        try:
+            return self._loader_runtime.acquire_required_session(
+                staging_directory
+            )
+        except InstagramSessionRevisionError as error:
+            raise PublicInstagramAdapterError(
+                SESSION_REJECTED
+                if error.session_configured is True
+                else ANONYMOUS_REJECTED
+            ) from None
+        except InstagramSessionStoreError:
+            raise PublicInstagramAdapterError(
+                "Instagram session storage is unreadable. An administrator must re-import the Cookie file."
+            ) from None
+
     def _metadata_staging_directory(self) -> Path:
         return self._contained_path(self._jobs_root, "profile-metadata")
 
     def _staging_directory(self, job_id: str) -> Path:
         return self._contained_path(self._jobs_root, self._safe_component(job_id))
-
-    def _media_directory(self, instagram_user_id: str, shortcode: str) -> Path:
-        return self._contained_path(
-            self._media_root,
-            "profiles",
-            self._safe_component(instagram_user_id),
-            self._safe_component(shortcode),
-        )
-
-    def _replacement_directory(
-        self, final_directory: Path, shortcode: str, job_id: str
-    ) -> Path:
-        return self._contained_path(
-            final_directory.parent,
-            (
-                f".{self._safe_component(shortcode)}-"
-                f"{self._safe_component(job_id)}.partial"
-            ),
-        )
-
-    def _backup_directory(
-        self, final_directory: Path, shortcode: str, job_id: str
-    ) -> Path:
-        return self._contained_path(
-            final_directory.parent,
-            (
-                f".{self._safe_component(shortcode)}-"
-                f"{self._safe_component(job_id)}.backup"
-            ),
-        )
-
-    def _asset_path(self, relative_path: str) -> Path:
-        candidate = (self._media_root / relative_path).resolve()
-        if not candidate.is_relative_to(self._media_root):
-            raise PublicInstagramAdapterError(
-                "Stored media path is outside the library."
-            )
-        return candidate
 
     def _require_data_subdirectory(self, path: Path) -> Path:
         resolved = path.resolve()
@@ -640,14 +1052,19 @@ class PublicInstaloaderAdapter:
         return f"https://www.instagram.com/{route}/{shortcode}/"
 
     @staticmethod
-    def _asset_sort_key(path: Path, shortcode: str) -> tuple[int, int, str]:
-        suffix = path.stem.removeprefix(shortcode)
-        if suffix.startswith("_") and suffix[1:].isdigit():
-            sequence = int(suffix[1:])
-        else:
-            sequence = 0
-        extension_rank = 0 if path.suffix.casefold() == ".jpg" else 1
-        return sequence, extension_rank, path.name
+    def _canonical_story_url(username: str, story_media_id: str) -> str:
+        return (
+            "https://www.instagram.com/stories/"
+            f"{username}/{story_media_id}/"
+        )
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        return (
+            value.replace(tzinfo=UTC)
+            if value.tzinfo is None
+            else value.astimezone(UTC)
+        )
 
     @staticmethod
     def _recreate_directory(directory: Path) -> None:
@@ -662,14 +1079,23 @@ class PublicInstaloaderAdapter:
             raise PublicInstagramAdapterError("Worker staging path is not a directory.")
         shutil.rmtree(directory)
 
-    @staticmethod
-    def _remove_path(path: Path) -> None:
-        if not path.exists():
-            return
-        if path.is_dir():
-            shutil.rmtree(path)
+    def _report(
+        self,
+        current: int,
+        total: int | None,
+        status_text: str,
+        *,
+        phase: str | None = None,
+    ) -> None:
+        if self._progress_supports_phase:
+            self._progress(current, total, phase, status_text)
         else:
-            path.unlink()
+            self._progress(current, total, status_text)
 
-    def _report(self, current: int, total: int | None, status_text: str) -> None:
-        self._progress(current, total, status_text)
+    @staticmethod
+    def _supports_phase(progress: ProgressCallback) -> bool:
+        try:
+            signature(progress).bind(0, None, "phase", "status")
+        except (TypeError, ValueError):
+            return False
+        return True

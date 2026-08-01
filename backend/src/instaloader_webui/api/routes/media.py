@@ -24,7 +24,10 @@ from instaloader_webui.api.library_dtos import (
 from instaloader_webui.config import Settings
 from instaloader_webui.db.library_repositories import LibraryRepository
 from instaloader_webui.services.instagram_inputs import InvalidInstagramInput
-from instaloader_webui.services.library_service import LibraryService, MediaNotFoundError
+from instaloader_webui.services.library_service import (
+    LibraryService,
+    MediaNotFoundError,
+)
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
@@ -40,14 +43,16 @@ def list_media(
     library: Annotated[LibraryRepository, Depends(get_library_repository)],
     _: Annotated[object, Depends(require_password_change_complete)],
     profile_id: str | None = None,
-    kind: Literal["post", "reel"] | None = None,
+    kind: Literal["post", "reel", "story"] | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> ApiEnvelope[tuple[MediaResponse, ...]]:
     return ApiEnvelope(
         success=True,
         data=tuple(
             serialize_media(media)
-            for media in library.list_media(profile_id=profile_id, kind=kind, limit=limit)
+            for media in library.list_media(
+                profile_id=profile_id, kind=kind, limit=limit
+            )
         ),
     )
 
@@ -88,7 +93,9 @@ def get_asset(
     media = library.get_media(media_id)
     if media is None:
         raise _media_not_found(media_id)
-    asset = next((candidate for candidate in media.assets if candidate.id == asset_id), None)
+    asset = next(
+        (candidate for candidate in media.assets if candidate.id == asset_id), None
+    )
     if asset is None:
         raise _asset_not_found(asset_id)
     path = _resolve_asset_path(settings.media_root, asset.relative_path)

@@ -6,6 +6,12 @@ import type { SessionData } from "../auth/useSession";
 import { deleteMedia, getMedia, getProfile, mediaAssetUrl } from "./api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDateTime } from "./dateFormatters";
+import {
+  contentAssets,
+  mediaDisplayIdentifier,
+  mediaLabel,
+  posterFor,
+} from "./mediaPresentation";
 import { ProfileAvatar } from "./ProfileAvatar";
 import { usePolling } from "./usePolling";
 
@@ -60,19 +66,21 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
   }
 
   const { media, owner } = data;
+  const assets = contentAssets(media);
   const assetIndex =
     assetSelection.mediaId === media.id ? assetSelection.index : 0;
-  const asset = media.assets[assetIndex] ?? null;
-  const hasMultipleAssets = media.assets.length > 1;
+  const asset = assets[assetIndex] ?? null;
+  const poster = asset === null ? null : posterFor(media, asset.position);
+  const hasMultipleAssets = assets.length > 1;
   const previousAsset = () =>
     setAssetSelection({
       mediaId: media.id,
-      index: (assetIndex - 1 + media.assets.length) % media.assets.length,
+      index: (assetIndex - 1 + assets.length) % assets.length,
     });
   const nextAsset = () =>
     setAssetSelection({
       mediaId: media.id,
-      index: (assetIndex + 1) % media.assets.length,
+      index: (assetIndex + 1) % assets.length,
     });
 
   return (
@@ -83,14 +91,31 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
           {asset === null ? (
             <div className="viewer-empty-asset">This item is still preparing its downloaded asset.</div>
           ) : asset.kind === "video" ? (
-            <video className="viewer-media" controls playsInline src={mediaAssetUrl(media.id, asset.id)} />
+            <video
+              className="viewer-media"
+              controls
+              playsInline
+              poster={
+                poster === null
+                  ? undefined
+                  : mediaAssetUrl(media.id, poster.id)
+              }
+              src={mediaAssetUrl(media.id, asset.id)}
+            />
           ) : (
-            <img alt={media.accessibility_caption || `Instagram ${media.kind} ${media.shortcode}`} className="viewer-media" src={mediaAssetUrl(media.id, asset.id)} />
+            <img
+              alt={
+                media.accessibility_caption
+                || `Instagram ${mediaLabel(media)} ${mediaDisplayIdentifier(media)}`
+              }
+              className="viewer-media"
+              src={mediaAssetUrl(media.id, asset.id)}
+            />
           )}
           {hasMultipleAssets ? (
             <div className="viewer-carousel-controls" aria-label="Carousel controls">
               <button aria-label="Previous image or video" className="carousel-button" type="button" onClick={previousAsset}>Previous</button>
-              <span>{assetIndex + 1} / {media.assets.length}</span>
+              <span>{assetIndex + 1} / {assets.length}</span>
               <button aria-label="Next image or video" className="carousel-button" type="button" onClick={nextAsset}>Next</button>
             </div>
           ) : null}
@@ -100,10 +125,16 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
             <ProfileAvatar profile={owner} />
             <Link to={`/profiles/${encodeURIComponent(owner.id)}`}>@{owner.username}</Link>
           </div>
-          <h1 id="viewer-title">{media.kind === "reel" ? "Reel" : "Post"}</h1>
-          <p className="viewer-meta">Published {formatDateTime(media.published_at)} · {media.kind}</p>
+          <h1 id="viewer-title">{mediaLabel(media)}</h1>
+          <p className="viewer-meta">
+            Published {formatDateTime(media.published_at)}
+            {" · "}
+            {mediaLabel(media)}
+            {" · "}
+            {mediaDisplayIdentifier(media)}
+          </p>
           <p className="viewer-caption">{media.caption || media.accessibility_caption || "No caption was saved for this public item."}</p>
-          <a className="text-link" href={media.original_url} rel="noreferrer" target="_blank">Open original on Instagram</a>
+          <a className="text-link" href={media.original_url} rel="noopener noreferrer" target="_blank">Open original on Instagram</a>
           <div className="viewer-actions">
             <button className="danger-button danger-button-outline" type="button" onClick={() => setDeleteOpen(true)}>Delete downloaded media</button>
           </div>

@@ -10,6 +10,10 @@ from instaloader_webui.db.library_repositories import (
 )
 from instaloader_webui.services.instagram_inputs import (
     InvalidInstagramInput,
+    PostInput,
+    ProfileInput,
+    ReelInput,
+    StoryInput,
     parse_instagram_input,
 )
 
@@ -41,10 +45,10 @@ class LibraryService:
         self, raw_input: str, now: datetime
     ) -> tuple[ProfileSnapshot, JobSnapshot]:
         parsed = parse_instagram_input(raw_input)
-        if parsed.kind != "profile":
+        if not isinstance(parsed, ProfileInput):
             raise InvalidInstagramInput("A profile input is required here.")
         profile = self._library.upsert_profile_stub(
-            username=parsed.value,
+            username=parsed.username,
             tracked=True,
             now=now,
         )
@@ -52,12 +56,29 @@ class LibraryService:
 
     def add_media(self, raw_input: str, now: datetime) -> JobSnapshot:
         parsed = parse_instagram_input(raw_input)
-        if parsed.kind != "media":
-            raise InvalidInstagramInput("A post, reel, or TV URL is required here.")
-        assert parsed.original_url is not None
+        if isinstance(parsed, ProfileInput):
+            raise InvalidInstagramInput("A post, reel, or Story URL is required here.")
+        if isinstance(parsed, StoryInput):
+            payload: dict[str, object] = {
+                "media_kind": "story",
+                "identity_type": "story_media_id",
+                "identity_value": parsed.story_media_id,
+                "story_media_id": parsed.story_media_id,
+                "username": parsed.username,
+                "original_url": parsed.canonical_url,
+            }
+        else:
+            assert isinstance(parsed, (PostInput, ReelInput))
+            payload = {
+                "media_kind": parsed.kind,
+                "identity_type": "shortcode",
+                "identity_value": parsed.shortcode,
+                "shortcode": parsed.shortcode,
+                "original_url": parsed.canonical_url,
+            }
         return self._jobs.enqueue(
             job_type="single_media",
-            payload={"shortcode": parsed.value, "original_url": parsed.original_url},
+            payload=payload,
             status_text="Queued media download.",
             now=now,
         )
