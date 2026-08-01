@@ -37,10 +37,19 @@ _LEGACY_DOC_ID = "26347858941511777"
 _LEGACY_RESULT_KEY = "xdt_api__v1__fbsearch__non_profiled_serp"
 _MAX_EXCEPTION_NODES = 8
 _SCHEMA_ERROR_MESSAGE = "Instagram profile lookup response was unavailable."
+_TERMINAL_ERROR_MESSAGE = "Instagram profile lookup failed."
 
 
 class _LegacyProfileLookupSchemaError(InstaloaderException):
     """Signal an incomplete legacy result without retaining response data."""
+
+
+class ProfileLookupFailure(InstaloaderException):
+    """Retain a terminal lookup exception behind a fixed safe boundary."""
+
+    def __init__(self, terminal_error: BaseException) -> None:
+        super().__init__(_TERMINAL_ERROR_MESSAGE)
+        self.terminal_error = terminal_error
 
 
 class ProfileLookupResolver:
@@ -55,8 +64,12 @@ class ProfileLookupResolver:
     def resolve(self, context: InstaloaderContext, username: str) -> Profile:
         """Resolve ``username`` into a Profile bound to ``context``."""
         if self._mode == "legacy":
-            return self._resolve_legacy(context, username)
+            try:
+                return self._resolve_legacy(context, username)
+            except RequestException as legacy_error:
+                raise ProfileLookupFailure(legacy_error) from legacy_error
 
+        fallback_error: Exception | None = None
         try:
             profile = Profile.from_username(context, username)
         except Exception as native_error:
@@ -68,24 +81,30 @@ class ProfileLookupResolver:
                     outcome="fallback",
                     status_class="rate_limited",
                 )
-                try:
-                    return self._resolve_legacy(context, username)
-                except Exception as legacy_error:
-                    raise legacy_error from native_error
-
+                fallback_error = native_error
+            else:
+                self._log_event(
+                    path="native",
+                    outcome="failure",
+                    status_class=_classify_status(native_error),
+                )
+                if isinstance(native_error, RequestException):
+                    raise ProfileLookupFailure(native_error) from native_error
+                raise
+        else:
             self._log_event(
                 path="native",
-                outcome="failure",
-                status_class=_classify_status(native_error),
+                outcome="success",
+                status_class="success",
             )
-            raise
+            return profile
 
-        self._log_event(
-            path="native",
-            outcome="success",
-            status_class="success",
-        )
-        return profile
+        try:
+            return self._resolve_legacy(context, username)
+        except (InstaloaderException, RequestException) as legacy_error:
+            raise ProfileLookupFailure(legacy_error) from fallback_error
+        except Exception as legacy_error:
+            raise legacy_error from fallback_error
 
     def _resolve_legacy(
         self,

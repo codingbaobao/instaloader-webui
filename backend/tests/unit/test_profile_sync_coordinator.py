@@ -12,9 +12,12 @@ from typing import Any, Literal, cast
 import pytest
 from instaloader import (
     BadResponseException,
+    LoginRequiredException,
     Profile,
     TooManyRequestsException,
 )
+from requests import Response
+from requests.exceptions import HTTPError
 
 from instaloader_webui.config import Settings
 from instaloader_webui.db.library_repositories import (
@@ -22,9 +25,17 @@ from instaloader_webui.db.library_repositories import (
     MediaIdentity,
 )
 from instaloader_webui.db.migrations import run_migrations
-from instaloader_webui.instagram.errors import ANONYMOUS_REJECTED, TRANSIENT
+from instaloader_webui.instagram.errors import (
+    ANONYMOUS_REJECTED,
+    PROFILE_NOT_FOUND,
+    SESSION_REJECTED,
+    TRANSIENT,
+)
 from instaloader_webui.instagram.media_types import MediaCandidate, MediaKind
-from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_lookup import (
+    ProfileLookupMode,
+    ProfileLookupResolver,
+)
 from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
@@ -620,6 +631,135 @@ def test_fetch_profile_uses_injected_resolver_and_normalizes_result(
     assert profile.profile_pic_url == upstream.profile_pic_url
     assert resolver.calls == [(loader.context, upstream.username)]
     assert events == ["session:acquire", f"resolve:{upstream.username}"]
+
+
+@pytest.mark.parametrize(
+    ("legacy_result", "expected_message"),
+    [
+        (
+            {
+                "data": {
+                    "xdt_api__v1__fbsearch__non_profiled_serp": {
+                        "users": [],
+                    }
+                }
+            },
+            PROFILE_NOT_FOUND,
+        ),
+        ({}, TRANSIENT),
+        (
+            LoginRequiredException("legacy-login-secret"),
+            SESSION_REJECTED,
+        ),
+    ],
+)
+def test_fetch_profile_fallback_classifies_the_legacy_terminal_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_repository: LibraryRepository,
+    test_settings: Settings,
+    legacy_result: object,
+    expected_message: str,
+) -> None:
+    # Break caught: traversing the native 429 cause when classifying the final
+    # legacy failure misreports every terminal legacy outcome as rate limited.
+    native_error = TooManyRequestsException("native-rate-limit-secret")
+    native_calls: list[tuple[object, str]] = []
+    legacy_calls: list[tuple[str, Mapping[str, object]]] = []
+
+    def native_lookup(context: object, username: str) -> Profile:
+        native_calls.append((context, username))
+        raise native_error
+
+    def legacy_lookup(
+        doc_id: str,
+        variables: Mapping[str, object],
+    ) -> object:
+        legacy_calls.append((doc_id, variables))
+        if isinstance(legacy_result, BaseException):
+            raise legacy_result
+        return legacy_result
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    loader = AdapterLoader(events=[], response=AvatarResponse())
+    loader.context.doc_id_graphql_query = legacy_lookup
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=ProfileLookupResolver(
+            "fallback",
+            logging.getLogger(__name__),
+        ),
+    )
+
+    with pytest.raises(PublicInstagramAdapterError) as raised:
+        adapter.fetch_profile("Target")
+
+    assert str(raised.value) == expected_message
+    assert "secret" not in str(raised.value)
+    assert native_calls == [(loader.context, "Target")]
+    assert legacy_calls == [
+        (
+            "26347858941511777",
+            {"hasQuery": True, "query": "Target"},
+        )
+    ]
+    terminal_failure = raised.value.__cause__
+    assert terminal_failure is not None
+    assert terminal_failure.__cause__ is native_error
+
+
+@pytest.mark.parametrize(
+    ("mode", "status_code", "expected_message"),
+    [
+        ("native", 503, TRANSIENT),
+        ("legacy", 404, PROFILE_NOT_FOUND),
+    ],
+)
+def test_fetch_profile_classifies_raw_requests_http_failures_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_repository: LibraryRepository,
+    test_settings: Settings,
+    mode: ProfileLookupMode,
+    status_code: int,
+    expected_message: str,
+) -> None:
+    # Break caught: requests.HTTPError is not an InstaloaderException, so a raw
+    # transport message can otherwise cross the public adapter boundary.
+    response = Response()
+    response.status_code = status_code
+    raw_error = HTTPError(
+        "raw-http-secret Cookie: sessionid=transport-secret",
+        response=response,
+    )
+    native_calls: list[str] = []
+
+    def native_lookup(_context: object, username: str) -> Profile:
+        native_calls.append(username)
+        raise raw_error
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    loader = AdapterLoader(events=[], response=AvatarResponse())
+    loader.context.doc_id_graphql_query = lambda *_args: (_ for _ in ()).throw(
+        raw_error
+    )
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=ProfileLookupResolver(
+            mode,
+            logging.getLogger(__name__),
+        ),
+    )
+
+    with pytest.raises(PublicInstagramAdapterError) as raised:
+        adapter.fetch_profile("Target")
+
+    assert str(raised.value) == expected_message
+    assert "raw-http-secret" not in str(raised.value)
+    assert "transport-secret" not in str(raised.value)
+    assert len(native_calls) == (1 if mode == "native" else 0)
 
 
 def test_profile_sync_accepts_standard_avatar_before_story_enumeration(

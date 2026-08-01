@@ -15,9 +15,12 @@ from instaloader import (
     TooManyRequestsException,
 )
 from requests import Response
-from requests.exceptions import ConnectionError, HTTPError
+from requests.exceptions import ConnectionError, HTTPError, RequestException
 
-from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_lookup import (
+    ProfileLookupFailure,
+    ProfileLookupResolver,
+)
 
 _EVENT_FIELDS = {"mode", "path", "outcome", "status_class"}
 _ALLOWED_MODES = {"native", "fallback", "legacy"}
@@ -110,6 +113,28 @@ def _records(
     return [record for record in caplog.records if record.name == logger_name]
 
 
+def _event_values(record: logging.LogRecord) -> tuple[object, object, object, object]:
+    return (
+        record.__dict__["mode"],
+        record.__dict__["path"],
+        record.__dict__["outcome"],
+        record.__dict__["status_class"],
+    )
+
+
+def _assert_terminal_failure(
+    raised: BaseException,
+    terminal_error: BaseException,
+) -> None:
+    if isinstance(terminal_error, RequestException):
+        assert isinstance(raised, ProfileLookupFailure)
+        assert raised.terminal_error is terminal_error
+        assert raised.__cause__ is terminal_error
+        assert "secret" not in str(raised)
+    else:
+        assert raised is terminal_error
+
+
 def test_fallback_native_success_is_terminal(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -128,12 +153,12 @@ def test_fallback_native_success_is_terminal(
     assert native_calls == [(context, "Target")]
     assert _query_calls(context) == []
     [record] = _records(caplog, logger_name=logger_name)
-    assert (
-        record.mode,
-        record.path,
-        record.outcome,
-        record.status_class,
-    ) == ("fallback", "native", "success", "success")
+    assert _event_values(record) == (
+        "fallback",
+        "native",
+        "success",
+        "success",
+    )
 
 
 def test_native_mode_calls_only_native_once(
@@ -301,12 +326,17 @@ def test_fallback_does_not_use_legacy_for_untyped_or_non_429_failures(
     context = _context(_users(_node("Target")))
     native_calls = _install_native(monkeypatch, result=native_error)
 
-    with pytest.raises(type(native_error)) as raised:
+    expected_type = (
+        ProfileLookupFailure
+        if isinstance(native_error, RequestException)
+        else type(native_error)
+    )
+    with pytest.raises(expected_type) as raised:
         ProfileLookupResolver("fallback", logging.getLogger(__name__)).resolve(
             context, "Target"
         )
 
-    assert raised.value is native_error
+    _assert_terminal_failure(raised.value, native_error)
     assert native_calls == [(context, "Target")]
     assert _query_calls(context) == []
 
@@ -325,12 +355,12 @@ def test_fallback_rejects_inaccessible_http_status_metadata(
     native_error = HTTPError("private transport detail", response=ExplodingResponse())
     _install_native(monkeypatch, result=native_error)
 
-    with pytest.raises(HTTPError) as raised:
+    with pytest.raises(ProfileLookupFailure) as raised:
         ProfileLookupResolver("fallback", logging.getLogger(__name__)).resolve(
             context, "Target"
         )
 
-    assert raised.value is native_error
+    _assert_terminal_failure(raised.value, native_error)
     assert _query_calls(context) == []
 
 
@@ -342,12 +372,12 @@ def test_fallback_rejects_boolean_http_429_status_metadata(
     native_error = _http_error(True)
     native_calls = _install_native(monkeypatch, result=native_error)
 
-    with pytest.raises(HTTPError) as raised:
+    with pytest.raises(ProfileLookupFailure) as raised:
         ProfileLookupResolver("fallback", logging.getLogger(__name__)).resolve(
             context, "Target"
         )
 
-    assert raised.value is native_error
+    _assert_terminal_failure(raised.value, native_error)
     assert native_calls == [(context, "Target")]
     assert _query_calls(context) == []
 
@@ -503,13 +533,14 @@ def test_fallback_legacy_failure_is_terminal_and_chained_to_native(
     context = _context(legacy_error)
     native_calls = _install_native(monkeypatch, result=native_error)
 
-    with pytest.raises(HTTPError) as raised:
+    with pytest.raises(ProfileLookupFailure) as raised:
         ProfileLookupResolver("fallback", logging.getLogger(__name__)).resolve(
             context, "Target"
         )
 
-    assert raised.value is legacy_error
+    assert raised.value.terminal_error is legacy_error
     assert raised.value.__cause__ is native_error
+    assert raised.value.__context__ is legacy_error
     assert native_calls == [(context, "Target")]
     assert len(_query_calls(context)) == 1
 
@@ -527,12 +558,13 @@ def test_legacy_mode_http_failure_has_no_native_call_or_retry(
         result=AssertionError("native must not run"),
     )
 
-    with pytest.raises(HTTPError) as raised:
+    with pytest.raises(ProfileLookupFailure) as raised:
         ProfileLookupResolver("legacy", logging.getLogger(__name__)).resolve(
             context, "Target"
         )
 
-    assert raised.value is legacy_error
+    assert raised.value.terminal_error is legacy_error
+    assert raised.value.__cause__ is legacy_error
     assert native_calls == []
     assert len(_query_calls(context)) == 1
 
@@ -566,20 +598,18 @@ def test_lookup_events_use_closed_fields_and_do_not_disclose_secrets(
     assert isinstance(result, Profile)
     records = _records(caplog, logger_name=logger_name)
     assert len(records) == 2
-    assert [
-        (record.mode, record.path, record.outcome, record.status_class)
-        for record in records
-    ] == [
+    assert [_event_values(record) for record in records] == [
         ("fallback", "native", "fallback", "rate_limited"),
         ("fallback", "legacy", "success", "success"),
     ]
     for record in records:
         application_fields = set(record.__dict__) - _STANDARD_LOG_RECORD_FIELDS
         assert application_fields == _EVENT_FIELDS
-        assert record.mode in _ALLOWED_MODES
-        assert record.path in _ALLOWED_PATHS
-        assert record.outcome in _ALLOWED_OUTCOMES
-        assert record.status_class in _ALLOWED_STATUS_CLASSES
+        mode, path, outcome, status_class = _event_values(record)
+        assert mode in _ALLOWED_MODES
+        assert path in _ALLOWED_PATHS
+        assert outcome in _ALLOWED_OUTCOMES
+        assert status_class in _ALLOWED_STATUS_CLASSES
         assert record.exc_info is None
         rendered = f"{record.getMessage()} {record.__dict__!r}"
         for forbidden in (
@@ -618,19 +648,22 @@ def test_failure_events_classify_typed_status_without_raw_details(
     _install_native(monkeypatch, result=error)
     logger_name = f"test.profile_lookup.status.{expected_status_class}"
 
+    expected_type = (
+        ProfileLookupFailure if isinstance(error, RequestException) else type(error)
+    )
     with (
         caplog.at_level(logging.INFO, logger=logger_name),
-        pytest.raises(type(error)),
+        pytest.raises(expected_type),
     ):
         ProfileLookupResolver("native", logging.getLogger(logger_name)).resolve(
             context, "Target"
         )
 
     [record] = _records(caplog, logger_name=logger_name)
-    assert (
-        record.mode,
-        record.path,
-        record.outcome,
-        record.status_class,
-    ) == ("native", "native", "failure", expected_status_class)
+    assert _event_values(record) == (
+        "native",
+        "native",
+        "failure",
+        expected_status_class,
+    )
     assert "secret" not in f"{record.getMessage()} {record.__dict__!r}"

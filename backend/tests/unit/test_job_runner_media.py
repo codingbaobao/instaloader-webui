@@ -1,8 +1,13 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from instaloader import Profile, TooManyRequestsException
+from requests import Response
+from requests.exceptions import ConnectionError, HTTPError
 
 from instaloader_webui.db.followee_import_repositories import (
     FolloweeImportRepository,
@@ -16,12 +21,17 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
 )
 from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.instagram.errors import SESSION_REJECTED, TRANSIENT
 from instaloader_webui.instagram.media_types import MediaCandidate
-from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_lookup import (
+    ProfileLookupMode,
+    ProfileLookupResolver,
+)
 from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
 )
+from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
 from instaloader_webui.instagram.safe_issues import (
     MediaItemFailure,
     SafeMediaIssue,
@@ -109,6 +119,123 @@ def _claimed_single_media(
     assert claimed is not None
     assert claimed.id == queued.id
     return claimed
+
+
+def _raw_http_error(status_code: int) -> HTTPError:
+    response = Response()
+    response.status_code = status_code
+    return HTTPError(
+        "raw-http-secret Cookie: sessionid=transport-secret",
+        response=response,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "native_error", "legacy_error", "expected_error"),
+    [
+        ("native", _raw_http_error(503), None, TRANSIENT),
+        (
+            "native",
+            ConnectionError("native-transport-secret"),
+            None,
+            TRANSIENT,
+        ),
+        (
+            "legacy",
+            None,
+            ConnectionError("legacy-transport-secret"),
+            TRANSIENT,
+        ),
+        (
+            "fallback",
+            TooManyRequestsException("native-rate-limit-secret"),
+            _raw_http_error(401),
+            SESSION_REJECTED,
+        ),
+    ],
+)
+def test_profile_lookup_transport_failures_persist_only_safe_job_errors(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: ProfileLookupMode,
+    native_error: BaseException | None,
+    legacy_error: BaseException | None,
+    expected_error: str,
+) -> None:
+    # Break caught: a raw Requests exception escaping the adapter reaches the
+    # generic job branch, which persists str(error) and its transport secrets.
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+    native_calls: list[str] = []
+    legacy_calls: list[tuple[str, object]] = []
+
+    def native_lookup(_context: object, username: str) -> Profile:
+        native_calls.append(username)
+        if native_error is None:
+            raise AssertionError("native lookup was not expected")
+        raise native_error
+
+    def legacy_lookup(doc_id: str, variables: object) -> object:
+        legacy_calls.append((doc_id, variables))
+        if legacy_error is None:
+            raise AssertionError("legacy lookup was not expected")
+        raise legacy_error
+
+    class LookupFailureLoader:
+        def __init__(self) -> None:
+            self.dirname_pattern = ""
+            self.context = SimpleNamespace(
+                is_logged_in=True,
+                doc_id_graphql_query=legacy_lookup,
+            )
+
+    class LookupFailureRuntime:
+        def __init__(self, loader: LookupFailureLoader) -> None:
+            self.loader = loader
+
+        def acquire_required_session(
+            self,
+            staging_directory: Path,
+        ) -> LookupFailureLoader:
+            self.loader.dirname_pattern = str(staging_directory)
+            return self.loader
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    loader = LookupFailureLoader()
+    adapter = PublicInstaloaderAdapter(
+        data_root=test_settings.data_root,
+        media_root=test_settings.media_root,
+        jobs_root=test_settings.jobs_root,
+        library=library,
+        progress=lambda *_args: None,
+        loader_runtime=cast(
+            WorkerInstaloaderRuntime,
+            cast(object, LookupFailureRuntime(loader)),
+        ),
+        profile_lookup_resolver=ProfileLookupResolver(
+            mode,
+            logging.getLogger(__name__),
+        ),
+    )
+    monkeypatch.setattr(runner, "_adapter", lambda _job: adapter)
+
+    runner.run(job)
+
+    failed = jobs.get(job.id)
+    assert failed is not None
+    assert failed.state == "failed"
+    persisted_error = failed.error
+    assert persisted_error == expected_error
+    for forbidden in (
+        "raw-http-secret",
+        "transport-secret",
+        "native-rate-limit-secret",
+    ):
+        assert forbidden not in persisted_error
+    assert len(native_calls) == (0 if mode == "legacy" else 1)
+    assert len(legacy_calls) == (0 if mode == "native" else 1)
 
 
 def test_job_runner_passes_same_resolver_to_every_created_adapter(

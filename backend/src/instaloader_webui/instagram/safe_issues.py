@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from requests.exceptions import HTTPError
+
 from instaloader_webui.db.library_repositories import MediaIdentity
 from instaloader_webui.instagram.errors import (
     ANONYMOUS_REJECTED,
@@ -17,6 +19,7 @@ from instaloader_webui.instagram.errors import (
     SESSION_REJECTED,
     TRANSIENT,
 )
+from instaloader_webui.instagram.profile_lookup import ProfileLookupFailure
 
 IssueCode = Literal[
     "challenge_required",
@@ -187,13 +190,25 @@ def _classify_error(
     session_configured: bool,
     target: Literal["media", "profile"],
 ) -> tuple[IssueCode, str]:
-    details = tuple(_exception_details(error))
+    terminal_error = (
+        error.terminal_error
+        if isinstance(error, ProfileLookupFailure)
+        else error
+    )
+    details = tuple(_exception_details(terminal_error))
     class_names = {class_name for class_name, _message in details}
     messages = tuple(message for _class_name, message in details)
+    http_statuses = {
+        status
+        for current in _exception_nodes(terminal_error)
+        if isinstance(current, HTTPError)
+        for status in (_http_status(current),)
+        if status is not None
+    }
 
     if _matches(class_names, messages, _CHALLENGE_CLASSES, _CHALLENGE_MARKERS):
         return "challenge_required", CHALLENGE
-    if _matches(
+    if 429 in http_statuses or _matches(
         class_names,
         messages,
         _RATE_LIMIT_CLASSES,
@@ -201,7 +216,7 @@ def _classify_error(
         _HTTP_RATE_LIMIT,
     ):
         return "instagram_rate_limited", RATE_LIMITED
-    if _matches(
+    if http_statuses & {401, 403} or _matches(
         class_names,
         messages,
         _LOGIN_CLASSES,
@@ -213,7 +228,12 @@ def _classify_error(
             if session_configured
             else ("instagram_access_denied", ANONYMOUS_REJECTED)
         )
-    if _matches(class_names, messages, _NOT_FOUND_CLASSES, _NOT_FOUND_MARKERS):
+    if 404 in http_statuses or _matches(
+        class_names,
+        messages,
+        _NOT_FOUND_CLASSES,
+        _NOT_FOUND_MARKERS,
+    ):
         return (
             "instagram_not_found",
             PROFILE_NOT_FOUND if target == "profile" else MEDIA_NOT_FOUND,
@@ -241,22 +261,38 @@ def _exception_class_chain(error: BaseException) -> tuple[str, ...]:
 
 
 def _exception_details(error: BaseException) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (_class_name(current), _message(current))
+        for current in _exception_nodes(error)
+    )
+
+
+def _exception_nodes(error: BaseException) -> tuple[BaseException, ...]:
     seen: set[int] = set()
     pending: list[BaseException] = [error]
-    details: list[tuple[str, str]] = []
+    nodes: list[BaseException] = []
     while pending:
         current = pending.pop()
         if id(current) in seen:
             continue
         seen.add(id(current))
-        details.append((_class_name(current), _message(current)))
+        nodes.append(current)
         context = _related_exception(current, "__context__")
         cause = _related_exception(current, "__cause__")
         if context is not None:
             pending.append(context)
         if cause is not None:
             pending.append(cause)
-    return tuple(details)
+    return tuple(nodes)
+
+
+def _http_status(error: HTTPError) -> int | None:
+    try:
+        response = error.response
+        status_code = response.status_code if response is not None else None
+    except Exception:  # noqa: BLE001 - malformed response metadata is ignored.
+        return None
+    return status_code if type(status_code) is int else None
 
 
 def _related_exception(error: BaseException, attribute: str) -> BaseException | None:
