@@ -49,8 +49,9 @@ From `instaloader-webui/`:
 
    `web` serves the UI at `http://host-address:8080` by default, while `worker`
    uses the exact same image to process downloads and scheduled profile syncs.
-   The worker waits for the web health check before starting so the web service
-   completes the initial migration first. Set `IW_HTTP_BIND=127.0.0.1` when a
+   The worker waits for the web health check for orderly startup. Both services
+   initialize or verify the current schema independently, so this dependency is
+   not required for schema correctness. Set `IW_HTTP_BIND=127.0.0.1` when a
    same-host reverse proxy is the only intended client, and use `IW_HTTP_PORT`
    to change the host port.
 
@@ -159,6 +160,32 @@ application secret remain consistent. In particular,
 `secrets/instagram_session.enc` and `secrets/app_secret_key` must be backed up
 and restored together: the session is encrypted from the application secret and
 cannot be recovered with a different one.
+
+### Pre-1.0 database schema policy
+
+Before `1.0.0`, database schema migrations and backward compatibility are
+intentionally unsupported. A release that changes the schema marker requires a
+fresh SQLite database; do not attempt an Alembic upgrade or downgrade.
+
+Before deploying that release, stop both services, then delete and recreate
+only the SQLite database files under `database/` (the database and any
+`-wal`/`-shm` sidecars). For a data root at `/your/chosen/path`, the deletion
+scope is:
+
+```sh
+docker compose down
+rm -f /your/chosen/path/database/app.sqlite3 \
+  /your/chosen/path/database/app.sqlite3-wal \
+  /your/chosen/path/database/app.sqlite3-shm
+docker compose up -d
+```
+
+The next startup creates the current schema. This removes database-backed
+administrators, web sessions, job history, and library metadata. Do not delete
+`secrets/app_secret_key`, `secrets/instagram_session.enc`, or `media/` for a
+database reset; delete those only when you explicitly intend a full data reset.
+If backing up or restoring the whole data root, keep the application secret and
+encrypted Instagram session paired as described above.
 
 ## Administrator manual acceptance
 

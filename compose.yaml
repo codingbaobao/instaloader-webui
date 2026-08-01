@@ -48,6 +48,8 @@ services:
     command: ["/bin/sh", "-c", "umask 077 && exec instaloader-webui-worker"]
     environment: *webui-environment
     <<: *webui-runtime
+    # Keep startup orderly; each service independently initializes or verifies
+    # the current schema, so this dependency is not required for correctness.
     depends_on:
       web:
         condition: service_healthy
