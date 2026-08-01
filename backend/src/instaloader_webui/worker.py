@@ -15,7 +15,7 @@ from instaloader_webui.db.library_repositories import (
     LibraryRepository,
     SettingsRepository,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
@@ -32,7 +32,7 @@ def main() -> None:
     settings.data_root.mkdir(parents=True, exist_ok=True)
     settings.media_root.mkdir(parents=True, exist_ok=True)
     settings.jobs_root.mkdir(parents=True, exist_ok=True)
-    run_migrations(settings)
+    initialize_database(settings)
 
     engine = build_engine(settings.database_path)
     session_factory = build_session_factory(engine)

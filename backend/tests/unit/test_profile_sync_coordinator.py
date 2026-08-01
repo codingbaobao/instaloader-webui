@@ -24,7 +24,7 @@ from instaloader_webui.db.library_repositories import (
     LibraryRepository,
     MediaIdentity,
 )
-from instaloader_webui.db.migrations import run_migrations
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.errors import (
     ANONYMOUS_REJECTED,
     PROFILE_NOT_FOUND,
@@ -553,7 +553,7 @@ def profile_repository(
     session_factory,
     test_settings: Settings,
 ) -> LibraryRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LibraryRepository(session_factory)
 
 

@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import func, select
 
 from instaloader_webui.config import Settings
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.models import AdminUser
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.services.admin_bootstrap import (
     bootstrap_admin,
     resolve_bootstrap_password,
@@ -22,7 +22,7 @@ def count_admins(session_factory) -> int:
 def test_bootstrap_creates_exactly_one_forced_change_admin(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
 
     first = bootstrap_admin(session_factory, test_settings)
     second = bootstrap_admin(session_factory, test_settings)
@@ -36,7 +36,7 @@ def test_bootstrap_creates_exactly_one_forced_change_admin(
 def test_bootstrap_ignores_invalid_password_sources_after_admin_exists(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     created = bootstrap_admin(session_factory, test_settings)
     settings_without_a_password = Settings(
         data_root=test_settings.data_root,
@@ -51,7 +51,7 @@ def test_bootstrap_ignores_invalid_password_sources_after_admin_exists(
 def test_bootstrap_race_creates_only_one_admin_for_different_usernames(
     session_factory, tmp_path: Path
 ) -> None:
-    run_migrations(
+    initialize_database(
         Settings(
             data_root=tmp_path,
             admin_username="owner-one",
@@ -159,7 +159,7 @@ def test_bootstrap_accepts_long_unicode_password(
         admin_username="owner",
         admin_password="界" * 342,
     )
-    run_migrations(settings)
+    initialize_database(settings)
 
     created = bootstrap_admin(session_factory, settings)
 
@@ -174,7 +174,7 @@ def test_bootstrap_accepts_empty_password(
         admin_username="owner",
         admin_password="",
     )
-    run_migrations(settings)
+    initialize_database(settings)
 
     created = bootstrap_admin(session_factory, settings)
 
@@ -189,7 +189,7 @@ def test_bootstrap_rejects_username_outside_the_allowed_pattern(
         admin_username="not an owner",
         admin_password="correct-horse-battery-staple",
     )
-    run_migrations(settings)
+    initialize_database(settings)
 
     with pytest.raises(ValueError, match="username"):
         bootstrap_admin(session_factory, settings)

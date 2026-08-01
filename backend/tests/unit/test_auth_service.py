@@ -9,12 +9,12 @@ from sqlalchemy.exc import IntegrityError
 from instaloader_webui.auth.passwords import PasswordService, PasswordServiceBusyError
 from instaloader_webui.auth.session_tokens import digest_session_token
 from instaloader_webui.auth.throttle import LoginThrottle
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import (
     AdminRepository,
     LoginFailureRepository,
     WebSessionRepository,
 )
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.services.admin_bootstrap import bootstrap_admin
 from instaloader_webui.services.auth_service import (
     AuthenticationBusyError,
@@ -39,7 +39,7 @@ def make_auth_service(
 
 
 def build_auth_service(session_factory, test_settings) -> AuthService:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     passwords = PasswordService()
     bootstrap_admin(session_factory, test_settings, passwords)
     return make_auth_service(session_factory, test_settings, passwords)
@@ -103,7 +103,7 @@ class RecordingPasswordService(PasswordService):
 def test_login_overload_releases_admission_reservation(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     bootstrap_admin(session_factory, test_settings, PasswordService())
     service = make_auth_service(
         session_factory,
@@ -129,7 +129,7 @@ def test_login_overload_releases_admission_reservation(
 def test_direct_login_sends_long_password_to_argon2_verification(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     bootstrap_admin(session_factory, test_settings, PasswordService())
     passwords = RecordingPasswordService()
     service = make_auth_service(session_factory, test_settings, passwords)
@@ -166,7 +166,7 @@ def test_login_creates_seven_day_session_without_exposing_token_in_repr(
 def test_direct_login_rejects_overbyte_username_before_admission_or_argon2(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     bootstrap_admin(session_factory, test_settings, PasswordService())
     service = make_auth_service(session_factory, test_settings, BusyPasswordService())
 
@@ -211,7 +211,7 @@ def test_session_last_seen_refresh_is_bounded(session_factory, test_settings) ->
 def test_session_revoked_during_last_seen_refresh_is_rejected(
     monkeypatch, session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     passwords = PasswordService()
     bootstrap_admin(session_factory, test_settings, passwords)
     sessions = WebSessionRepository(session_factory)
@@ -302,7 +302,7 @@ def test_password_change_rolls_back_if_other_session_revocation_fails(
 def test_login_verified_before_password_change_cannot_create_session_afterward(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     setup_passwords = PasswordService()
     bootstrap_admin(session_factory, test_settings, setup_passwords)
     setup_service = make_auth_service(session_factory, test_settings, setup_passwords)
@@ -400,7 +400,7 @@ def test_success_invalidates_in_flight_failures_from_the_same_bucket(
 def test_concurrent_successful_logins_from_the_same_bucket_both_create_sessions(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     bootstrap_admin(session_factory, test_settings, PasswordService())
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
     password_barrier = Barrier(2)
@@ -509,7 +509,7 @@ def test_concurrent_password_changes_allow_exactly_one_winner(
 def test_password_change_revalidates_retained_session_inside_write_transaction(
     monkeypatch, session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     passwords = PasswordService()
     bootstrap_admin(session_factory, test_settings, passwords)
     administrators = AdminRepository(session_factory)

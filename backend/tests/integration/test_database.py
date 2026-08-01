@@ -1,17 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from threading import Event
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import inspect, text
+from sqlalchemy import text
 
 from instaloader_webui.db.engine import build_engine
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import AdminRepository, WebSessionRepository
+from instaloader_webui.db.schema import initialize_database
 
 
 def test_sqlite_enables_wal_and_foreign_keys(test_settings) -> None:
@@ -27,147 +24,10 @@ def test_sqlite_enables_wal_and_foreign_keys(test_settings) -> None:
     assert busy_timeout == 5_000
 
 
-def test_initial_migration_creates_auth_tables(test_settings) -> None:
-    run_migrations(test_settings)
-    engine = build_engine(test_settings.database_path)
-
-    with engine.connect() as connection:
-        names = {
-            row[0]
-            for row in connection.execute(
-                text("SELECT name FROM sqlite_master WHERE type = 'table'")
-            )
-        }
-
-    assert {"admin_users", "web_sessions", "alembic_version"} <= names
-
-
-def test_initial_migration_matches_auth_model_schema(test_settings) -> None:
-    run_migrations(test_settings)
-    inspector = inspect(build_engine(test_settings.database_path))
-
-    admin_columns = {column["name"] for column in inspector.get_columns("admin_users")}
-    session_columns = {
-        column["name"] for column in inspector.get_columns("web_sessions")
-    }
-    admin_unique_columns = {
-        tuple(constraint["column_names"])
-        for constraint in inspector.get_unique_constraints("admin_users")
-    }
-    session_unique_columns = {
-        tuple(constraint["column_names"])
-        for constraint in inspector.get_unique_constraints("web_sessions")
-    }
-    foreign_keys = inspector.get_foreign_keys("web_sessions")
-
-    assert admin_columns == {
-        "id",
-        "username",
-        "password_hash",
-        "must_change_password",
-        "created_at",
-        "updated_at",
-    }
-    assert session_columns == {
-        "id",
-        "admin_user_id",
-        "token_digest",
-        "created_at",
-        "last_seen_at",
-        "expires_at",
-        "revoked_at",
-    }
-    assert ("username",) in admin_unique_columns
-    assert ("token_digest",) in session_unique_columns
-    assert foreign_keys == [
-        {
-            "name": None,
-            "constrained_columns": ["admin_user_id"],
-            "referred_schema": None,
-            "referred_table": "admin_users",
-            "referred_columns": ["id"],
-            "options": {},
-        }
-    ]
-
-
-def test_login_failure_migration_schema_survives_downgrade_upgrade_round_trip(
-    test_settings,
-) -> None:
-    run_migrations(test_settings)
-    config = Config(str(Path(__file__).parents[2] / "alembic.ini"))
-    config.set_main_option(
-        "sqlalchemy.url",
-        f"sqlite:///{test_settings.database_path.resolve().as_posix()}",
-    )
-
-    inspector = inspect(build_engine(test_settings.database_path))
-    assert {column["name"] for column in inspector.get_columns("login_failures")} == {
-        "bucket_digest",
-        "failure_count",
-        "first_failure_at",
-        "last_failure_at",
-        "blocked_until",
-    }
-    assert inspector.get_pk_constraint("login_failures")["constrained_columns"] == [
-        "bucket_digest"
-    ]
-    assert {
-        column["name"] for column in inspector.get_columns("login_attempt_reservations")
-    } == {
-        "id",
-        "account_bucket_digest",
-        "ip_bucket_digest",
-        "global_bucket_digest",
-        "created_at",
-        "expires_at",
-        "failure_valid",
-    }
-
-    command.downgrade(config, "0001_admin_and_sessions")
-    assert (
-        "login_failures"
-        not in inspect(build_engine(test_settings.database_path)).get_table_names()
-    )
-    assert (
-        "login_attempt_reservations"
-        not in inspect(build_engine(test_settings.database_path)).get_table_names()
-    )
-
-    command.upgrade(config, "head")
-    upgraded_columns = {
-        column["name"]
-        for column in inspect(build_engine(test_settings.database_path)).get_columns(
-            "login_failures"
-        )
-    }
-    assert upgraded_columns == {
-        "bucket_digest",
-        "failure_count",
-        "first_failure_at",
-        "last_failure_at",
-        "blocked_until",
-    }
-    upgraded_inspector = inspect(build_engine(test_settings.database_path))
-    assert "login_attempt_reservations" in upgraded_inspector.get_table_names()
-    assert {
-        column["name"]
-        for column in upgraded_inspector.get_columns("login_attempt_reservations")
-    } == {
-        "id",
-        "account_bucket_digest",
-        "ip_bucket_digest",
-        "global_bucket_digest",
-        "created_at",
-        "expires_at",
-        "failure_valid",
-    }
-
-
 def test_admin_repository_returns_immutable_snapshot(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     repository = AdminRepository(session_factory)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
 
@@ -191,7 +51,7 @@ def test_admin_repository_returns_immutable_snapshot(
 def test_web_session_repository_returns_new_snapshots_on_updates(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     admins = AdminRepository(session_factory)
     sessions = WebSessionRepository(session_factory)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
@@ -225,7 +85,7 @@ def test_web_session_repository_returns_new_snapshots_on_updates(
 def test_delayed_session_touch_cannot_regress_last_seen(
     session_factory, test_settings
 ) -> None:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     admins = AdminRepository(session_factory)
     sessions = WebSessionRepository(session_factory)
     now = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)

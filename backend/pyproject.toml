@@ -8,7 +8,6 @@ version = "0.2.0"
 description = "Instaloader WebUI backend"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "alembic>=1.13,<2",
     "argon2-cffi>=23.1,<24",
     "cryptography>=48.0.1,<50",
     "fastapi>=0.115,<1",
@@ -33,9 +32,6 @@ instaloader-webui-worker = "instaloader_webui.worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/instaloader_webui"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"migrations" = "instaloader_webui/migrations"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,8 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from instaloader_webui.auth.throttle import LoginThrottle
 from instaloader_webui.config import Settings
 from instaloader_webui.db.engine import build_engine, build_session_factory
-from instaloader_webui.db.migrations import run_migrations
 from instaloader_webui.db.repositories import LoginFailureRepository
+from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.main import create_app
 
 TEST_APP_SECRET = "a" * 32
@@ -91,7 +91,7 @@ def session_factory(engine):
 def login_failure_repository(
     session_factory, test_settings: Settings
 ) -> LoginFailureRepository:
-    run_migrations(test_settings)
+    initialize_database(test_settings)
     return LoginFailureRepository(session_factory)
 
 

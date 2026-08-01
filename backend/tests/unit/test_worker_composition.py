@@ -20,6 +20,7 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
     resolver = object()
     resolver_calls: list[tuple[str, logging.Logger]] = []
     runner_kwargs: list[dict[str, object]] = []
+    startup_events: list[str] = []
 
     class StopWorker(Exception):
         pass
@@ -36,8 +37,19 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
         raise StopWorker
 
     monkeypatch.setattr(worker_module, "Settings", lambda: settings)
-    monkeypatch.setattr(worker_module, "run_migrations", lambda _settings: None)
-    monkeypatch.setattr(worker_module, "build_engine", lambda _path: object())
+    monkeypatch.setattr(
+        worker_module,
+        "initialize_database",
+        lambda _settings: startup_events.append("initialize"),
+        raising=False,
+    )
+
+    def build_engine(_path):
+        startup_events.append("engine")
+        assert startup_events == ["initialize", "engine"]
+        return object()
+
+    monkeypatch.setattr(worker_module, "build_engine", build_engine)
     monkeypatch.setattr(
         worker_module,
         "build_session_factory",
@@ -84,5 +96,6 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
     configured_mode, logger = resolver_calls[0]
     assert configured_mode == mode
     assert logger.name == "instaloader_webui.instagram.profile_lookup"
+    assert startup_events == ["initialize", "engine"]
     assert len(runner_kwargs) == 1
     assert runner_kwargs[0]["profile_lookup_resolver"] is resolver
