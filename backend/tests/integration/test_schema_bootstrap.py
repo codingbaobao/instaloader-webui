@@ -274,6 +274,102 @@ def _create_incompatible_database(database_path: Path, kind: str) -> None:
             connection.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
 
 
+def _rewrite_table_definition(
+    connection: sqlite3.Connection,
+    table_name: str,
+    old_fragment: str,
+    new_fragment: str,
+) -> None:
+    definition = connection.execute(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()[0]
+    changed_definition = definition.replace(old_fragment, new_fragment)
+    assert changed_definition != definition
+    schema_version = connection.execute("PRAGMA schema_version").fetchone()[0]
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE sqlite_schema SET sql = ? WHERE type = 'table' AND name = ?",
+        (changed_definition, table_name),
+    )
+    connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    connection.execute("PRAGMA writable_schema = OFF")
+
+
+def _apply_marked_schema_drift(database_path: Path, kind: str) -> None:
+    with sqlite3.connect(database_path) as connection:
+        if kind == "missing-index":
+            connection.execute("DROP INDEX ix_job_issues_identity_type_identity_value")
+        elif kind == "missing-column":
+            connection.execute("ALTER TABLE jobs DROP COLUMN phase")
+        elif kind == "changed-unique":
+            _rewrite_table_definition(
+                connection,
+                "media_items",
+                "UNIQUE (identity_type, identity_value)",
+                "UNIQUE (identity_type, shortcode)",
+            )
+        elif kind == "changed-check":
+            _rewrite_table_definition(
+                connection,
+                "media_assets",
+                "CHECK (role IN ('content', 'poster'))",
+                "CHECK (role IN ('content', 'poster', 'thumbnail'))",
+            )
+        else:
+            _rewrite_table_definition(
+                connection,
+                "job_issues",
+                ", \n\tFOREIGN KEY(job_id) REFERENCES jobs (id) ON DELETE CASCADE",
+                "",
+            )
+        connection.execute("DELETE FROM app_settings")
+
+
+def _schema_definitions(database_path: Path) -> tuple[tuple[object, ...], ...]:
+    with sqlite3.connect(database_path) as connection:
+        return tuple(
+            connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "missing-index",
+        "missing-column",
+        "changed-unique",
+        "changed-check",
+        "missing-foreign-key",
+    ],
+)
+def test_marked_database_with_schema_drift_fails_closed_before_seed_repair(
+    test_settings: Settings,
+    kind: str,
+) -> None:
+    # Break caught: trusting only the marker and table names accepts a drifted
+    # schema, then mutates it by repairing seed data before repositories start.
+    schema = _schema_module()
+    schema.initialize_database(test_settings)
+    _apply_marked_schema_drift(test_settings.database_path, kind)
+    before_bytes = test_settings.database_path.read_bytes()
+    before_schema = _schema_definitions(test_settings.database_path)
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert test_settings.database_path.read_bytes() == before_bytes
+    assert _schema_definitions(test_settings.database_path) == before_schema
+    with sqlite3.connect(test_settings.database_path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM app_settings").fetchone()[0] == 0
+        )
+
+
 @pytest.mark.parametrize("kind", ["unmarked", "alembic", "mismatched-marker"])
 def test_incompatible_database_fails_closed_without_mutation(
     test_settings: Settings,
