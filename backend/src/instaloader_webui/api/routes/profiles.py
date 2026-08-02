@@ -29,10 +29,7 @@ from instaloader_webui.services.library_service import (
     ProfileNotFoundError,
     ProfileSyncStoppedError,
 )
-from instaloader_webui.services.profile_avatars import (
-    PROFILE_AVATAR_MEDIA_TYPE,
-    profile_avatar_path,
-)
+from instaloader_webui.services.profile_avatars import stored_profile_avatar
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
@@ -111,15 +108,15 @@ def get_profile_avatar(
         raise _profile_not_found(profile_id)
 
     try:
-        path = profile_avatar_path(settings.media_root, profile_id)
+        avatar = stored_profile_avatar(settings.media_root, profile_id)
     except ValueError as error:
         raise _profile_avatar_not_found(profile_id) from error
-    if not path.is_file():
+    if avatar is None:
         raise _profile_avatar_not_found(profile_id)
 
     return FileResponse(
-        path=path,
-        media_type=PROFILE_AVATAR_MEDIA_TYPE,
+        path=avatar.path,
+        media_type=avatar.media_type,
         headers={"Cache-Control": "private, no-cache"},
     )
 

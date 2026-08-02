@@ -127,6 +127,53 @@ def _claimed_single_media(
     return claimed
 
 
+def _claimed_profile_deletion(
+    library: LibraryRepository,
+    jobs: JobRepository,
+) -> tuple[JobSnapshot, str]:
+    profile = library.upsert_profile_stub(
+        username="mihi_727",
+        tracked=True,
+        now=NOW,
+    )
+    queued = jobs.enqueue(
+        job_type="delete_profile",
+        payload={"profile_id": profile.id},
+        status_text="Queued profile deletion.",
+        now=NOW,
+    )
+    claimed = jobs.claim_next(NOW + timedelta(seconds=1))
+    assert claimed is not None
+    assert claimed.id == queued.id
+    return claimed, profile.id
+
+
+def test_profile_deletion_removes_both_avatar_formats_as_one_progress_item(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+) -> None:
+    job, profile_id = _claimed_profile_deletion(library, jobs)
+    avatar_root = test_settings.media_root / "profile-avatars"
+    avatar_root.mkdir(parents=True)
+    jpeg = avatar_root / f"{profile_id}.jpg"
+    webp = avatar_root / f"{profile_id}.webp"
+    jpeg.write_bytes(b"\xff\xd8\xff\xe0avatar-image")
+    webp.write_bytes(b"RIFF\x0c\x00\x00\x00WEBPVP8 \x00\x00\x00\x00")
+
+    runner.run(job)
+
+    completed = jobs.get(job.id)
+    assert completed is not None
+    assert completed.state == "succeeded"
+    assert completed.progress_current == 1
+    assert completed.progress_total == 1
+    assert not jpeg.exists()
+    assert not webp.exists()
+    assert library.get_profile(profile_id) is None
+
+
 def _claimed_followee_discovery(
     followee_imports: FolloweeImportRepository,
     jobs: JobRepository,

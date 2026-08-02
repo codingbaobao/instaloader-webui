@@ -58,6 +58,8 @@ from instaloader_webui.services.profile_avatars import profile_avatar_path
 
 PROFILE = object()
 NOW = datetime(2026, 7, 31, 8, 0, tzinfo=UTC)
+JPEG_AVATAR = b"\xff\xd8\xff\xe0avatar-image"
+WEBP_AVATAR = b"RIFF\x0c\x00\x00\x00WEBPVP8 \x00\x00\x00\x00"
 
 
 def candidate(kind: MediaKind, value: str) -> MediaCandidate:
@@ -441,7 +443,7 @@ class AvatarResponse:
         self,
         *,
         content_type: str = "image/jpeg",
-        content: bytes = b"avatar-image",
+        content: bytes = JPEG_AVATAR,
         status_code: int = 200,
         url: str = "https://cdn.example/avatar-standard.jpg",
         history: tuple[object, ...] = (),
@@ -827,6 +829,13 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     upstream = AdapterProfile(events=events)
     resolver = RecordingProfileLookupResolver(upstream, events=events)
     response = AvatarResponse()
+    stale_webp = (
+        test_settings.media_root
+        / "profile-avatars"
+        / f"{tracked_profile.id}.webp"
+    )
+    stale_webp.parent.mkdir(parents=True)
+    stale_webp.write_bytes(WEBP_AVATAR)
     progress: list[tuple[Any, ...]] = []
     loader = AdapterLoader(events=events, response=response)
     adapter = make_profile_adapter(
@@ -868,12 +877,59 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert profile_avatar_path(
         test_settings.media_root,
         tracked_profile.id,
-    ).read_bytes() == b"avatar-image"
+    ).read_bytes() == JPEG_AVATAR
+    assert stale_webp.exists() is False
     refreshed = profile_repository.get_profile(tracked_profile.id)
     assert refreshed is not None
     assert refreshed.instagram_user_id == str(upstream.userid)
     assert refreshed.last_sync_attempted_at is not None
     assert refreshed.last_sync_succeeded_at is not None
+    assert response.closed is True
+    assert "instagram_profile_avatar_invalid_response" not in caplog.text
+
+
+def test_profile_sync_preserves_webp_avatar_and_removes_stale_jpeg(
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: restricting avatar persistence to JPEG rejects a valid CDN
+    # WebP response or leaves the previous JPEG shadowing the refreshed image.
+    events: list[str] = []
+    upstream = AdapterProfile(events=events)
+    resolver = RecordingProfileLookupResolver(upstream, events=events)
+    response = AvatarResponse(
+        content_type="image/webp",
+        content=WEBP_AVATAR,
+    )
+    stale_jpeg = profile_avatar_path(
+        test_settings.media_root,
+        tracked_profile.id,
+    )
+    stale_jpeg.parent.mkdir(parents=True)
+    stale_jpeg.write_bytes(JPEG_AVATAR)
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
+    )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="instaloader_webui.instagram.public_adapter",
+    ):
+        result = adapter.sync_profile(tracked_profile.id, "job-webp-avatar")
+
+    webp_path = (
+        test_settings.media_root
+        / "profile-avatars"
+        / f"{tracked_profile.id}.webp"
+    )
+    assert result.processed == 0
+    assert webp_path.read_bytes() == WEBP_AVATAR
+    assert stale_jpeg.exists() is False
     assert response.closed is True
     assert "instagram_profile_avatar_invalid_response" not in caplog.text
 
@@ -971,7 +1027,7 @@ def test_profile_sync_real_fallback_continues_through_profile_flow(
     assert profile_avatar_path(
         test_settings.media_root,
         tracked_profile.id,
-    ).read_bytes() == b"avatar-image"
+    ).read_bytes() == JPEG_AVATAR
     lookup_records = [
         record for record in caplog.records if record.name == logger_name
     ]
@@ -1072,6 +1128,91 @@ def test_profile_sync_avatar_failure_is_fatal_before_story_enumeration(
     assert failed is not None
     assert failed.last_sync_attempted_at is not None
     assert failed.last_sync_succeeded_at is None
+
+
+def test_profile_sync_rejects_avatar_when_media_type_and_magic_disagree(
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: trusting only the response header can persist JPEG bytes as
+    # WebP and make the avatar endpoint return a false Content-Type.
+    response = AvatarResponse(
+        content_type="image/webp",
+        content=JPEG_AVATAR,
+    )
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
+    )
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
+    )
+
+    with (
+        caplog.at_level(
+            logging.WARNING,
+            logger="instaloader_webui.instagram.public_adapter",
+        ),
+        pytest.raises(
+            PublicInstagramAdapterError,
+            match="invalid profile avatar image",
+        ),
+    ):
+        adapter.sync_profile(tracked_profile.id, "job-mismatched-avatar")
+
+    assert "normalized_content_type='image/webp'" in caplog.text
+    assert "prefix_kind='jpeg'" in caplog.text
+    assert response.closed is True
+    assert (
+        test_settings.media_root
+        / "profile-avatars"
+        / f"{tracked_profile.id}.webp"
+    ).exists() is False
+
+
+def test_profile_sync_supported_avatar_read_failure_preserves_error(
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: a body read failure after MIME acceptance must not leak an
+    # OSError or bypass the bounded invalid-avatar diagnostic.
+    response = AvatarResponse(
+        content_type="image/webp",
+        raw=UnreadableAvatarBody(),
+    )
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
+    )
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
+    )
+
+    with (
+        caplog.at_level(
+            logging.WARNING,
+            logger="instaloader_webui.instagram.public_adapter",
+        ),
+        pytest.raises(PublicInstagramAdapterError) as raised,
+    ):
+        adapter.sync_profile(tracked_profile.id, "job-unreadable-webp")
+
+    assert str(raised.value) == "Instagram returned an invalid profile avatar image."
+    assert "prefix_kind='unreadable'" in caplog.text
+    assert "body-read-secret" not in caplog.text
+    assert response.closed is True
 
 
 def test_invalid_profile_avatar_logs_bounded_response_diagnostics(

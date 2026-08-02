@@ -1087,6 +1087,44 @@ def test_direct_media_avatar_failure_remains_nonfatal(
     assert item.download_calls == 1
 
 
+def test_owner_upsert_reuses_existing_webp_avatar_without_network_refresh(
+    repository: LibraryRepository,
+    stored_profile: ProfileSnapshot,
+    test_settings: Settings,
+) -> None:
+    avatar = (
+        test_settings.media_root
+        / "profile-avatars"
+        / f"{stored_profile.id}.webp"
+    )
+    avatar.parent.mkdir(parents=True)
+    avatar.write_bytes(b"RIFF\x0c\x00\x00\x00WEBPVP8 \x00\x00\x00\x00")
+    loader = FakeLoader(logged_in=False)
+    loader.context.get_raw = lambda _url: (  # type: ignore[attr-defined]
+        _ for _ in ()
+    ).throw(AssertionError("existing WebP avatar must skip network refresh"))
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=False,
+    )
+    staging_directory = test_settings.jobs_root / "owner-upsert-webp"
+    staging_directory.mkdir(parents=True)
+
+    owner = adapter._upsert_owner(
+        loader=cast(Any, loader),
+        profile=cast(
+            Any,
+            FakeProfile(profile_pic_url="https://cdn.example/avatar"),
+        ),
+        staging_directory=staging_directory,
+    )
+
+    assert owner.id == stored_profile.id
+    assert avatar.is_file()
+
+
 def test_profile_story_candidates_are_lightweight_and_resolve_lazily(
     repository: LibraryRepository,
     stored_profile: ProfileSnapshot,
