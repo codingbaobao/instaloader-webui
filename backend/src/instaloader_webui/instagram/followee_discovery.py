@@ -12,6 +12,7 @@ from instaloader_webui.instagram.errors import (
     TRANSIENT,
     classify_instaloader_error,
 )
+from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.session_store import InstagramSessionStoreError
 from instaloader_webui.instagram.worker_runtime import (
     InstagramSessionRevisionError,
@@ -33,10 +34,12 @@ class FolloweeDiscoveryAdapter:
         *,
         jobs_root: Path,
         loader_runtime: WorkerInstaloaderRuntime,
+        profile_lookup_resolver: ProfileLookupResolver,
         progress: ProgressCallback,
     ) -> None:
         self._jobs_root = jobs_root.resolve()
         self._loader_runtime = loader_runtime
+        self._profile_lookup_resolver = profile_lookup_resolver
         self._progress = progress
 
     def discover(
@@ -67,7 +70,7 @@ class FolloweeDiscoveryAdapter:
                 or logged_in_username.casefold() != source_username.casefold()
             ):
                 raise FolloweeDiscoveryError(SESSION_REJECTED)
-            source_profile = Profile.from_username(
+            source_profile = self._profile_lookup_resolver.resolve(
                 loader.context,
                 logged_in_username,
             )

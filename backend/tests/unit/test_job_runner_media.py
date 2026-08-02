@@ -60,6 +60,11 @@ def jobs(session_factory) -> JobRepository:
 
 
 @pytest.fixture
+def followee_imports(session_factory) -> FolloweeImportRepository:
+    return FolloweeImportRepository(session_factory)
+
+
+@pytest.fixture
 def profile_lookup_resolver() -> ProfileLookupResolver:
     return cast(ProfileLookupResolver, object())
 
@@ -69,6 +74,7 @@ def runner(
     test_settings,
     library: LibraryRepository,
     jobs: JobRepository,
+    followee_imports: FolloweeImportRepository,
     session_factory,
     profile_lookup_resolver: ProfileLookupResolver,
 ) -> JobRunner:
@@ -78,7 +84,7 @@ def runner(
         jobs_root=test_settings.jobs_root,
         library=library,
         jobs=jobs,
-        followee_imports=FolloweeImportRepository(session_factory),
+        followee_imports=followee_imports,
         loader_runtime=cast(WorkerInstaloaderRuntime, object()),
         profile_lookup_resolver=profile_lookup_resolver,
     )
@@ -119,6 +125,21 @@ def _claimed_single_media(
     assert claimed is not None
     assert claimed.id == queued.id
     return claimed
+
+
+def _claimed_followee_discovery(
+    followee_imports: FolloweeImportRepository,
+    jobs: JobRepository,
+) -> tuple[JobSnapshot, str]:
+    batch = followee_imports.create_or_get_active(
+        source_username="source.account",
+        session_imported_at=NOW,
+        now=NOW,
+    )
+    claimed = jobs.claim_next(NOW + timedelta(seconds=1))
+    assert claimed is not None
+    assert claimed.id == batch.job_id
+    return claimed, batch.id
 
 
 def _raw_http_error(status_code: int) -> HTTPError:
@@ -272,6 +293,46 @@ def test_job_runner_passes_same_resolver_to_every_created_adapter(
 
     assert len(injected) == 2
     assert all(resolver is profile_lookup_resolver for resolver in injected)
+
+
+def test_job_runner_passes_shared_resolver_to_followee_discovery(
+    runner: JobRunner,
+    jobs: JobRepository,
+    followee_imports: FolloweeImportRepository,
+    profile_lookup_resolver: ProfileLookupResolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: omitting the shared resolver makes followee imports bypass
+    # the application-owned Profile lookup gateway.
+    class GatewayRequiredAdapter:
+        def __init__(
+            self,
+            *,
+            profile_lookup_resolver: ProfileLookupResolver,
+            **_kwargs: object,
+        ) -> None:
+            if profile_lookup_resolver is not profile_lookup_resolver_fixture:
+                raise AssertionError("followee discovery received another resolver")
+
+        def discover(self, **_kwargs: object) -> tuple[object, ...]:
+            return ()
+
+    profile_lookup_resolver_fixture = profile_lookup_resolver
+    monkeypatch.setattr(
+        job_runner_module,
+        "FolloweeDiscoveryAdapter",
+        GatewayRequiredAdapter,
+    )
+    job, batch_id = _claimed_followee_discovery(followee_imports, jobs)
+
+    runner.run(job)
+
+    completed_job = jobs.get(job.id)
+    completed_batch = followee_imports.get(batch_id)
+    assert completed_job is not None
+    assert completed_job.state == "succeeded"
+    assert completed_batch is not None
+    assert completed_batch.state == "ready"
 
 
 def test_profile_sync_with_item_issues_completes_with_warnings(

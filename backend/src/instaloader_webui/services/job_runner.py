@@ -155,6 +155,7 @@ class JobRunner:
         adapter = FolloweeDiscoveryAdapter(
             jobs_root=self._jobs_root,
             loader_runtime=self._loader_runtime,
+            profile_lookup_resolver=self._profile_lookup_resolver,
             progress=lambda current, total, status_text: self._progress(
                 job,
                 current,
