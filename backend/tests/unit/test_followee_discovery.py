@@ -3,10 +3,14 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from instaloader import Profile
+from instaloader import Profile, TooManyRequestsException
 
 from instaloader_webui.db.followee_import_repositories import DiscoveredFollowee
-from instaloader_webui.instagram.followee_discovery import FolloweeDiscoveryAdapter
+from instaloader_webui.instagram.errors import RATE_LIMITED
+from instaloader_webui.instagram.followee_discovery import (
+    FolloweeDiscoveryAdapter,
+    FolloweeDiscoveryError,
+)
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 
@@ -92,3 +96,57 @@ def test_followee_discovery_resolves_source_profile_through_shared_gateway(
             is_private=False,
         ),
     )
+
+
+def test_followee_pagination_rate_limit_is_terminal_without_second_lookup(
+    tmp_path,
+) -> None:
+    # Break caught: retrying Profile resolution after pagination starts can
+    # duplicate requests and turn a terminal upstream rate limit into fallback.
+    context = object()
+
+    class Loader:
+        def __init__(self) -> None:
+            self.context = context
+
+        def test_login(self) -> str:
+            return "source.account"
+
+    class Runtime:
+        def acquire_authenticated(self, *_args, **_kwargs) -> Loader:
+            return Loader()
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.used = False
+
+        def resolve(self, supplied_context: object, username: str) -> object:
+            if self.used:
+                raise AssertionError("pagination failure triggered another lookup")
+            if supplied_context is not context or username != "source.account":
+                raise AssertionError(
+                    "followee discovery supplied the wrong lookup input"
+                )
+            self.used = True
+            return SimpleNamespace(
+                followees=1,
+                get_followees=lambda: (_ for _ in ()).throw(
+                    TooManyRequestsException("private pagination detail")
+                ),
+            )
+
+    adapter = FolloweeDiscoveryAdapter(
+        jobs_root=tmp_path,
+        loader_runtime=cast(WorkerInstaloaderRuntime, cast(object, Runtime())),
+        profile_lookup_resolver=cast(
+            ProfileLookupResolver,
+            cast(object, Resolver()),
+        ),
+        progress=lambda *_args: None,
+    )
+
+    with pytest.raises(FolloweeDiscoveryError, match=RATE_LIMITED):
+        adapter.discover(
+            source_username="source.account",
+            session_imported_at=NOW,
+        )
