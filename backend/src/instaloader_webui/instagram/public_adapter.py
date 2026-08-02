@@ -64,7 +64,10 @@ from instaloader_webui.services.instagram_inputs import (
 )
 from instaloader_webui.services.profile_avatars import (
     PROFILE_AVATAR_MEDIA_TYPE,
+    PROFILE_AVATAR_WEBP_MEDIA_TYPE,
+    profile_avatar_candidates,
     profile_avatar_path,
+    stored_profile_avatar,
 )
 
 MediaKind = Literal["post", "reel"]
@@ -133,16 +136,21 @@ def _avatar_prefix_kind(prefix: bytes) -> str:
     return "other"
 
 
-def _avatar_prefix_diagnostic(response: object) -> tuple[str, str]:
-    try:
-        raw = getattr(response, "raw", None)
-        if raw is None:
+def _avatar_prefix_diagnostic(
+    response: object,
+    prefix: bytes | None = None,
+) -> tuple[str, str]:
+    value = prefix
+    if value is None:
+        try:
+            raw = getattr(response, "raw", None)
+            if raw is None:
+                return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
+            value = raw.read(_AVATAR_DIAGNOSTIC_PREFIX_BYTES)
+            if not isinstance(value, bytes):
+                return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
+        except Exception:  # noqa: BLE001 - body diagnostics are best-effort
             return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
-        value = raw.read(_AVATAR_DIAGNOSTIC_PREFIX_BYTES)
-        if not isinstance(value, bytes):
-            return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
-    except Exception:  # noqa: BLE001 - body diagnostics are best-effort
-        return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
 
     prefix_kind = _avatar_prefix_kind(value)
     lowered_prefix = value.lower()
@@ -160,6 +168,7 @@ def _log_invalid_profile_avatar_response(
     avatar_url: object,
     profile_id: object,
     normalized_content_type: object,
+    prefix: bytes | None = None,
 ) -> None:
     """Emit bounded, credential-safe evidence for a rejected avatar response."""
     try:
@@ -187,7 +196,7 @@ def _log_invalid_profile_avatar_response(
             redirect_count: object = len(getattr(response, "history", ()))
         except Exception:  # noqa: BLE001 - response history is best-effort
             redirect_count = _AVATAR_DIAGNOSTIC_UNAVAILABLE
-        prefix_hex, prefix_kind = _avatar_prefix_diagnostic(response)
+        prefix_hex, prefix_kind = _avatar_prefix_diagnostic(response, prefix)
 
         _LOGGER.warning(
             "instagram_profile_avatar_invalid_response "
@@ -945,7 +954,11 @@ class PublicInstaloaderAdapter:
                 .strip()
                 .casefold()
             )
-            if content_type != PROFILE_AVATAR_MEDIA_TYPE:
+            expected_prefix_kind = {
+                PROFILE_AVATAR_MEDIA_TYPE: "jpeg",
+                PROFILE_AVATAR_WEBP_MEDIA_TYPE: "webp",
+            }.get(content_type)
+            if expected_prefix_kind is None:
                 _log_invalid_profile_avatar_response(
                     response=response,
                     avatar_url=avatar_url,
@@ -956,19 +969,53 @@ class PublicInstaloaderAdapter:
                     "Instagram returned an invalid profile avatar image."
                 )
 
-            staged_path = self._contained_path(staging_directory, "avatar.jpg")
+            try:
+                prefix = response.raw.read(_AVATAR_DIAGNOSTIC_PREFIX_BYTES)
+            except Exception:  # noqa: BLE001 - preserve the stable adapter error
+                prefix = None
+            if (
+                not isinstance(prefix, bytes)
+                or _avatar_prefix_kind(prefix) != expected_prefix_kind
+            ):
+                _log_invalid_profile_avatar_response(
+                    response=response,
+                    avatar_url=avatar_url,
+                    profile_id=profile_id,
+                    normalized_content_type=content_type,
+                    prefix=prefix,
+                )
+                raise PublicInstagramAdapterError(
+                    "Instagram returned an invalid profile avatar image."
+                )
+
+            final_path = profile_avatar_path(
+                self._media_root,
+                profile_id,
+                content_type,
+            )
+            staged_path = self._contained_path(
+                staging_directory,
+                f"avatar{final_path.suffix}",
+            )
             partial_path = self._contained_path(
-                staging_directory, ".avatar.jpg.partial"
+                staging_directory,
+                f".avatar{final_path.suffix}.partial",
             )
             with partial_path.open("xb") as avatar_file:
+                avatar_file.write(prefix)
                 shutil.copyfileobj(response.raw, avatar_file)
                 avatar_file.flush()
                 os.fsync(avatar_file.fileno())
             os.replace(partial_path, staged_path)
 
-            final_path = profile_avatar_path(self._media_root, profile_id)
             final_path.parent.mkdir(parents=True, exist_ok=True)
             os.replace(staged_path, final_path)
+            for candidate in profile_avatar_candidates(
+                self._media_root,
+                profile_id,
+            ):
+                if candidate.path != final_path:
+                    candidate.path.unlink(missing_ok=True)
         finally:
             response.close()
 
@@ -1099,7 +1146,7 @@ class PublicInstaloaderAdapter:
             profile_pic_url=data.profile_pic_url,
             now=datetime.now(UTC),
         )
-        if not profile_avatar_path(self._media_root, owner.id).is_file():
+        if stored_profile_avatar(self._media_root, owner.id) is None:
             try:
                 self._refresh_profile_avatar(
                     loader=loader,
