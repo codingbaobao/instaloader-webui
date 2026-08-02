@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from inspect import signature
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 from instaloader import (
     BadResponseException,
@@ -68,6 +71,159 @@ MediaKind = Literal["post", "reel"]
 DirectMediaInput = PostInput | ReelInput | StoryInput
 ProgressCallback = Callable[..., None]
 _MISSING_STORY_METADATA = "Fetching StoryItem metadata failed."
+_LOGGER = logging.getLogger(__name__)
+_AVATAR_DIAGNOSTIC_PREFIX_BYTES = 64
+_MAX_AVATAR_DIAGNOSTIC_VALUE_LENGTH = 160
+_AVATAR_DIAGNOSTIC_UNAVAILABLE = "[unavailable]"
+_AVATAR_DIAGNOSTIC_SENSITIVE_MARKERS = (
+    "authorization",
+    "cookie",
+    "csrftoken",
+    "igsh",
+    "sessionid",
+    "token",
+)
+
+
+def _safe_avatar_diagnostic_value(value: object) -> str:
+    try:
+        text = str(value)
+    except Exception:  # noqa: BLE001 - diagnostics cannot mask the real error
+        return _AVATAR_DIAGNOSTIC_UNAVAILABLE
+    if any(
+        marker in text.casefold() for marker in _AVATAR_DIAGNOSTIC_SENSITIVE_MARKERS
+    ):
+        return "[redacted]"
+    bounded = " ".join(text.split())
+    if not bounded:
+        return "[empty]"
+    if len(bounded) <= _MAX_AVATAR_DIAGNOSTIC_VALUE_LENGTH:
+        return bounded
+    return f"{bounded[: _MAX_AVATAR_DIAGNOSTIC_VALUE_LENGTH - 1]}…"
+
+
+def _avatar_header(headers: object, name: str) -> str:
+    if not isinstance(headers, Mapping):
+        return _AVATAR_DIAGNOSTIC_UNAVAILABLE
+    try:
+        value = headers.get(name)
+        if value is None:
+            return _AVATAR_DIAGNOSTIC_UNAVAILABLE
+        return _safe_avatar_diagnostic_value(value)
+    except Exception:  # noqa: BLE001 - response mappings are untrusted
+        return _AVATAR_DIAGNOSTIC_UNAVAILABLE
+
+
+def _avatar_prefix_kind(prefix: bytes) -> str:
+    if not prefix:
+        return "empty"
+    if prefix.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if len(prefix) >= 12 and prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP":
+        return "webp"
+    if prefix.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    stripped = prefix.lstrip().lower()
+    if stripped.startswith((b"<!doctype html", b"<html", b"<?xml")):
+        return "html"
+    if stripped.startswith((b"{", b"[")):
+        return "json"
+    return "other"
+
+
+def _avatar_prefix_diagnostic(response: object) -> tuple[str, str]:
+    try:
+        raw = getattr(response, "raw", None)
+        if raw is None:
+            return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
+        value = raw.read(_AVATAR_DIAGNOSTIC_PREFIX_BYTES)
+        if not isinstance(value, bytes):
+            return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
+    except Exception:  # noqa: BLE001 - body diagnostics are best-effort
+        return _AVATAR_DIAGNOSTIC_UNAVAILABLE, "unreadable"
+
+    prefix_kind = _avatar_prefix_kind(value)
+    lowered_prefix = value.lower()
+    if any(
+        marker.encode() in lowered_prefix
+        for marker in _AVATAR_DIAGNOSTIC_SENSITIVE_MARKERS
+    ):
+        return "[redacted]", prefix_kind
+    return value.hex(), prefix_kind
+
+
+def _log_invalid_profile_avatar_response(
+    *,
+    response: object,
+    avatar_url: object,
+    profile_id: object,
+    normalized_content_type: object,
+) -> None:
+    """Emit bounded, credential-safe evidence for a rejected avatar response."""
+    try:
+        headers = getattr(response, "headers", {})
+        final_url = getattr(response, "url", None) or avatar_url
+        try:
+            final_url_text = str(final_url)
+            parsed_url = urlsplit(final_url_text)
+            final_host = _safe_avatar_diagnostic_value(
+                parsed_url.hostname or _AVATAR_DIAGNOSTIC_UNAVAILABLE
+            )
+            path_suffix = _safe_avatar_diagnostic_value(
+                PurePosixPath(parsed_url.path).suffix
+                or _AVATAR_DIAGNOSTIC_UNAVAILABLE
+            )
+            url_sha256 = hashlib.sha256(
+                final_url_text.encode("utf-8", errors="surrogatepass")
+            ).hexdigest()
+        except Exception:  # noqa: BLE001 - upstream URL objects are untrusted
+            final_host = _AVATAR_DIAGNOSTIC_UNAVAILABLE
+            path_suffix = _AVATAR_DIAGNOSTIC_UNAVAILABLE
+            url_sha256 = _AVATAR_DIAGNOSTIC_UNAVAILABLE
+
+        try:
+            redirect_count: object = len(getattr(response, "history", ()))
+        except Exception:  # noqa: BLE001 - response history is best-effort
+            redirect_count = _AVATAR_DIAGNOSTIC_UNAVAILABLE
+        prefix_hex, prefix_kind = _avatar_prefix_diagnostic(response)
+
+        _LOGGER.warning(
+            "instagram_profile_avatar_invalid_response "
+            "profile_id=%r status=%s raw_content_type=%r "
+            "normalized_content_type=%r content_length=%r "
+            "content_encoding=%r transfer_encoding=%r final_host=%r "
+            "path_suffix=%r redirect_count=%s url_sha256=%r "
+            "prefix_hex=%r prefix_kind=%r",
+            _safe_avatar_diagnostic_value(profile_id),
+            _safe_avatar_diagnostic_value(
+                getattr(response, "status_code", _AVATAR_DIAGNOSTIC_UNAVAILABLE)
+            ),
+            _avatar_header(headers, "Content-Type"),
+            _safe_avatar_diagnostic_value(normalized_content_type),
+            _avatar_header(headers, "Content-Length"),
+            _avatar_header(headers, "Content-Encoding"),
+            _avatar_header(headers, "Transfer-Encoding"),
+            final_host,
+            path_suffix,
+            redirect_count,
+            url_sha256,
+            prefix_hex,
+            prefix_kind,
+        )
+    except Exception:  # noqa: BLE001 - preserve the stable adapter error
+        # Keep even malformed responses observable without exposing the
+        # exception, which can itself contain upstream credentials or content.
+        try:
+            _LOGGER.warning(
+                "instagram_profile_avatar_invalid_response "
+                "profile_id=%r diagnostics=%r",
+                _safe_avatar_diagnostic_value(profile_id),
+                _AVATAR_DIAGNOSTIC_UNAVAILABLE,
+            )
+        except Exception:  # noqa: BLE001 - logging must not mask the real error
+            return
 
 
 class PublicInstagramAdapterError(RuntimeError):
@@ -790,6 +946,12 @@ class PublicInstaloaderAdapter:
                 .casefold()
             )
             if content_type != PROFILE_AVATAR_MEDIA_TYPE:
+                _log_invalid_profile_avatar_response(
+                    response=response,
+                    avatar_url=avatar_url,
+                    profile_id=profile_id,
+                    normalized_content_type=content_type,
+                )
                 raise PublicInstagramAdapterError(
                     "Instagram returned an invalid profile avatar image."
                 )

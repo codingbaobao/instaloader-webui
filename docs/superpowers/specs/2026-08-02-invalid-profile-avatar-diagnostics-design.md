@@ -49,6 +49,8 @@ configuration:
 Header values will be represented safely and bounded before rendering. The
 event must never contain the complete URL, URL query, Cookie values, request
 headers, complete response headers, or the complete response body.
+If the bounded body prefix contains a credential marker such as `Cookie`,
+`sessionid`, or `token`, its hexadecimal value is replaced by `[redacted]`.
 
 ## Data Flow
 

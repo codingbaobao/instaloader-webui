@@ -43,6 +43,9 @@ from instaloader_webui.instagram.profile_sync import (
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
+    _avatar_prefix_diagnostic,
+    _avatar_prefix_kind,
+    _safe_avatar_diagnostic_value,
 )
 from instaloader_webui.instagram.safe_issues import (
     MediaItemFailure,
@@ -439,14 +442,64 @@ class AvatarResponse:
         *,
         content_type: str = "image/jpeg",
         content: bytes = b"avatar-image",
+        status_code: int = 200,
+        url: str = "https://cdn.example/avatar-standard.jpg",
+        history: tuple[object, ...] = (),
+        additional_headers: Mapping[str, str] | None = None,
+        raw: BytesIO | None = None,
     ) -> None:
         self.headers = {"Content-Type": content_type}
-        self.raw = BytesIO(content)
+        if additional_headers is not None:
+            self.headers.update(additional_headers)
+        self.status_code = status_code
+        self.url = url
+        self.history = history
+        self.raw = raw if raw is not None else BytesIO(content)
         self.closed = False
 
     def close(self) -> None:
         self.closed = True
         self.raw.close()
+
+
+class UnreadableAvatarBody(BytesIO):
+    def read(self, size: int = -1, /) -> bytes:
+        del size
+        raise OSError("Cookie: sessionid=body-read-secret")
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_kind"),
+    [
+        (b"", "empty"),
+        (b"\xff\xd8\xff\xe0", "jpeg"),
+        (b"\x89PNG\r\n\x1a\n", "png"),
+        (b"RIFF\x00\x00\x00\x00WEBP", "webp"),
+        (b"GIF87a", "gif"),
+        (b"GIF89a", "gif"),
+        (b" \n<!doctype html>", "html"),
+        (b'{"error":"rate limited"}', "json"),
+        (b"upstream response", "other"),
+    ],
+)
+def test_avatar_prefix_kind_identifies_bounded_response_evidence(
+    prefix: bytes,
+    expected_kind: str,
+) -> None:
+    assert _avatar_prefix_kind(prefix) == expected_kind
+
+
+def test_avatar_diagnostics_bound_text_and_redact_sensitive_body_prefix() -> None:
+    bounded = _safe_avatar_diagnostic_value("line one\n" + "x" * 200)
+    prefix_hex, prefix_kind = _avatar_prefix_diagnostic(
+        SimpleNamespace(raw=BytesIO(b"<html>Cookie: sessionid=secret"))
+    )
+
+    assert len(bounded) == 160
+    assert bounded.startswith("line one ")
+    assert bounded.endswith("…")
+    assert prefix_hex == "[redacted]"
+    assert prefix_kind == "html"
 
 
 class AdapterLoader:
@@ -763,6 +816,7 @@ def test_fetch_profile_classifies_raw_requests_http_failures_safely(
 
 
 def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
+    caplog: pytest.LogCaptureFixture,
     profile_repository: LibraryRepository,
     tracked_profile,
     test_settings: Settings,
@@ -783,7 +837,11 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
         progress=progress,
     )
 
-    result = adapter.sync_profile(tracked_profile.id, "job-avatar")
+    with caplog.at_level(
+        logging.WARNING,
+        logger="instaloader_webui.instagram.public_adapter",
+    ):
+        result = adapter.sync_profile(tracked_profile.id, "job-avatar")
 
     assert isinstance(result, ProfileSyncResult)
     assert result == ProfileSyncResult(
@@ -817,6 +875,7 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert refreshed.last_sync_attempted_at is not None
     assert refreshed.last_sync_succeeded_at is not None
     assert response.closed is True
+    assert "instagram_profile_avatar_invalid_response" not in caplog.text
 
 
 def test_profile_sync_real_fallback_continues_through_profile_flow(
@@ -1013,6 +1072,138 @@ def test_profile_sync_avatar_failure_is_fatal_before_story_enumeration(
     assert failed is not None
     assert failed.last_sync_attempted_at is not None
     assert failed.last_sync_succeeded_at is None
+
+
+def test_invalid_profile_avatar_logs_bounded_response_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: rejecting a non-JPEG response without bounded evidence
+    # makes an upstream HTML or rate-limit response impossible to diagnose.
+    avatar_url = (
+        "https://scontent-lax3-1.cdninstagram.com/profile/avatar.jpg"
+        "?token=signed-secret"
+    )
+    body = (
+        b"<!doctype html><html>temporary upstream page</html>"
+        + b"X" * 32
+        + b"body-secret-beyond-prefix"
+    )
+    response = AvatarResponse(
+        content_type="text/html; charset=utf-8",
+        content=body,
+        status_code=200,
+        url=avatar_url,
+        history=(object(), object()),
+        additional_headers={
+            "Content-Length": str(len(body)),
+            "Content-Encoding": "gzip Cookie=session-secret",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(profile_pic_url=avatar_url, events=events),
+        events=events,
+    )
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
+    )
+
+    with (
+        caplog.at_level(
+            logging.WARNING,
+            logger="instaloader_webui.instagram.public_adapter",
+        ),
+        pytest.raises(
+            PublicInstagramAdapterError,
+            match="invalid profile avatar image",
+        ),
+    ):
+        adapter.sync_profile(tracked_profile.id, "job-invalid-avatar")
+
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("instagram_profile_avatar_invalid_response")
+    ]
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert f"profile_id={tracked_profile.id!r}" in diagnostic
+    assert "status=200" in diagnostic
+    assert "raw_content_type='text/html; charset=utf-8'" in diagnostic
+    assert "normalized_content_type='text/html'" in diagnostic
+    assert f"content_length='{len(body)}'" in diagnostic
+    assert "content_encoding='[redacted]'" in diagnostic
+    assert "transfer_encoding='chunked'" in diagnostic
+    assert "final_host='scontent-lax3-1.cdninstagram.com'" in diagnostic
+    assert "path_suffix='.jpg'" in diagnostic
+    assert "redirect_count=2" in diagnostic
+    assert (
+        "url_sha256='afefb043b707665ae7412411eb39ef6d5e71fb9214ee12c8b813e90ce5333302'"
+    ) in diagnostic
+    assert (
+        "prefix_hex="
+        "'3c21646f63747970652068746d6c3e3c68746d6c3e74656d706f726172792075"
+        "7073747265616d20706167653c2f68746d6c3e58585858585858585858585858'"
+    ) in diagnostic
+    assert "prefix_kind='html'" in diagnostic
+    assert avatar_url not in diagnostic
+    assert "signed-secret" not in diagnostic
+    assert "session-secret" not in diagnostic
+    assert "body-secret-beyond-prefix" not in diagnostic
+    assert response.closed is True
+
+
+def test_invalid_profile_avatar_diagnostic_read_failure_preserves_error(
+    caplog: pytest.LogCaptureFixture,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: best-effort diagnostics must never replace the stable
+    # adapter error or prevent response cleanup when the body cannot be read.
+    response = AvatarResponse(
+        content_type="text/html",
+        raw=UnreadableAvatarBody(),
+    )
+    events: list[str] = []
+    resolver = RecordingProfileLookupResolver(
+        AdapterProfile(events=events),
+        events=events,
+    )
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=AdapterLoader(events=events, response=response),
+        profile_lookup_resolver=resolver,
+    )
+
+    with (
+        caplog.at_level(
+            logging.WARNING,
+            logger="instaloader_webui.instagram.public_adapter",
+        ),
+        pytest.raises(PublicInstagramAdapterError) as raised,
+    ):
+        adapter.sync_profile(tracked_profile.id, "job-unreadable-avatar")
+
+    assert str(raised.value) == "Instagram returned an invalid profile avatar image."
+    diagnostics = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("instagram_profile_avatar_invalid_response")
+    ]
+    assert len(diagnostics) == 1
+    assert "prefix_hex='[unavailable]'" in diagnostics[0]
+    assert "prefix_kind='unreadable'" in diagnostics[0]
+    assert "body-read-secret" not in diagnostics[0]
+    assert response.closed is True
 
 
 def test_profile_sync_classifies_resolver_failure_before_avatar_or_coordinator(
