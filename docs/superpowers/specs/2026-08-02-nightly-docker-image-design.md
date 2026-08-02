@@ -22,8 +22,8 @@ are used only by the publication job after all preflight checks pass.
 - Reject any run whose triggering ref is not exactly `refs/heads/main`.
 - Build the immutable `github.sha` captured when the run was triggered. Do not
   follow a moving branch after the run enters the queue.
-- Serialize workflow runs with one concurrency group and never cancel an
-  in-progress publication.
+- Serialize workflow runs with one `queue: max` concurrency group so schedule
+  and manual requests wait instead of replacing a pending publication.
 
 ## Preflight Rules
 

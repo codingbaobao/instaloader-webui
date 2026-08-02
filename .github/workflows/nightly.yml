@@ -12,6 +12,7 @@ permissions:
 concurrency:
   group: nightly-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   preflight:

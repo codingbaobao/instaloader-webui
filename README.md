@@ -235,7 +235,8 @@ The dedicated nightly workflow publishes the latest tested `main` snapshot as
 `z21012101/instaloader-webui:nightly`. It runs every day at 02:00
 Asia/Taipei and can also be started manually from the GitHub Actions page. Both
 paths require the exact source commit to have a successful `CI` push run on
-`main` before Docker Hub credentials are used.
+`main` before Docker Hub credentials are used. When starting it manually,
+select `main` in the **Run workflow** branch selector.
 
 Scheduled runs skip the build when the latest successful nightly already used
 the current commit. A manual run deliberately rebuilds the commit, which is

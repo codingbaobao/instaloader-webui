@@ -116,12 +116,19 @@ git commit -m "ci: add tested nightly eligibility checks"
 
 **Files:**
 - Create: `.github/workflows/nightly.yml`
+- Test: `tests/automation/test_nightly_workflow.py`
 
 **Interfaces:**
 - Consumes: preflight outputs `publish` and `source_sha`; repository variable `DOCKERHUB_USERNAME`; repository secret `DOCKERHUB_TOKEN`.
 - Produces: `${DOCKERHUB_USERNAME}/instaloader-webui:nightly` with OCI metadata, SBOM, and provenance.
 
-- [ ] **Step 1: Implement the dedicated workflow**
+- [ ] **Step 1: Write the workflow safety contract tests**
+
+Assert the approved triggers and permissions, `queue: max` serialization,
+exact-SHA preflight and checkout, immutable action SHAs, the two platforms, and
+the absence of stable or SemVer tags.
+
+- [ ] **Step 2: Implement the dedicated workflow**
 
 The workflow shape is:
 
@@ -143,7 +150,7 @@ Create a preflight job that exposes the script outputs, then a conditional
 publication job using the same pinned Docker actions and build settings as
 `release.yml`. Pass `GH_TOKEN: ${{ github.token }}` only to the preflight step.
 
-- [ ] **Step 2: Run preflight behavior tests**
+- [ ] **Step 3: Run automation tests**
 
 ```bash
 .venv/bin/python -m pytest --no-cov tests/automation -q
@@ -151,15 +158,18 @@ publication job using the same pinned Docker actions and build settings as
 
 Expected: all automation tests pass.
 
-- [ ] **Step 3: Lint the workflow contract**
+- [ ] **Step 4: Lint the workflow contract**
 
 ```bash
-actionlint .github/workflows/nightly.yml
+actionlint \
+  -ignore 'unexpected key "queue" for "concurrency" section' \
+  .github/workflows/nightly.yml
 ```
 
-Expected: no diagnostics.
+Expected: no diagnostics. The narrow ignore is temporary because actionlint
+v1.7.12 predates GitHub's May 2026 `queue: max` release.
 
-- [ ] **Step 4: Verify immutable action pins and the single tag policy**
+- [ ] **Step 5: Verify immutable action pins and the single tag policy**
 
 ```bash
 if rg 'uses:' .github/workflows/nightly.yml | rg -v '@[0-9a-f]{40}( |$)'; then exit 1; fi
@@ -168,10 +178,10 @@ if rg 'type=(semver|raw),.*(latest|version)' .github/workflows/nightly.yml; then
 
 Expected: both checks exit successfully without output.
 
-- [ ] **Step 5: Commit the workflow**
+- [ ] **Step 6: Commit the workflow**
 
 ```bash
-git add .github/workflows/nightly.yml
+git add .github/workflows/nightly.yml tests/automation/test_nightly_workflow.py
 git commit -m "ci: publish nightly Docker image from main"
 ```
 
@@ -200,7 +210,9 @@ IW_IMAGE=z21012101/instaloader-webui:nightly
 npx -y -p node@22 node node_modules/vitest/vitest.mjs run
 npx -y -p node@22 node node_modules/eslint/bin/eslint.js .
 npx -y -p node@22 node node_modules/vite/bin/vite.js build
-actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/nightly.yml
+actionlint \
+  -ignore 'unexpected key "queue" for "concurrency" section' \
+  .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/nightly.yml
 git diff --check
 ```
 
