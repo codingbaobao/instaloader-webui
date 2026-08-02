@@ -229,6 +229,29 @@ release pull request and keeps it updated as more qualifying commits reach
 Release. Publishing the GitHub Release builds and pushes `linux/amd64` and
 `linux/arm64` images to Docker Hub.
 
+### Nightly image
+
+The dedicated nightly workflow publishes the latest tested `main` snapshot as
+`z21012101/instaloader-webui:nightly`. It runs every day at 02:00
+Asia/Taipei and can also be started manually from the GitHub Actions page. Both
+paths require the exact source commit to have a successful `CI` push run on
+`main` before Docker Hub credentials are used.
+
+Scheduled runs skip the build when the latest successful nightly already used
+the current commit. A manual run deliberately rebuilds the commit, which is
+useful after a transient registry or build-infrastructure problem. Each build
+publishes `linux/amd64` and `linux/arm64` with an SBOM, provenance, and OCI
+metadata containing the source revision.
+
+To deploy the development snapshot, set:
+
+```text
+IW_IMAGE=z21012101/instaloader-webui:nightly
+```
+
+`nightly` is a mutable testing tag and can change after any successful nightly
+run. Pin a stable SemVer image for production deployments.
+
 ### Repository configuration
 
 Create a public Docker Hub repository named
