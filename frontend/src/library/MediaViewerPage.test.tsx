@@ -1,7 +1,7 @@
 import { HttpResponse, http } from "msw";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
@@ -111,11 +111,17 @@ const carouselFixture = {
       position: 0,
     },
     {
-      ...reelFixture.assets[1],
-      id: "content-image-2",
+      ...reelFixture.assets[0],
+      id: "content-video-2",
       media_id: "post-1",
-      relative_path: "image-2.jpg",
-      role: "content",
+      relative_path: "video-2.mp4",
+      position: 1,
+    },
+    {
+      ...reelFixture.assets[1],
+      id: "poster-2",
+      media_id: "post-1",
+      relative_path: "video-2.jpg",
       position: 1,
     },
     {
@@ -153,6 +159,12 @@ function renderViewer(
 }
 
 describe("MediaViewerPage", () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLMediaElement.prototype, "pause")
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
   it("shows one Reel content video with its matching poster and no carousel", async () => {
     const { container } = renderViewer(reelFixture);
 
@@ -190,7 +202,8 @@ describe("MediaViewerPage", () => {
 
   it("uses arrow-only controls and stops at the carousel boundaries", async () => {
     const user = userEvent.setup();
-    renderViewer(carouselFixture);
+    const pause = vi.mocked(HTMLMediaElement.prototype.pause);
+    const { container } = renderViewer(carouselFixture);
 
     const carousel = await screen.findByRole("region", {
       name: "Post media carousel",
@@ -210,7 +223,16 @@ describe("MediaViewerPage", () => {
       fireEvent.scroll(carousel);
     }) as typeof carousel.scrollTo;
 
-    expect(within(carousel).getAllByRole("img")).toHaveLength(3);
+    expect(within(carousel).getAllByRole("group")).toHaveLength(3);
+    const video = container.querySelector("video");
+    expect(video).toHaveAttribute(
+      "src",
+      "/api/media/post-1/assets/content-video-2",
+    );
+    expect(video).toHaveAttribute(
+      "poster",
+      "/api/media/post-1/assets/poster-2",
+    );
     expect(
       screen.queryByRole("button", { name: "Previous image or video" }),
     ).not.toBeInTheDocument();
@@ -234,6 +256,7 @@ describe("MediaViewerPage", () => {
     expect(
       screen.queryByRole("button", { name: "Next image or video" }),
     ).not.toBeInTheDocument();
+    expect(pause).toHaveBeenCalledTimes(1);
   });
 
   it("synchronizes the controls after native horizontal scrolling", async () => {

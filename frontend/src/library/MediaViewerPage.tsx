@@ -94,14 +94,13 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
   };
 
   const scrollToAsset = (index: number) => {
-    const boundedIndex = selectAsset(index);
+    const boundedIndex = Math.max(0, Math.min(index, assets.length - 1));
     const carousel = carouselRef.current;
     if (carousel === null) {
       return;
     }
     carousel.scrollTo({
       left: boundedIndex * carousel.clientWidth,
-      behavior: "smooth",
     });
   };
 
