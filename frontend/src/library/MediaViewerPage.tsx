@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ApiError } from "../app/api";
@@ -21,6 +21,7 @@ type MediaViewerPageProps = Readonly<{ session: SessionData }>;
 export function MediaViewerPage({ session }: MediaViewerPageProps) {
   const { mediaId = "" } = useParams();
   const navigate = useNavigate();
+  const carouselRef = useRef<HTMLDivElement>(null);
   const [assetSelection, setAssetSelection] = useState({
     mediaId: "",
     index: 0,
@@ -70,55 +71,134 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
   const assets = contentAssets(media);
   const assetIndex =
     assetSelection.mediaId === media.id ? assetSelection.index : 0;
-  const asset = assets[assetIndex] ?? null;
-  const poster = asset === null ? null : posterFor(media, asset.position);
   const hasMultipleAssets = assets.length > 1;
-  const previousAsset = () =>
+
+  const selectAsset = (index: number) => {
+    const boundedIndex = Math.max(0, Math.min(index, assets.length - 1));
+    if (boundedIndex === assetIndex) {
+      return boundedIndex;
+    }
+    const slides = carouselRef.current?.querySelectorAll<HTMLElement>(
+      ".viewer-carousel-slide",
+    );
+    slides?.forEach((slide, slideIndex) => {
+      if (slideIndex !== boundedIndex) {
+        slide.querySelector("video")?.pause();
+      }
+    });
     setAssetSelection({
       mediaId: media.id,
-      index: (assetIndex - 1 + assets.length) % assets.length,
+      index: boundedIndex,
     });
-  const nextAsset = () =>
-    setAssetSelection({
-      mediaId: media.id,
-      index: (assetIndex + 1) % assets.length,
+    return boundedIndex;
+  };
+
+  const scrollToAsset = (index: number) => {
+    const boundedIndex = Math.max(0, Math.min(index, assets.length - 1));
+    const carousel = carouselRef.current;
+    if (carousel === null) {
+      return;
+    }
+    carousel.scrollTo({
+      left: boundedIndex * carousel.clientWidth,
     });
+  };
+
+  const synchronizeCarousel = () => {
+    const carousel = carouselRef.current;
+    if (carousel === null || carousel.clientWidth === 0) {
+      return;
+    }
+    selectAsset(Math.round(carousel.scrollLeft / carousel.clientWidth));
+  };
 
   return (
     <section className="library-page viewer-page" aria-labelledby="viewer-title">
       <Link className="back-link" to={`/profiles/${encodeURIComponent(media.owner_profile_id)}`}>Back to profile</Link>
       <div className="media-viewer-layout">
         <div className="viewer-asset-stage">
-          {asset === null ? (
+          {assets.length === 0 ? (
             <div className="viewer-empty-asset">This item is still preparing its downloaded asset.</div>
-          ) : asset.kind === "video" ? (
-            <video
-              className="viewer-media"
-              controls
-              playsInline
-              poster={
-                poster === null
-                  ? undefined
-                  : mediaAssetUrl(media.id, poster.id)
-              }
-              src={mediaAssetUrl(media.id, asset.id)}
-            />
           ) : (
-            <img
-              alt={
-                media.accessibility_caption
-                || `Instagram ${mediaLabel(media)} ${mediaDisplayIdentifier(media)}`
-              }
-              className="viewer-media"
-              src={mediaAssetUrl(media.id, asset.id)}
-            />
+            <div
+              aria-label={`${mediaLabel(media)} media carousel`}
+              aria-roledescription="carousel"
+              className="viewer-carousel-track"
+              key={media.id}
+              ref={carouselRef}
+              role="region"
+              onScroll={synchronizeCarousel}
+            >
+              {assets.map((asset, index) => {
+                const poster = posterFor(media, asset.position);
+                const assetLabel = hasMultipleAssets
+                  ? `${index + 1} of ${assets.length}`
+                  : "1 of 1";
+                return (
+                  <div
+                    aria-label={assetLabel}
+                    aria-roledescription="slide"
+                    className="viewer-carousel-slide"
+                    key={asset.id}
+                    role="group"
+                  >
+                    {asset.kind === "video" ? (
+                      <video
+                        className="viewer-media"
+                        controls
+                        playsInline
+                        poster={
+                          poster === null
+                            ? undefined
+                            : mediaAssetUrl(media.id, poster.id)
+                        }
+                        src={mediaAssetUrl(media.id, asset.id)}
+                      />
+                    ) : (
+                      <img
+                        alt={
+                          media.accessibility_caption
+                          || `Instagram ${mediaLabel(media)} ${mediaDisplayIdentifier(media)}`
+                        }
+                        className="viewer-media"
+                        src={mediaAssetUrl(media.id, asset.id)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
           {hasMultipleAssets ? (
-            <div className="viewer-carousel-controls" aria-label="Carousel controls">
-              <button aria-label="Previous image or video" className="carousel-button" type="button" onClick={previousAsset}>Previous</button>
-              <span>{assetIndex + 1} / {assets.length}</span>
-              <button aria-label="Next image or video" className="carousel-button" type="button" onClick={nextAsset}>Next</button>
-            </div>
+            <>
+              {assetIndex > 0 ? (
+                <button
+                  aria-label="Previous image or video"
+                  className="viewer-carousel-button viewer-carousel-button-previous"
+                  type="button"
+                  onClick={() => scrollToAsset(assetIndex - 1)}
+                >
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                    <path d="m15 18-6-6 6-6" />
+                  </svg>
+                </button>
+              ) : null}
+              <span aria-live="polite" className="viewer-carousel-counter">
+                {assetIndex + 1} / {assets.length}
+              </span>
+              {assetIndex < assets.length - 1 ? (
+                <button
+                  aria-label="Next image or video"
+                  className="viewer-carousel-button viewer-carousel-button-next"
+                  type="button"
+                  onClick={() => scrollToAsset(assetIndex + 1)}
+                >
+                  <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24">
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                </button>
+              ) : null}
+            </>
           ) : null}
         </div>
         <article className="viewer-details">
