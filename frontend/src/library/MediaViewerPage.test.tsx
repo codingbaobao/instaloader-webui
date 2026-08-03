@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -93,11 +93,49 @@ const storyFixture = {
   ],
 };
 
+const carouselFixture = {
+  ...reelFixture,
+  id: "post-1",
+  instagram_media_id: "789",
+  shortcode: "POST123",
+  identity_value: "POST123",
+  kind: "post",
+  original_url: "https://www.instagram.com/p/POST123/",
+  assets: [
+    {
+      ...reelFixture.assets[1],
+      id: "content-image-1",
+      media_id: "post-1",
+      relative_path: "image-1.jpg",
+      role: "content",
+      position: 0,
+    },
+    {
+      ...reelFixture.assets[1],
+      id: "content-image-2",
+      media_id: "post-1",
+      relative_path: "image-2.jpg",
+      role: "content",
+      position: 1,
+    },
+    {
+      ...reelFixture.assets[1],
+      id: "content-image-3",
+      media_id: "post-1",
+      relative_path: "image-3.jpg",
+      role: "content",
+      position: 2,
+    },
+  ],
+};
+
 function successEnvelope<T>(data: T) {
   return { success: true, data, error: null, meta: {} };
 }
 
-function renderViewer(media: typeof reelFixture | typeof storyFixture) {
+function renderViewer(
+  media: typeof reelFixture | typeof storyFixture | typeof carouselFixture,
+) {
   server.use(
     http.get(`/api/media/${media.id}`, () =>
       HttpResponse.json(successEnvelope(media)),
@@ -148,6 +186,75 @@ describe("MediaViewerPage", () => {
       "https://www.instagram.com/stories/katerina.soria/3952742051065980676/",
     );
     expect(screen.getByText(/3952742051065980676/)).toBeVisible();
+  });
+
+  it("uses arrow-only controls and stops at the carousel boundaries", async () => {
+    const user = userEvent.setup();
+    renderViewer(carouselFixture);
+
+    const carousel = await screen.findByRole("region", {
+      name: "Post media carousel",
+    });
+    Object.defineProperty(carousel, "clientWidth", {
+      configurable: true,
+      value: 320,
+    });
+    carousel.scrollTo = ((optionsOrX?: ScrollToOptions | number) => {
+      const left = typeof optionsOrX === "number"
+        ? optionsOrX
+        : optionsOrX?.left ?? 0;
+      Object.defineProperty(carousel, "scrollLeft", {
+        configurable: true,
+        value: Number(left),
+      });
+      fireEvent.scroll(carousel);
+    }) as typeof carousel.scrollTo;
+
+    expect(within(carousel).getAllByRole("img")).toHaveLength(3);
+    expect(
+      screen.queryByRole("button", { name: "Previous image or video" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Next image or video" }),
+    ).not.toHaveTextContent("Next");
+    expect(screen.getByText("1 / 3")).toBeVisible();
+
+    await user.click(
+      screen.getByRole("button", { name: "Next image or video" }),
+    );
+    expect(screen.getByText("2 / 3")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Previous image or video" }),
+    ).toBeVisible();
+
+    await user.click(
+      screen.getByRole("button", { name: "Next image or video" }),
+    );
+    expect(screen.getByText("3 / 3")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Next image or video" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("synchronizes the controls after native horizontal scrolling", async () => {
+    renderViewer(carouselFixture);
+
+    const carousel = await screen.findByRole("region", {
+      name: "Post media carousel",
+    });
+    Object.defineProperties(carousel, {
+      clientWidth: { configurable: true, value: 320 },
+      scrollLeft: { configurable: true, value: 640 },
+    });
+    fireEvent.scroll(carousel);
+
+    expect(screen.getByText("3 / 3")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Previous image or video" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Next image or video" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders icon-only media actions with accessible names", async () => {

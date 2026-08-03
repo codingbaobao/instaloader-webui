@@ -363,15 +363,83 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 .media-viewer-layout { display: grid; gap: 0; overflow: hidden; border: 1px solid #e1e1e1; border-radius: 14px; background: #fff; box-shadow: 0 3px 16px rgb(0 0 0 / 3%); }
 
-.viewer-asset-stage { position: relative; display: grid; min-height: min(82vw, 680px); place-items: center; background: #121212; }
+.viewer-asset-stage { position: relative; min-width: 0; overflow: hidden; background: #121212; }
+
+.viewer-carousel-track {
+  display: flex;
+  width: 100%;
+  height: min(82vw, 680px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  touch-action: pan-x pan-y;
+}
+
+.viewer-carousel-track::-webkit-scrollbar { display: none; }
+
+.viewer-carousel-slide {
+  display: grid;
+  width: 100%;
+  min-width: 100%;
+  height: 100%;
+  flex: 0 0 100%;
+  place-items: center;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
 
 .viewer-media { display: block; max-width: 100%; max-height: min(82vw, 680px); object-fit: contain; }
 
-.viewer-empty-asset { padding: 34px; color: #ddd; text-align: center; }
+.viewer-empty-asset { display: grid; min-height: min(82vw, 680px); padding: 34px; place-items: center; color: #ddd; text-align: center; }
 
-.viewer-carousel-controls { position: absolute; right: 12px; bottom: 12px; left: 12px; display: flex; align-items: center; justify-content: center; gap: 12px; color: #fff; font-size: 13px; font-weight: 750; }
+.viewer-carousel-button {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #161616;
+  background: rgb(255 255 255 / 90%);
+  box-shadow: 0 3px 14px rgb(0 0 0 / 24%);
+  transform: translateY(-50%);
+  transition: background .16s ease, transform .16s ease;
+  backdrop-filter: blur(8px);
+}
 
-.carousel-button { padding: 7px 10px; border: 1px solid rgb(255 255 255 / 38%); border-radius: 8px; color: #fff; background: rgb(0 0 0 / 56%); font-weight: 700; }
+.viewer-carousel-button:hover { background: #fff; transform: translateY(-50%) scale(1.06); }
+
+.viewer-carousel-button svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+
+.viewer-carousel-button-previous { left: 16px; }
+
+.viewer-carousel-button-next { right: 16px; }
+
+.viewer-carousel-counter {
+  position: absolute;
+  z-index: 2;
+  bottom: 16px;
+  left: 50%;
+  min-width: 56px;
+  padding: 7px 11px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(0 0 0 / 58%);
+  font-size: 12px;
+  font-weight: 750;
+  text-align: center;
+  transform: translateX(-50%);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
 
 .viewer-details { display: flex; flex-direction: column; padding: 24px; }
 
@@ -566,7 +634,8 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
   .library-page { width: min(100% - 48px, 1040px); padding-top: 38px; }
   .narrow-page { width: min(100% - 48px, 660px); }
   .media-grid { gap: 5px; }
-  .viewer-asset-stage { min-height: min(68vw, 680px); }
+  .viewer-carousel-track { height: min(68vw, 680px); }
+  .viewer-empty-asset { min-height: min(68vw, 680px); }
   .viewer-media { max-height: min(68vw, 680px); }
 }
 
@@ -583,12 +652,17 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 @media (min-width: 1024px) {
   .media-viewer-layout { grid-template-columns: minmax(0, 1.55fr) minmax(310px, .75fr); }
-  .viewer-asset-stage { min-height: min(70vh, 700px); }
+  .viewer-carousel-track { height: min(70vh, 700px); }
+  .viewer-empty-asset { min-height: min(70vh, 700px); }
   .viewer-media { max-height: min(70vh, 700px); }
   .viewer-details { min-height: min(70vh, 700px); }
 }
 
 @media (max-width: 480px) {
+  .viewer-carousel-button { width: 38px; height: 38px; }
+  .viewer-carousel-button-previous { left: 10px; }
+  .viewer-carousel-button-next { right: 10px; }
+  .viewer-carousel-counter { bottom: 12px; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .profile-heading-actions { justify-content: flex-start; }
   .profile-import-action { justify-items: start; }
