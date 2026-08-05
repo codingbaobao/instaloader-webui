@@ -91,4 +91,34 @@ describe("MediaGrid", () => {
     ).toBeVisible();
     expect(screen.getByText("Story")).toBeInTheDocument();
   });
+
+  it("links recent media to a source-aware viewer", () => {
+    render(
+      <MemoryRouter>
+        <MediaGrid media={[reelFixture]} source={{ type: "recent" }} />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Open Reel REEL123" }),
+    ).toHaveAttribute("href", "/media/reel-1?source=recent");
+  });
+
+  it("links profile media with its profile and active kind", () => {
+    render(
+      <MemoryRouter>
+        <MediaGrid
+          media={[reelFixture]}
+          source={{ type: "profile", profileId: "profile-1", kind: "reel" }}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(
+      screen.getByRole("link", { name: "Open Reel REEL123" }),
+    ).toHaveAttribute(
+      "href",
+      "/media/reel-1?source=profile&profileId=profile-1&kind=reel",
+    );
+  });
 });

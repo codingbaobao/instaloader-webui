@@ -2,7 +2,9 @@ import { HttpResponse, http } from "msw";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
+import { useLocation, useNavigate } from "react-router-dom";
 
+import { AppRoutes } from "../app/App";
 import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
 
@@ -33,7 +35,10 @@ function successEnvelope<T>(data: T) {
   return { success: true, data, error: null, meta: {} };
 }
 
-function renderProfile(mediaQueries: string[] = []) {
+function renderProfile(
+  mediaQueries: string[] = [],
+  initialPath = "/profiles/profile-1",
+) {
   server.use(
     http.get("/api/profiles/profile-1", () =>
       HttpResponse.json(successEnvelope(profileFixture)),
@@ -45,11 +50,22 @@ function renderProfile(mediaQueries: string[] = []) {
   );
   render(
     <TestRouter
-      initialPath="/profiles/profile-1"
+      initialPath={initialPath}
       initialSession={authenticatedSession}
     />,
   );
   return mediaQueries;
+}
+
+function HistoryProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <output data-testid="location-search">{location.search}</output>
+      <button type="button" onClick={() => navigate(-1)}>Browser back</button>
+    </>
+  );
 }
 
 describe("ProfilePage", () => {
@@ -143,6 +159,53 @@ describe("ProfilePage", () => {
 
     await waitFor(() => {
       expect(mediaQueries.at(-1)).toContain("kind=story");
+    });
+  });
+
+  it("restores the selected media tab from the profile URL", async () => {
+    const mediaQueries = renderProfile([], "/profiles/profile-1?tab=reel");
+
+    const reelsTab = await screen.findByRole("tab", { name: "Reels" });
+    expect(reelsTab).toHaveAttribute("aria-selected", "true");
+    expect(reelsTab).toHaveAttribute("tabindex", "0");
+    await waitFor(() => {
+      expect(mediaQueries.at(-1)).toContain("kind=reel");
+    });
+  });
+
+  it("pushes tab changes into history and restores the tab on browser back", async () => {
+    server.use(
+      http.get("/api/profiles/profile-1", () =>
+        HttpResponse.json(successEnvelope(profileFixture)),
+      ),
+      http.get("/api/media", () => HttpResponse.json(successEnvelope([]))),
+    );
+    render(
+      <TestRouter
+        initialPath="/profiles/profile-1?tab=post"
+        initialSession={authenticatedSession}
+      >
+        <AppRoutes />
+        <HistoryProbe />
+      </TestRouter>,
+    );
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("tab", { name: "Reels" }));
+    expect(screen.getByTestId("location-search")).toHaveTextContent("tab=reel");
+    expect(screen.getByRole("tab", { name: "Reels" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Browser back" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location-search")).toHaveTextContent("tab=post");
+      expect(screen.getByRole("tab", { name: "Posts" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
     });
   });
 });

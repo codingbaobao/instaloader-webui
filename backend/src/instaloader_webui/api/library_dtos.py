@@ -53,6 +53,14 @@ class MediaResponse(BaseModel):
     assets: tuple[AssetResponse, ...]
 
 
+class MediaFeedResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    items: tuple[MediaResponse, ...]
+    newer_cursor: str | None
+    older_cursor: str | None
+
+
 class ProfileResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 

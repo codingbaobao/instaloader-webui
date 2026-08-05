@@ -5,6 +5,7 @@ import type {
   JobSummary,
   LibrarySettings,
   MediaDetail,
+  MediaFeedPage,
   MediaKind,
   MediaSummary,
   ProfileCreateResult,
@@ -15,6 +16,14 @@ import type {
 } from "./types";
 
 type MediaListOptions = Readonly<{
+  profileId?: string;
+  kind?: MediaKind;
+  limit?: number;
+}>;
+
+type MediaFeedOptions = Readonly<{
+  anchorId?: string;
+  cursor?: string;
   profileId?: string;
   kind?: MediaKind;
   limit?: number;
@@ -113,6 +122,31 @@ export function getMedia(
   signal?: AbortSignal,
 ): Promise<MediaDetail> {
   return apiRequest<MediaDetail>(`/api/media/${pathSegment(mediaId)}`, {
+    signal,
+  });
+}
+
+export function listMediaFeed(
+  options: MediaFeedOptions,
+  signal?: AbortSignal,
+): Promise<MediaFeedPage> {
+  const query = new URLSearchParams();
+  if (options.anchorId) {
+    query.set("anchor_id", options.anchorId);
+  }
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.profileId) {
+    query.set("profile_id", options.profileId);
+  }
+  if (options.kind) {
+    query.set("kind", options.kind);
+  }
+  if (options.limit !== undefined) {
+    query.set("limit", String(options.limit));
+  }
+  return apiRequest<MediaFeedPage>(`/api/media/feed?${query.toString()}`, {
     signal,
   });
 }
