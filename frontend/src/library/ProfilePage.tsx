@@ -1,10 +1,16 @@
 import {
   type KeyboardEvent,
   useCallback,
+  useEffect,
   useRef,
   useState,
 } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 
 import { ApiError } from "../app/api";
 import type { SessionData } from "../auth/useSession";
@@ -56,16 +62,22 @@ const mediaTabs: readonly Readonly<{
   },
 ];
 
+function mediaTabFromSearch(searchParams: URLSearchParams): MediaTab {
+  const requested = searchParams.get("tab");
+  return requested === "reel" || requested === "story" ? requested : "post";
+}
+
 export function ProfilePage({ session }: ProfilePageProps) {
   const { profileId = "" } = useParams();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = mediaTabFromSearch(searchParams);
   const tabRefs = useRef<Record<MediaTab, HTMLButtonElement | null>>({
     post: null,
     reel: null,
     story: null,
   });
-  const selectedTabRef = useRef<MediaTab>("post");
-  const [tab, setTab] = useState<MediaTab>("post");
+  const selectedTabRef = useRef<MediaTab>(tab);
   const [actionJob, setActionJob] = useState<JobSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -85,6 +97,14 @@ export function ProfilePage({ session }: ProfilePageProps) {
     return { profile, media, mediaKind: requestedTab };
   }, [profileId]);
   const { data, error, loading, reload } = usePolling(loadProfile, 0, true);
+
+  useEffect(() => {
+    if (tab === selectedTabRef.current) {
+      return;
+    }
+    selectedTabRef.current = tab;
+    void reload();
+  }, [reload, tab]);
 
   async function requestSync() {
     if (!profileId) {
@@ -141,7 +161,9 @@ export function ProfilePage({ session }: ProfilePageProps) {
       return;
     }
     selectedTabRef.current = nextTab;
-    setTab(nextTab);
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.set("tab", nextTab);
+    setSearchParams(nextSearchParams);
     void reload();
   }
 
@@ -285,6 +307,7 @@ export function ProfilePage({ session }: ProfilePageProps) {
           media={media}
           emptyDetail={activeTab.emptyDetail}
           emptyTitle={activeTab.emptyTitle}
+          source={{ type: "profile", profileId: profile.id, kind: tab }}
         />
       </div>
       <ConfirmDialog

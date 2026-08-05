@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from instaloader_webui.db.models import (
@@ -83,6 +83,19 @@ class MediaSnapshot:
     created_at: datetime
     updated_at: datetime
     assets: tuple[AssetSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MediaFeedPosition:
+    published_at: datetime
+    media_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediaFeedWindow:
+    items: tuple[MediaSnapshot, ...]
+    has_newer: bool
+    has_older: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,23 +535,130 @@ class LibraryRepository:
         kind: str | None = None,
         limit: int = 100,
     ) -> tuple[MediaSnapshot, ...]:
-        query = select(MediaItem).order_by(MediaItem.published_at.desc()).limit(limit)
+        query = (
+            select(MediaItem)
+            .order_by(MediaItem.published_at.desc(), MediaItem.id.desc())
+            .limit(limit)
+        )
         if profile_id is not None:
             query = query.where(MediaItem.owner_profile_id == profile_id)
         if kind is not None:
             query = query.where(MediaItem.kind == kind)
         with self._session_factory() as session:
-            media_items = session.scalars(query).all()
+            media_items = list(session.scalars(query).all())
             return self._media_snapshots(session, media_items)
+
+    def list_media_feed(
+        self,
+        *,
+        anchor_id: str | None = None,
+        position: MediaFeedPosition | None = None,
+        direction: Literal["newer", "older"] | None = None,
+        profile_id: str | None = None,
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> MediaFeedWindow | None:
+        filters = []
+        if profile_id is not None:
+            filters.append(MediaItem.owner_profile_id == profile_id)
+        if kind is not None:
+            filters.append(MediaItem.kind == kind)
+
+        with self._session_factory() as session:
+            anchor: MediaItem | None = None
+            if anchor_id is not None:
+                anchor = session.get(MediaItem, anchor_id)
+                if (
+                    anchor is None
+                    or (
+                        profile_id is not None
+                        and anchor.owner_profile_id != profile_id
+                    )
+                    or (kind is not None and anchor.kind != kind)
+                ):
+                    return None
+                position = MediaFeedPosition(
+                    published_at=_as_utc(anchor.published_at),
+                    media_id=anchor.id,
+                )
+            if position is None:
+                raise ValueError("A media feed anchor or position is required.")
+
+            published_at = _as_utc(position.published_at)
+            newer_condition = or_(
+                MediaItem.published_at > published_at,
+                and_(
+                    MediaItem.published_at == published_at,
+                    MediaItem.id > position.media_id,
+                ),
+            )
+            older_condition = or_(
+                MediaItem.published_at < published_at,
+                and_(
+                    MediaItem.published_at == published_at,
+                    MediaItem.id < position.media_id,
+                ),
+            )
+
+            def load_newer(count: int) -> tuple[list[MediaItem], bool]:
+                rows = session.scalars(
+                    select(MediaItem)
+                    .where(*filters, newer_condition)
+                    .order_by(MediaItem.published_at.asc(), MediaItem.id.asc())
+                    .limit(count + 1)
+                ).all()
+                selected = rows[:count]
+                return list(reversed(selected)), len(rows) > count
+
+            def load_older(count: int) -> tuple[list[MediaItem], bool]:
+                rows = session.scalars(
+                    select(MediaItem)
+                    .where(*filters, older_condition)
+                    .order_by(MediaItem.published_at.desc(), MediaItem.id.desc())
+                    .limit(count + 1)
+                ).all()
+                return list(rows[:count]), len(rows) > count
+
+            if anchor is not None:
+                newer_count = (limit - 1) // 2
+                newer, has_newer = load_newer(newer_count)
+                older_count = limit - 1 - len(newer)
+                older, has_older = load_older(older_count)
+                if len(older) < older_count:
+                    newer, has_newer = load_newer(limit - 1 - len(older))
+                models = [*newer, anchor, *older]
+                return MediaFeedWindow(
+                    items=self._media_snapshots(session, models),
+                    has_newer=has_newer,
+                    has_older=has_older,
+                )
+
+            if direction == "newer":
+                models, has_newer = load_newer(limit)
+                return MediaFeedWindow(
+                    items=self._media_snapshots(session, models),
+                    has_newer=has_newer,
+                    has_older=False,
+                )
+            if direction == "older":
+                models, has_older = load_older(limit)
+                return MediaFeedWindow(
+                    items=self._media_snapshots(session, models),
+                    has_newer=False,
+                    has_older=has_older,
+                )
+            raise ValueError("A media feed cursor direction is required.")
 
     def list_all_media_for_profile(self, profile_id: str) -> tuple[MediaSnapshot, ...]:
         """Return every media item owned by one profile for worker deletion."""
         with self._session_factory() as session:
-            media_items = session.scalars(
-                select(MediaItem)
-                .where(MediaItem.owner_profile_id == profile_id)
-                .order_by(MediaItem.published_at.desc(), MediaItem.id)
-            ).all()
+            media_items = list(
+                session.scalars(
+                    select(MediaItem)
+                    .where(MediaItem.owner_profile_id == profile_id)
+                    .order_by(MediaItem.published_at.desc(), MediaItem.id)
+                ).all()
+            )
             return self._media_snapshots(session, media_items)
 
     def count_media(

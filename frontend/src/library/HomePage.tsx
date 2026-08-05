@@ -70,6 +70,7 @@ export function HomePage({ session }: HomePageProps) {
             media={data.media}
             emptyDetail="Add a profile, post, reel, or TV link to begin collecting public media."
             emptyTitle="Your library is ready"
+            source={{ type: "recent" }}
           />
         ) : null}
       </section>

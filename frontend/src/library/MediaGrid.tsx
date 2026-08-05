@@ -9,11 +9,33 @@ import {
 } from "./mediaPresentation";
 import type { MediaSummary } from "./types";
 
+export type MediaGridSource =
+  | Readonly<{ type: "recent" }>
+  | Readonly<{
+      type: "profile";
+      profileId: string;
+      kind: MediaSummary["kind"];
+    }>;
+
 type MediaGridProps = Readonly<{
   media: readonly MediaSummary[];
   emptyTitle?: string;
   emptyDetail?: string;
+  source?: MediaGridSource;
 }>;
+
+function mediaViewerUrl(mediaId: string, source?: MediaGridSource): string {
+  const path = `/media/${encodeURIComponent(mediaId)}`;
+  if (source === undefined) {
+    return path;
+  }
+  const query = new URLSearchParams({ source: source.type });
+  if (source.type === "profile") {
+    query.set("profileId", source.profileId);
+    query.set("kind", source.kind);
+  }
+  return `${path}?${query.toString()}`;
+}
 
 function MediaThumbnail({ media }: Readonly<{ media: MediaSummary }>) {
   const asset = thumbnailAsset(media);
@@ -51,6 +73,7 @@ export function MediaGrid({
   media,
   emptyTitle = "No media yet",
   emptyDetail = "Downloaded posts and reels will appear here.",
+  source,
 }: MediaGridProps) {
   if (media.length === 0) {
     return (
@@ -69,7 +92,7 @@ export function MediaGrid({
           aria-label={`Open ${mediaLabel(item)} ${mediaDisplayIdentifier(item)}`}
           className="media-grid-item"
           key={item.id}
-          to={`/media/${encodeURIComponent(item.id)}`}
+          to={mediaViewerUrl(item.id, source)}
         >
           <MediaThumbnail media={item} />
           <span className="media-grid-overlay" aria-hidden="true">

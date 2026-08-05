@@ -41,6 +41,12 @@ export type MediaSummary = Readonly<{
 /** The backend's media list and detail DTOs have the same fields. */
 export type MediaDetail = MediaSummary;
 
+export type MediaFeedPage = Readonly<{
+  items: readonly MediaDetail[];
+  newer_cursor: string | null;
+  older_cursor: string | null;
+}>;
+
 export type ProfileSummary = Readonly<{
   id: string;
   instagram_user_id: string | null;
