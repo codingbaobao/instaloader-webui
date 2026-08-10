@@ -138,6 +138,21 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
       !== null;
 }
 
+function jumpToFeedIndex(container: HTMLDivElement, index: number) {
+  const previousScrollBehavior = container.style.scrollBehavior;
+  container.style.scrollBehavior = "auto";
+  try {
+    const top = index * container.clientHeight;
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({ top, behavior: "auto" });
+    } else {
+      container.scrollTop = top;
+    }
+  } finally {
+    container.style.scrollBehavior = previousScrollBehavior;
+  }
+}
+
 export function MediaViewerPage({ session }: MediaViewerPageProps) {
   const { mediaId = "" } = useParams();
   const [searchParams] = useSearchParams();
@@ -241,7 +256,7 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
       return;
     }
     pendingScrollIndexRef.current = null;
-    container.scrollTop = index * container.clientHeight;
+    jumpToFeedIndex(container, index);
   }, [feed, mediaId, searchKey]);
 
   const loadCursor = useCallback((

@@ -673,6 +673,90 @@ describe("MediaViewerPage", () => {
     await waitFor(() => expect(feed.scrollTop).toBe(640));
   });
 
+  it("jumps directly to a middle anchor with smooth scrolling disabled", async () => {
+    const user = userEvent.setup();
+    const originalClientHeight = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientHeight",
+    );
+    const originalScrollTo = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollTo",
+    );
+    const jumps: Array<Readonly<{
+      behavior: ScrollBehavior | undefined;
+      inlineBehavior: string;
+      top: number;
+    }>> = [];
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+      configurable: true,
+      get() {
+        return this.classList.contains("viewer-feed-track") ? 640 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value(this: HTMLElement, options: ScrollToOptions) {
+        if (this.classList.contains("viewer-feed-track")) {
+          jumps.push({
+            behavior: options.behavior,
+            inlineBehavior: this.style.scrollBehavior,
+            top: Number(options.top ?? 0),
+          });
+        }
+      },
+    });
+
+    try {
+      renderViewer(storyFixture, {
+        source: "recent",
+        items: [reelFixture, storyFixture],
+        anchorItems: {
+          "story-1": [reelFixture, storyFixture],
+        },
+      });
+
+      expect(
+        await screen.findByRole("group", {
+          name: "Story 3952742051065980676",
+          current: true,
+        }),
+      ).toBeInTheDocument();
+      await waitFor(() => expect(jumps).toEqual([{
+        behavior: "auto",
+        inlineBehavior: "auto",
+        top: 640,
+      }]));
+      await user.click(
+        screen.getByRole("button", { name: "Previous media" }),
+      );
+      expect(jumps[1]).toEqual({
+        behavior: "smooth",
+        inlineBehavior: "",
+        top: 0,
+      });
+    } finally {
+      if (originalClientHeight === undefined) {
+        Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+      } else {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "clientHeight",
+          originalClientHeight,
+        );
+      }
+      if (originalScrollTo === undefined) {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+      } else {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollTo",
+          originalScrollTo,
+        );
+      }
+    }
+  });
+
   it("keeps both pages when newer and older cursor loads finish out of order", async () => {
     renderViewer(reelFixture, {
       source: "recent",

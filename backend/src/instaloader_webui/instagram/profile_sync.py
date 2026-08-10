@@ -1,9 +1,10 @@
-"""Story-first orchestration for one tracked Instagram profile sync."""
+"""Story-first, resumable orchestration for one Instagram profile sync."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 from instaloader_webui.instagram.media_types import MediaCandidate
@@ -21,6 +22,20 @@ _SCANNING_MEDIA = "Scanning Instagram posts and reels…"
 _PROCESSING_REELS = "Processing Instagram reels."
 _PROCESSING_POSTS = "Processing Instagram posts."
 _STOPPED = "Profile synchronization stopped before the next media item."
+_BACKFILL_PENDING = (
+    "Saved 25 new posts and reels. More profile history will continue on the "
+    "next scheduled sync."
+)
+_NEW_LONG_LIVED_MEDIA_LIMIT = 25
+_BLOCKING_ISSUE_CODES = frozenset(
+    {
+        "challenge_required",
+        "instagram_rate_limited",
+        "instagram_session_rejected",
+        "instagram_access_denied",
+    }
+)
+
 
 class ProfileMediaSource(Protocol):
     """Provide lazy media-candidate iterables for one resolved profile."""
@@ -46,11 +61,12 @@ class ProfileSyncResult:
     total: int | None
     issue_count: int
     stopped: bool
+    backfill_pending: bool = False
 
 
 @dataclass(slots=True)
 class ProfileSyncCoordinator:
-    """Save Stories first, then scan and process unique Reels and Posts."""
+    """Save Stories first, then merge recent Reels and Posts lazily."""
 
     source: ProfileMediaSource
     processor: CandidateProcessor
@@ -59,7 +75,7 @@ class ProfileSyncCoordinator:
     is_syncable: SyncableCallback
 
     def run(self, *, profile: object, job_id: str) -> ProfileSyncResult:
-        """Run one sync while keeping iterator and infrastructure errors fatal."""
+        """Run one bounded sync while keeping infrastructure errors fatal."""
         processed = 0
         issue_count = 0
 
@@ -67,119 +83,126 @@ class ProfileSyncCoordinator:
         stories = self._unique(tuple(self.source.iter_stories(profile)))
         for candidate in stories:
             if not self.is_syncable():
-                self.progress(
-                    processed,
-                    None,
-                    "saving_stories",
-                    _STOPPED,
-                )
+                self.progress(processed, None, "saving_stories", _STOPPED)
                 return ProfileSyncResult(
                     processed=processed,
                     total=None,
                     issue_count=issue_count,
                     stopped=True,
                 )
-            failed = self._process(candidate, job_id=job_id)
+            failed, _saved = self._process(candidate, job_id=job_id)
             processed += 1
             issue_count += int(failed)
-            self.progress(
-                processed,
-                None,
-                "saving_stories",
-                _SAVING_STORIES,
-            )
+            self.progress(processed, None, "saving_stories", _SAVING_STORIES)
 
-        self.progress(
-            processed,
-            None,
-            "scanning_media",
-            _SCANNING_MEDIA,
+        self.progress(processed, None, "scanning_media", _SCANNING_MEDIA)
+        candidates = self._merge_long_lived(
+            self.source.iter_reels(profile),
+            self.source.iter_posts(profile),
         )
-        reels = self._unique(tuple(self.source.iter_reels(profile)))
-        posts = self._unique(tuple(self.source.iter_posts(profile)))
-        reel_shortcodes = {candidate.identity.value for candidate in reels}
-        posts = tuple(
-            candidate
-            for candidate in posts
-            if candidate.identity.value not in reel_shortcodes
-        )
-        total = processed + len(reels) + len(posts)
+        new_media_count = 0
+        active_phase: str | None = None
+        active_text = ""
 
-        self.progress(
-            processed,
-            total,
-            "processing_reels",
-            _PROCESSING_REELS,
-        )
-        for candidate in reels:
+        for candidate in candidates:
+            phase, status_text = self._phase(candidate)
+            if phase != active_phase:
+                active_phase = phase
+                active_text = status_text
+                self.progress(processed, None, phase, status_text)
             if not self.is_syncable():
-                self.progress(
-                    processed,
-                    total,
-                    "processing_reels",
-                    _STOPPED,
-                )
+                self.progress(processed, None, phase, _STOPPED)
                 return ProfileSyncResult(
                     processed=processed,
-                    total=total,
+                    total=None,
                     issue_count=issue_count,
                     stopped=True,
                 )
-            failed = self._process(candidate, job_id=job_id)
+
+            failed, saved = self._process(candidate, job_id=job_id)
             processed += 1
             issue_count += int(failed)
-            self.progress(
-                processed,
-                total,
-                "processing_reels",
-                _PROCESSING_REELS,
-            )
+            new_media_count += int(saved)
+            self.progress(processed, None, phase, active_text)
 
-        if posts:
-            self.progress(
-                processed,
-                total,
-                "processing_posts",
-                _PROCESSING_POSTS,
-            )
-        for candidate in posts:
-            if not self.is_syncable():
-                self.progress(
-                    processed,
-                    total,
-                    "processing_posts",
-                    _STOPPED,
-                )
+            if new_media_count >= _NEW_LONG_LIVED_MEDIA_LIMIT:
+                self.progress(processed, None, phase, _BACKFILL_PENDING)
                 return ProfileSyncResult(
                     processed=processed,
-                    total=total,
+                    total=None,
                     issue_count=issue_count,
-                    stopped=True,
+                    stopped=False,
+                    backfill_pending=True,
                 )
-            failed = self._process(candidate, job_id=job_id)
-            processed += 1
-            issue_count += int(failed)
-            self.progress(
-                processed,
-                total,
-                "processing_posts",
-                _PROCESSING_POSTS,
-            )
 
         return ProfileSyncResult(
             processed=processed,
-            total=total,
+            total=processed,
             issue_count=issue_count,
             stopped=False,
         )
 
-    def _process(self, candidate: MediaCandidate, *, job_id: str) -> bool:
+    def _process(
+        self,
+        candidate: MediaCandidate,
+        *,
+        job_id: str,
+    ) -> tuple[bool, bool]:
         try:
-            self.processor.process(candidate, job_id=job_id)
+            result = self.processor.process(candidate, job_id=job_id)
         except MediaItemFailure as failure:
+            if failure.issue.error_code in _BLOCKING_ISSUE_CODES:
+                raise
             self.record_issue(failure.issue)
-            return True
-        return False
+            return True, False
+        return False, getattr(result, "status", None) == "saved"
+
+    @classmethod
+    def _merge_long_lived(
+        cls,
+        reels: Iterable[MediaCandidate],
+        posts: Iterable[MediaCandidate],
+    ) -> Iterator[MediaCandidate]:
+        reel_iterator = iter(reels)
+        post_iterator = iter(posts)
+        reel_candidate = next(reel_iterator, None)
+        post_candidate = next(post_iterator, None)
+        seen: set[str] = set()
+
+        while reel_candidate is not None or post_candidate is not None:
+            use_reel = post_candidate is None or (
+                reel_candidate is not None
+                and cls._published_at(reel_candidate)
+                >= cls._published_at(post_candidate)
+            )
+            if use_reel:
+                selected = reel_candidate
+                selected_iterator = reel_iterator
+            else:
+                selected = post_candidate
+                selected_iterator = post_iterator
+            if selected is None:  # pragma: no cover - guarded by loop state.
+                return
+
+            if selected.identity.value not in seen:
+                seen.add(selected.identity.value)
+                yield selected
+
+            next_candidate = next(selected_iterator, None)
+            if use_reel:
+                reel_candidate = next_candidate
+            else:
+                post_candidate = next_candidate
+
+    @staticmethod
+    def _published_at(candidate: MediaCandidate) -> datetime:
+        return candidate.published_at_hint or datetime.min.replace(tzinfo=UTC)
+
+    @staticmethod
+    def _phase(candidate: MediaCandidate) -> tuple[str, str]:
+        if candidate.kind == "reel":
+            return "processing_reels", _PROCESSING_REELS
+        return "processing_posts", _PROCESSING_POSTS
 
     @staticmethod
     def _unique(

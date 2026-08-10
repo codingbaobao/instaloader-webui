@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from instaloader import Instaloader, InstaloaderException
+from instaloader import AbortDownloadException, Instaloader, InstaloaderException
 
 from instaloader_webui.db.library_repositories import (
     AssetSnapshot,
@@ -123,7 +123,7 @@ class MediaProcessor:
     def _resolve(candidate: MediaCandidate) -> ResolvedMedia:
         try:
             return candidate.resolve()
-        except InstaloaderException as error:
+        except (AbortDownloadException, InstaloaderException) as error:
             raise MediaItemFailure(
                 classify_media_issue(
                     error,
@@ -141,7 +141,7 @@ class MediaProcessor:
     ) -> None:
         try:
             resolved.download(self._loader, resolved.owner_username)
-        except InstaloaderException as error:
+        except (AbortDownloadException, InstaloaderException) as error:
             raise MediaItemFailure(
                 classify_media_issue(
                     error,

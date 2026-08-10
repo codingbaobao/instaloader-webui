@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from typing import Literal, cast
 
 import pytest
-from instaloader import ConnectionException, Instaloader
+from instaloader import AbortDownloadException, ConnectionException, Instaloader
 from sqlalchemy.exc import IntegrityError
 
 from instaloader_webui.config import Settings
@@ -584,6 +584,41 @@ def test_instaloader_resolution_and_download_errors_become_item_failures(
     assert raised.value.issue.identity == resolved.identity
     assert raised.value.issue.kind == "reel"
     assert raised.value.issue.error_code == "instagram_unavailable"
+    assert repository.find_media_by_identity(resolved.identity) is None
+
+
+@pytest.mark.parametrize("failure_phase", ["resolve", "download"])
+def test_abort_download_errors_become_safe_blocking_item_failures(
+    processor: MediaProcessor,
+    repository: LibraryRepository,
+    profile: ProfileSnapshot,
+    failure_phase: str,
+) -> None:
+    # Break caught: AbortDownloadException does not inherit InstaloaderException,
+    # so it used to escape the safe issue boundary with a generic job error.
+    upstream = AbortDownloadException("challenge_required secret-detail")
+    resolved = _resolved_media(
+        profile=profile,
+        download=(
+            (lambda _loader, _target: (_ for _ in ()).throw(upstream))
+            if failure_phase == "download"
+            else _download_files((f"{SHORTCODE}.jpg", b"unused"))
+        ),
+    )
+    candidate = _candidate(
+        resolved,
+        resolve=(
+            (lambda: (_ for _ in ()).throw(upstream))
+            if failure_phase == "resolve"
+            else None
+        ),
+    )
+
+    with pytest.raises(MediaItemFailure) as raised:
+        processor.process(candidate, job_id=f"job-abort-{failure_phase}")
+
+    assert raised.value.issue.error_code == "challenge_required"
+    assert "secret-detail" not in str(raised.value)
     assert repository.find_media_by_identity(resolved.identity) is None
 
 

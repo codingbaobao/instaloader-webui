@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -41,6 +42,12 @@ _MEDIA_ISSUE_REPORTING_FAILED = "Media issue reporting failed."
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class _DispatchOutcome:
+    warning_count: int = 0
+    backfill_pending: bool = False
+
+
 class JobRunner:
     """Run one already-claimed job and record its terminal state."""
 
@@ -69,7 +76,7 @@ class JobRunner:
         """Dispatch a claimed job and persist success or a concise failure."""
         try:
             self._progress(job, 0, None, "Starting worker job.")
-            warning_count = self._dispatch(job)
+            outcome = self._dispatch(job)
         except MediaItemFailure as failure:
             try:
                 self._record_media_issue(job, failure.issue)
@@ -94,10 +101,17 @@ class JobRunner:
                 else "Worker job completed."
             )
             now = datetime.now(UTC)
-            if warning_count:
+            if outcome.warning_count:
+                warning_status = (
+                    "Saved 25 new posts and reels with "
+                    f"{outcome.warning_count} warning(s). More profile history "
+                    "will continue on the next scheduled sync."
+                    if outcome.backfill_pending
+                    else f"Completed with {outcome.warning_count} warning(s)."
+                )
                 self._jobs.complete_with_warnings(
                     job_id=job.id,
-                    status_text=f"Completed with {warning_count} warning(s).",
+                    status_text=warning_status,
                     now=now,
                 )
             else:
@@ -122,26 +136,29 @@ class JobRunner:
             now=datetime.now(UTC),
         )
 
-    def _dispatch(self, job: JobSnapshot) -> int:
+    def _dispatch(self, job: JobSnapshot) -> _DispatchOutcome:
         if job.type == "profile_sync":
             profile_id = _required_payload_text(job, "profile_id")
             result = self._adapter(job).sync_profile(profile_id, job.id)
-            return result.issue_count
+            return _DispatchOutcome(
+                warning_count=result.issue_count,
+                backfill_pending=result.backfill_pending,
+            )
         if job.type == "single_media":
             self._adapter(job).download_input(_decode_media_input(job), job.id)
-            return 0
+            return _DispatchOutcome()
         if job.type == "delete_media":
             self._delete_media(job, _required_payload_text(job, "media_id"))
-            return 0
+            return _DispatchOutcome()
         if job.type == "delete_profile":
             self._delete_profile(job, _required_payload_text(job, "profile_id"))
-            return 0
+            return _DispatchOutcome()
         if job.type == "followee_discovery":
             self._discover_followees(
                 job,
                 _required_payload_text(job, "batch_id"),
             )
-            return 0
+            return _DispatchOutcome()
         raise ValueError(f"Unsupported worker job type: {job.type}")
 
     def _discover_followees(self, job: JobSnapshot, batch_id: str) -> None:

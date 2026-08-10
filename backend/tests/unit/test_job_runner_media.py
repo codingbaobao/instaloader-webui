@@ -411,6 +411,39 @@ def test_profile_sync_with_item_issues_completes_with_warnings(
     assert completed.status_text == "Completed with 1 warning(s)."
 
 
+def test_profile_backfill_with_item_issues_preserves_pending_status(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: the warning terminal transition used to erase the signal
+    # that more profile history will continue on the next scheduled sync.
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+
+    class BackfillWarningAdapter:
+        def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
+            return ProfileSyncResult(
+                processed=26,
+                total=None,
+                issue_count=1,
+                stopped=False,
+                backfill_pending=True,
+            )
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: BackfillWarningAdapter())
+
+    runner.run(job)
+
+    completed = jobs.get(job.id, include_issues=True)
+    assert completed is not None
+    assert completed.state == "completed_with_warnings"
+    assert completed.status_text == (
+        "Saved 25 new posts and reels with 1 warning(s). More profile history "
+        "will continue on the next scheduled sync."
+    )
+
+
 def test_profile_sync_without_item_issues_succeeds(
     runner: JobRunner,
     library: LibraryRepository,

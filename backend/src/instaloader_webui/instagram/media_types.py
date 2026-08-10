@@ -25,6 +25,7 @@ class MediaCandidate:
     kind: MediaKind
     session_configured: bool
     resolve: ResolveAction = field(repr=False, compare=False)
+    published_at_hint: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
