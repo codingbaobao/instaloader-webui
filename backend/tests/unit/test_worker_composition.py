@@ -1,9 +1,15 @@
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from instaloader_webui import worker as worker_module
 from instaloader_webui.config import Settings
+from instaloader_webui.db.library_repositories import JobRepository
+from instaloader_webui.db.schema import initialize_database
+from instaloader_webui.instagram.cooldown import InstagramCooldownStore
+
+NOW = datetime(2026, 8, 11, 1, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("mode", ["fallback", "legacy"])
@@ -99,3 +105,40 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
     assert startup_events == ["initialize", "engine"]
     assert len(runner_kwargs) == 1
     assert runner_kwargs[0]["profile_lookup_resolver"] is resolver
+    assert isinstance(runner_kwargs[0]["cooldowns"], InstagramCooldownStore)
+
+
+def test_worker_claims_local_job_while_global_cooldown_is_active(
+    session_factory,
+    test_settings: Settings,
+) -> None:
+    # Break caught: checking cooldown only after claim would move the oldest
+    # Instagram job to running and prevent the local deletion behind it.
+    initialize_database(test_settings)
+    jobs = JobRepository(session_factory)
+    instagram = jobs.enqueue(
+        job_type="profile_sync",
+        payload={"profile_id": "profile-1"},
+        status_text="Queued profile sync.",
+        now=NOW,
+    )
+    local = jobs.enqueue(
+        job_type="delete_media",
+        payload={"media_id": "media-1"},
+        status_text="Queued local deletion.",
+        now=NOW + timedelta(seconds=1),
+    )
+    cooldowns = InstagramCooldownStore(test_settings.data_root)
+    cooldowns.record_rate_limit(NOW)
+
+    claimed = worker_module._claim_next_job(
+        jobs=jobs,
+        cooldowns=cooldowns,
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert claimed is not None
+    assert claimed.id == local.id
+    pending_instagram = jobs.get(instagram.id)
+    assert pending_instagram is not None
+    assert pending_instagram.state == "pending"

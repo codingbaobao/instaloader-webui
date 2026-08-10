@@ -12,18 +12,31 @@ from instaloader_webui.db.followee_import_repositories import (
 )
 from instaloader_webui.db.library_repositories import (
     JobRepository,
+    JobSnapshot,
     LibraryRepository,
     SettingsRepository,
 )
 from instaloader_webui.db.schema import initialize_database
+from instaloader_webui.instagram.cooldown import InstagramCooldownStore
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.job_runner import JobRunner, enqueue_due_profile_syncs
 
-_PROFILE_LOOKUP_LOGGER = logging.getLogger(
-    "instaloader_webui.instagram.profile_lookup"
-)
+_PROFILE_LOOKUP_LOGGER = logging.getLogger("instaloader_webui.instagram.profile_lookup")
+_INSTAGRAM_JOB_TYPES = frozenset({"profile_sync", "single_media", "followee_discovery"})
+
+
+def _claim_next_job(
+    *,
+    jobs: JobRepository,
+    cooldowns: InstagramCooldownStore,
+    now: datetime,
+) -> JobSnapshot | None:
+    excluded_types = (
+        _INSTAGRAM_JOB_TYPES if cooldowns.status(now).until is not None else ()
+    )
+    return jobs.claim_next(now, excluded_types=excluded_types)
 
 
 def main() -> None:
@@ -42,6 +55,7 @@ def main() -> None:
     scheduling = SettingsRepository(session_factory)
     app_secret = load_or_create_app_secret(settings.data_root)
     instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
+    cooldowns = InstagramCooldownStore(settings.data_root)
     loader_runtime = WorkerInstaloaderRuntime(instagram_sessions)
     profile_lookup_resolver = ProfileLookupResolver(
         settings.instagram_profile_lookup_mode,
@@ -56,6 +70,7 @@ def main() -> None:
         followee_imports=followee_imports,
         loader_runtime=loader_runtime,
         profile_lookup_resolver=profile_lookup_resolver,
+        cooldowns=cooldowns,
     )
     jobs.recover_interrupted(datetime.now(UTC))
 
@@ -68,7 +83,11 @@ def main() -> None:
                 now=now,
                 settings_claim_due_sync=scheduling.claim_due_sync,
             )
-            job = jobs.claim_next(datetime.now(UTC))
+            job = _claim_next_job(
+                jobs=jobs,
+                cooldowns=cooldowns,
+                now=datetime.now(UTC),
+            )
             if job is None:
                 time.sleep(2)
                 continue

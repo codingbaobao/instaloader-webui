@@ -21,7 +21,12 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
 )
 from instaloader_webui.db.schema import initialize_database
-from instaloader_webui.instagram.errors import SESSION_REJECTED, TRANSIENT
+from instaloader_webui.instagram.cooldown import InstagramCooldownStore
+from instaloader_webui.instagram.errors import (
+    RATE_LIMITED,
+    SESSION_REJECTED,
+    TRANSIENT,
+)
 from instaloader_webui.instagram.media_types import MediaCandidate
 from instaloader_webui.instagram.profile_lookup import (
     ProfileLookupMode,
@@ -31,7 +36,10 @@ from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
 )
-from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
+from instaloader_webui.instagram.public_adapter import (
+    PublicInstagramAdapterError,
+    PublicInstaloaderAdapter,
+)
 from instaloader_webui.instagram.safe_issues import (
     MediaItemFailure,
     SafeMediaIssue,
@@ -87,7 +95,17 @@ def runner(
         followee_imports=followee_imports,
         loader_runtime=cast(WorkerInstaloaderRuntime, object()),
         profile_lookup_resolver=profile_lookup_resolver,
+        cooldowns=InstagramCooldownStore(test_settings.data_root),
     )
+
+
+def _freeze_job_runner_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+    monkeypatch.setattr(job_runner_module, "datetime", FixedDateTime)
 
 
 def _claimed_profile_sync(
@@ -470,6 +488,156 @@ def test_profile_sync_without_item_issues_succeeds(
     completed = jobs.get(job.id)
     assert completed is not None
     assert completed.state == "succeeded"
+
+
+def test_rate_limited_media_failure_activates_global_cooldown(
+    runner: JobRunner,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: failing only the current item lets the next queued profile
+    # hit the same account/IP-wide Instagram limit immediately.
+    _freeze_job_runner_time(monkeypatch)
+    job = _claimed_single_media(
+        jobs,
+        {
+            "media_kind": "reel",
+            "identity_type": "shortcode",
+            "identity_value": "RATE123",
+            "shortcode": "RATE123",
+            "original_url": "https://www.instagram.com/reel/RATE123/",
+        },
+    )
+    issue = SafeMediaIssue(
+        identity=MediaIdentity("shortcode", "RATE123"),
+        kind="reel",
+        error_code="instagram_rate_limited",
+        safe_message=RATE_LIMITED,
+        exception_class_chain=("TooManyRequestsException",),
+    )
+
+    class RateLimitedAdapter:
+        def download_input(self, _parsed: object, _job_id: str) -> None:
+            raise MediaItemFailure(issue)
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: RateLimitedAdapter())
+
+    runner.run(job)
+
+    failed = jobs.get(job.id)
+    assert failed is not None
+    assert failed.state == "failed"
+    assert failed.error == (
+        f"{RATE_LIMITED} All Instagram jobs are paused until 2026-07-31 08:30 UTC."
+    )
+    cooldown = InstagramCooldownStore(test_settings.data_root).status(NOW)
+    assert cooldown.until == NOW + timedelta(minutes=30)
+    assert cooldown.consecutive_rate_limits == 1
+
+
+def test_rate_limited_safe_adapter_error_increases_global_backoff(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: recognizing only item-level 429s misses failures raised while
+    # profile feed iterators are being enumerated.
+    _freeze_job_runner_time(monkeypatch)
+    cooldowns = InstagramCooldownStore(test_settings.data_root)
+    cooldowns.record_rate_limit(NOW - timedelta(hours=1))
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+
+    class RateLimitedAdapter:
+        def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
+            raise PublicInstagramAdapterError(RATE_LIMITED)
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: RateLimitedAdapter())
+
+    runner.run(job)
+
+    failed = jobs.get(job.id)
+    assert failed is not None
+    assert failed.error == (
+        f"{RATE_LIMITED} All Instagram jobs are paused until 2026-07-31 09:00 UTC."
+    )
+    cooldown = cooldowns.status(NOW)
+    assert cooldown.until == NOW + timedelta(hours=1)
+    assert cooldown.consecutive_rate_limits == 2
+
+
+def test_non_rate_instagram_failure_does_not_activate_cooldown(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: broad failure matching would pause all profiles for routine
+    # transient or item-local errors unrelated to HTTP 429.
+    _freeze_job_runner_time(monkeypatch)
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+
+    class UnavailableAdapter:
+        def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
+            raise PublicInstagramAdapterError(TRANSIENT)
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: UnavailableAdapter())
+
+    runner.run(job)
+
+    assert InstagramCooldownStore(test_settings.data_root).status(NOW).until is None
+
+
+def test_successful_instagram_job_resets_cooldown_backoff(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: never clearing a recovered account leaves the next isolated
+    # 429 at an unnecessarily long exponential delay.
+    _freeze_job_runner_time(monkeypatch)
+    cooldowns = InstagramCooldownStore(test_settings.data_root)
+    cooldowns.record_rate_limit(NOW - timedelta(hours=2))
+    cooldowns.record_rate_limit(NOW - timedelta(hours=1))
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+
+    class CleanAdapter:
+        def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
+            return ProfileSyncResult(0, 0, 0, False)
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: CleanAdapter())
+
+    runner.run(job)
+
+    status = cooldowns.status(NOW)
+    assert status.until is None
+    assert status.consecutive_rate_limits == 0
+
+
+def test_successful_local_job_does_not_reset_instagram_backoff(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: treating any worker success as Instagram recovery makes a
+    # local deletion silently clear account/IP protection.
+    _freeze_job_runner_time(monkeypatch)
+    cooldowns = InstagramCooldownStore(test_settings.data_root)
+    cooldowns.record_rate_limit(NOW)
+    job, _profile_id = _claimed_profile_deletion(library, jobs)
+
+    runner.run(job)
+
+    status = cooldowns.status(NOW)
+    assert status.until == NOW + timedelta(minutes=30)
+    assert status.consecutive_rate_limits == 1
 
 
 @pytest.mark.parametrize(

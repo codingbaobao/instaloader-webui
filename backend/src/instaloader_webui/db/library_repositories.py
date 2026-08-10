@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
@@ -1008,16 +1008,19 @@ class JobRepository:
                 issues=issues,
             )
 
-    def claim_next(self, now: datetime) -> JobSnapshot | None:
+    def claim_next(
+        self,
+        now: datetime,
+        *,
+        excluded_types: Collection[str] = (),
+    ) -> JobSnapshot | None:
         current_time = _as_utc(now)
         with self._session_factory() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
-            model = session.scalar(
-                select(Job)
-                .where(Job.state == "pending")
-                .order_by(Job.created_at, Job.id)
-                .limit(1)
-            )
+            statement = select(Job).where(Job.state == "pending")
+            if excluded_types:
+                statement = statement.where(Job.type.not_in(tuple(excluded_types)))
+            model = session.scalar(statement.order_by(Job.created_at, Job.id).limit(1))
             if model is None:
                 session.commit()
                 return None
