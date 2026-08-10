@@ -15,6 +15,7 @@ from typing import Literal, cast
 from urllib.parse import urlsplit
 
 from instaloader import (
+    AbortDownloadException,
     BadResponseException,
     Instaloader,
     InstaloaderException,
@@ -341,7 +342,7 @@ class PublicInstaloaderAdapter:
                 profile,
                 authenticated=session_configured,
             )
-        except InstaloaderException as error:
+        except (AbortDownloadException, InstaloaderException) as error:
             raise PublicInstagramAdapterError(
                 classify_instaloader_error(
                     error,
@@ -914,7 +915,7 @@ class PublicInstaloaderAdapter:
                 profile=profile,
                 job_id=job_id,
             )
-        except InstaloaderException as error:
+        except (AbortDownloadException, InstaloaderException) as error:
             self._record_sync_result(profile_id, succeeded=False)
             raise PublicInstagramAdapterError(
                 classify_instaloader_error(
@@ -1038,6 +1039,7 @@ class PublicInstaloaderAdapter:
                 original_url=self._canonical_original_url(post.shortcode, kind),
                 owner=owner,
             ),
+            published_at_hint=self._as_utc(post.date_utc),
         )
 
     def _resolve_shortcode(

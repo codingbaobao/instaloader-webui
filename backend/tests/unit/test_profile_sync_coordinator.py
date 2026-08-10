@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 
 import pytest
 from instaloader import (
+    AbortDownloadException,
     BadResponseException,
     LoginRequiredException,
     Profile,
@@ -28,6 +29,7 @@ from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.errors import (
     ANONYMOUS_REJECTED,
     PROFILE_NOT_FOUND,
+    RATE_LIMITED,
     SESSION_REJECTED,
     TRANSIENT,
 )
@@ -62,7 +64,12 @@ JPEG_AVATAR = b"\xff\xd8\xff\xe0avatar-image"
 WEBP_AVATAR = b"RIFF\x0c\x00\x00\x00WEBPVP8 \x00\x00\x00\x00"
 
 
-def candidate(kind: MediaKind, value: str) -> MediaCandidate:
+def candidate(
+    kind: MediaKind,
+    value: str,
+    *,
+    published_at: datetime | None = None,
+) -> MediaCandidate:
     identity_type: Literal["shortcode", "story_media_id"] = (
         "story_media_id" if kind == "story" else "shortcode"
     )
@@ -70,6 +77,7 @@ def candidate(kind: MediaKind, value: str) -> MediaCandidate:
         identity=MediaIdentity(identity_type, value),
         kind=kind,
         session_configured=True,
+        published_at_hint=published_at,
         resolve=lambda: (_ for _ in ()).throw(
             AssertionError("coordinator must not resolve candidates")
         ),
@@ -80,12 +88,20 @@ def story(value: str) -> MediaCandidate:
     return candidate("story", value)
 
 
-def reel(value: str) -> MediaCandidate:
-    return candidate("reel", value)
+def reel(
+    value: str,
+    *,
+    published_at: datetime | None = None,
+) -> MediaCandidate:
+    return candidate("reel", value, published_at=published_at)
 
 
-def post(value: str) -> MediaCandidate:
-    return candidate("post", value)
+def post(
+    value: str,
+    *,
+    published_at: datetime | None = None,
+) -> MediaCandidate:
+    return candidate("post", value, published_at=published_at)
 
 
 @dataclass(slots=True)
@@ -116,6 +132,9 @@ class RecordingProcessor:
     events: list[str]
     failures: dict[str, BaseException] = field(default_factory=dict)
     processed: list[MediaCandidate] = field(default_factory=list)
+    statuses: dict[str, Literal["saved", "existing"]] = field(
+        default_factory=dict
+    )
 
     def process(self, item: MediaCandidate, *, job_id: str) -> object:
         assert job_id == "job-1"
@@ -124,7 +143,7 @@ class RecordingProcessor:
         failure = self.failures.get(item.identity.value)
         if failure is not None:
             raise failure
-        return object()
+        return SimpleNamespace(status=self.statuses.get(item.identity.value, "saved"))
 
 
 def item_failure(item: MediaCandidate) -> MediaItemFailure:
@@ -147,6 +166,7 @@ def make_coordinator(
     progress: list[tuple[int, int | None, str, str]] | None = None,
     issues: list[SafeMediaIssue] | None = None,
     processed: list[MediaCandidate] | None = None,
+    statuses: dict[str, Literal["saved", "existing"]] | None = None,
     syncable=lambda: True,
 ) -> ProfileSyncCoordinator:
     progress_events = progress if progress is not None else []
@@ -157,12 +177,25 @@ def make_coordinator(
             events,
             failures or {},
             processed if processed is not None else [],
+            statuses or {},
         ),
         progress=lambda current, total, phase, text: progress_events.append(
             (current, total, phase, text)
         ),
         record_issue=recorded_issues.append,
         is_syncable=syncable,
+    )
+
+
+def rate_limited_failure(item: MediaCandidate) -> MediaItemFailure:
+    return MediaItemFailure(
+        SafeMediaIssue(
+            identity=item.identity,
+            kind=item.kind,
+            error_code="instagram_rate_limited",
+            safe_message=RATE_LIMITED,
+            exception_class_chain=("TooManyRequestsException",),
+        )
     )
 
 
@@ -226,8 +259,8 @@ def test_sync_saves_stories_before_scanning_reels_and_posts() -> None:
             "scanning_media",
             "Scanning Instagram posts and reels…",
         ),
-        (2, 5, "processing_reels", "Processing Instagram reels."),
-        (4, 5, "processing_posts", "Processing Instagram posts."),
+        (2, None, "processing_reels", "Processing Instagram reels."),
+        (4, None, "processing_posts", "Processing Instagram posts."),
     ]
     assert [current for current, *_rest in progress] == [
         0,
@@ -248,7 +281,7 @@ def test_sync_saves_stories_before_scanning_reels_and_posts() -> None:
     ]
 
 
-def test_empty_story_manifest_is_valid_and_scan_sets_an_exact_total() -> None:
+def test_empty_story_manifest_is_valid_and_finishes_with_an_exact_total() -> None:
     # Break caught: treating no current Stories as a fatal lookup failure
     # prevents ordinary profile syncs when the account has nothing ephemeral.
     events: list[str] = []
@@ -271,7 +304,7 @@ def test_empty_story_manifest_is_valid_and_scan_sets_an_exact_total() -> None:
     assert result.total == 1
     assert progress[0][:3] == (0, None, "saving_stories")
     assert progress[1][:3] == (0, None, "scanning_media")
-    assert progress[2][:3] == (0, 1, "processing_reels")
+    assert progress[2][:3] == (0, None, "processing_reels")
 
 
 def test_duplicate_story_media_ids_produce_one_outcome() -> None:
@@ -347,6 +380,99 @@ def test_item_failure_records_one_warning_continues_and_advances_once() -> None:
     assert [event[0] for event in progress[:3]] == [0, 1, 2]
 
 
+def test_blocking_media_failure_stops_before_the_next_candidate() -> None:
+    # Break caught: treating a 429 as an item warning keeps issuing Instagram
+    # requests and deepens a temporary server-side rate limit.
+    blocked = reel("rate-limited", published_at=NOW)
+    later = post("must-not-run", published_at=NOW - timedelta(minutes=1))
+    events: list[str] = []
+    issues: list[SafeMediaIssue] = []
+    source = RecordingSource(
+        reels=(blocked,),
+        posts=(later,),
+        events=events,
+    )
+
+    with pytest.raises(MediaItemFailure) as raised:
+        make_coordinator(
+            source=source,
+            events=events,
+            failures={blocked.identity.value: rate_limited_failure(blocked)},
+            issues=issues,
+        ).run(profile=PROFILE, job_id="job-1")
+
+    assert raised.value.issue.error_code == "instagram_rate_limited"
+    assert "process:must-not-run" not in events
+    # The job runner owns persistence of the one terminal issue.
+    assert issues == []
+
+
+def test_posts_and_reels_are_lazily_interleaved_newest_first() -> None:
+    # Break caught: draining every Reel before Posts starves recent Posts on
+    # profiles with a large Reel history.
+    events: list[str] = []
+    processed: list[MediaCandidate] = []
+    source = RecordingSource(
+        reels=(
+            reel("shared", published_at=NOW),
+            reel("reel-older", published_at=NOW - timedelta(minutes=3)),
+        ),
+        posts=(
+            post("shared", published_at=NOW),
+            post("post-middle", published_at=NOW - timedelta(minutes=1)),
+            post("post-oldest", published_at=NOW - timedelta(minutes=4)),
+        ),
+        events=events,
+    )
+
+    result = make_coordinator(
+        source=source,
+        events=events,
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [(item.kind, item.identity.value) for item in processed] == [
+        ("reel", "shared"),
+        ("post", "post-middle"),
+        ("reel", "reel-older"),
+        ("post", "post-oldest"),
+    ]
+    assert result.processed == 4
+    assert result.backfill_pending is False
+
+
+def test_long_lived_backfill_pauses_after_25_new_saves() -> None:
+    # Break caught: a first sync tried to consume an entire profile history in
+    # one run, triggering rate limits; existing checkpoints must not use budget.
+    events: list[str] = []
+    processed: list[MediaCandidate] = []
+    reels = tuple(
+        reel(
+            f"reel-{index:02d}",
+            published_at=NOW - timedelta(minutes=index),
+        )
+        for index in range(27)
+    )
+    statuses: dict[str, Literal["saved", "existing"]] = {
+        "reel-00": "existing"
+    }
+
+    result = make_coordinator(
+        source=RecordingSource(reels=reels, events=events),
+        events=events,
+        processed=processed,
+        statuses=statuses,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == [
+        f"reel-{index:02d}" for index in range(26)
+    ]
+    assert result.processed == 26
+    assert result.total is None
+    assert result.backfill_pending is True
+    assert events[-1] == "process:reel-25"
+
+
 def test_non_item_processor_error_remains_fatal() -> None:
     # Break caught: catching Exception around processor calls would downgrade
     # filesystem and database corruption to a routine media warning.
@@ -361,9 +487,9 @@ def test_non_item_processor_error_remains_fatal() -> None:
         ).run(profile=PROFILE, job_id="job-1")
 
 
-def test_iterator_interruption_escapes_before_incomplete_manifest_processing() -> None:
-    # Break caught: processing a partially enumerated manifest would publish an
-    # invented exact total and silently omit media after an iterator failure.
+def test_iterator_interruption_escapes_after_durable_lazy_item_processing() -> None:
+    # Break caught: eagerly materializing a large manifest delays every save and
+    # discards all prior iterator work when a later page fails.
     events: list[str] = []
 
     def interrupted_reels() -> Iterable[MediaCandidate]:
@@ -386,6 +512,8 @@ def test_iterator_interruption_escapes_before_incomplete_manifest_processing() -
         "scan:stories",
         "process:saved-first",
         "scan:reels",
+        "scan:posts",
+        "process:partial",
     ]
 
 
@@ -414,7 +542,7 @@ def test_stop_is_polled_only_before_processing_manifest_items() -> None:
         "scan:posts",
     ]
     assert result.processed == 1
-    assert result.total == 3
+    assert result.total is None
     assert result.stopped is True
 
 
@@ -871,7 +999,6 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
         "profile_preflight",
         "saving_stories",
         "scanning_media",
-        "processing_reels",
     ]
     assert resolver.calls == [(loader.context, upstream.username)]
     assert profile_avatar_path(
@@ -886,6 +1013,50 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert refreshed.last_sync_succeeded_at is not None
     assert response.closed is True
     assert "instagram_profile_avatar_invalid_response" not in caplog.text
+
+
+def test_profile_sync_safely_classifies_abort_during_reel_enumeration(
+    monkeypatch: pytest.MonkeyPatch,
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+) -> None:
+    # Break caught: AbortDownloadException is outside InstaloaderException's
+    # hierarchy and used to become the unhelpful "Instagram operation failed."
+    events: list[str] = []
+    upstream = AdapterProfile(events=events)
+
+    def interrupted_reels(profile: AdapterProfile) -> Iterable[object]:
+        profile.events.append("scan:reels")
+
+        def items() -> Iterable[object]:
+            raise AbortDownloadException(
+                "Instagram worker request was rate limited."
+            )
+            yield  # pragma: no cover - preserves generator typing.
+
+        return items()
+
+    monkeypatch.setattr(AdapterProfile, "get_reels", interrupted_reels)
+    loader = AdapterLoader(events=events, response=AvatarResponse())
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=RecordingProfileLookupResolver(
+            upstream,
+            events=events,
+        ),
+    )
+
+    with pytest.raises(PublicInstagramAdapterError) as raised:
+        adapter.sync_profile(tracked_profile.id, "job-aborted-reels")
+
+    assert str(raised.value) == RATE_LIMITED
+    refreshed = profile_repository.get_profile(tracked_profile.id)
+    assert refreshed is not None
+    assert refreshed.last_sync_attempted_at is not None
+    assert refreshed.last_sync_succeeded_at is None
 
 
 def test_profile_sync_preserves_webp_avatar_and_removes_stale_jpeg(
@@ -1018,7 +1189,6 @@ def test_profile_sync_real_fallback_continues_through_profile_flow(
         "profile_preflight",
         "saving_stories",
         "scanning_media",
-        "processing_reels",
     ]
     refreshed = profile_repository.get_profile(tracked_profile.id)
     assert refreshed is not None
