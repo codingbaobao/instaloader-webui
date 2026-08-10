@@ -439,7 +439,7 @@ def test_profile_backfill_with_item_issues_preserves_pending_status(
     assert completed is not None
     assert completed.state == "completed_with_warnings"
     assert completed.status_text == (
-        "Saved 25 new posts and reels with 1 warning(s). More profile history "
+        "Profile sync time slice ended with 1 warning(s). More profile history "
         "will continue on the next scheduled sync."
     )
 
@@ -894,6 +894,9 @@ def test_fatal_profile_scan_preserves_story_and_records_failed_attempt(
                 progress=self._progress,
                 record_issue=self._issue,
                 is_syncable=lambda: True,
+                monotonic=lambda: 0.0,
+                pause_between_new_media=lambda: None,
+                time_slice_seconds=300,
             ).run(profile=object(), job_id=job_id)
 
     def fake_adapter(**kwargs):

@@ -103,7 +103,7 @@ class JobRunner:
             now = datetime.now(UTC)
             if outcome.warning_count:
                 warning_status = (
-                    "Saved 25 new posts and reels with "
+                    "Profile sync time slice ended with "
                     f"{outcome.warning_count} warning(s). More profile history "
                     "will continue on the next scheduled sync."
                     if outcome.backfill_pending

@@ -168,6 +168,9 @@ def make_coordinator(
     processed: list[MediaCandidate] | None = None,
     statuses: dict[str, Literal["saved", "existing"]] | None = None,
     syncable=lambda: True,
+    monotonic=lambda: 0.0,
+    pause_between_new_media=lambda: None,
+    time_slice_seconds: float = 300,
 ) -> ProfileSyncCoordinator:
     progress_events = progress if progress is not None else []
     recorded_issues = issues if issues is not None else []
@@ -184,6 +187,9 @@ def make_coordinator(
         ),
         record_issue=recorded_issues.append,
         is_syncable=syncable,
+        monotonic=monotonic,
+        pause_between_new_media=pause_between_new_media,
+        time_slice_seconds=time_slice_seconds,
     )
 
 
@@ -441,9 +447,9 @@ def test_posts_and_reels_are_lazily_interleaved_newest_first() -> None:
     assert result.backfill_pending is False
 
 
-def test_long_lived_backfill_pauses_after_25_new_saves() -> None:
-    # Break caught: a first sync tried to consume an entire profile history in
-    # one run, triggering rate limits; existing checkpoints must not use budget.
+def test_fast_backfill_is_not_limited_to_25_new_saves() -> None:
+    # Break caught: retaining the per-profile item cap stops a fast, well-paced
+    # sync even though its fair worker time slice has not expired.
     events: list[str] = []
     processed: list[MediaCandidate] = []
     reels = tuple(
@@ -451,26 +457,106 @@ def test_long_lived_backfill_pauses_after_25_new_saves() -> None:
             f"reel-{index:02d}",
             published_at=NOW - timedelta(minutes=index),
         )
-        for index in range(27)
+        for index in range(30)
     )
-    statuses: dict[str, Literal["saved", "existing"]] = {
-        "reel-00": "existing"
-    }
 
     result = make_coordinator(
         source=RecordingSource(reels=reels, events=events),
         events=events,
         processed=processed,
-        statuses=statuses,
     ).run(profile=PROFILE, job_id="job-1")
 
     assert [item.identity.value for item in processed] == [
-        f"reel-{index:02d}" for index in range(26)
+        f"reel-{index:02d}" for index in range(30)
     ]
-    assert result.processed == 26
+    assert result.processed == 30
+    assert result.total == 30
+    assert result.backfill_pending is False
+
+
+def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> None:
+    # Break caught: omitting elapsed-time checks lets one large profile occupy
+    # the single worker indefinitely.
+    times = iter((0.0, 0.0, 301.0))
+    events: list[str] = []
+    progress: list[tuple[int, int | None, str, str]] = []
+    processed: list[MediaCandidate] = []
+    source = RecordingSource(
+        reels=(
+            reel("first", published_at=NOW),
+            reel("deferred", published_at=NOW - timedelta(minutes=1)),
+        ),
+        events=events,
+    )
+
+    result = make_coordinator(
+        source=source,
+        events=events,
+        monotonic=lambda: next(times),
+        processed=processed,
+        progress=progress,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == ["first"]
+    assert result.processed == 1
     assert result.total is None
     assert result.backfill_pending is True
-    assert events[-1] == "process:reel-25"
+    assert progress[-1][3] == (
+        "Profile sync time slice ended. More profile history will continue on "
+        "the next scheduled sync."
+    )
+
+
+def test_stories_are_saved_before_long_lived_time_slice_starts() -> None:
+    # Break caught: starting the five-minute slice before Stories can defer
+    # expiring content when Story enumeration or download is slow.
+    times = iter((1000.0, 1301.0))
+    events: list[str] = []
+    source = RecordingSource(
+        stories=(story("story-first"),),
+        reels=(reel("deferred", published_at=NOW),),
+        events=events,
+    )
+
+    result = make_coordinator(
+        source=source,
+        events=events,
+        monotonic=lambda: next(times),
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert events == [
+        "scan:stories",
+        "process:story-first",
+        "scan:reels",
+        "scan:posts",
+    ]
+    assert result.processed == 1
+    assert result.backfill_pending is True
+
+
+def test_new_media_pause_occurs_only_before_a_following_candidate() -> None:
+    # Break caught: sleeping for existing checkpoints or after the final item
+    # adds latency without smoothing a subsequent Instagram download.
+    events: list[str] = []
+    pauses: list[str] = []
+    source = RecordingSource(
+        reels=(
+            reel("saved", published_at=NOW),
+            reel("existing", published_at=NOW - timedelta(minutes=1)),
+            reel("saved-last", published_at=NOW - timedelta(minutes=2)),
+        ),
+        events=events,
+    )
+
+    result = make_coordinator(
+        source=source,
+        events=events,
+        pause_between_new_media=lambda: pauses.append("pause"),
+        statuses={"existing": "existing"},
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert result.processed == 3
+    assert pauses == ["pause"]
 
 
 def test_non_item_processor_error_remains_fatal() -> None:
