@@ -129,15 +129,16 @@ class InstagramCooldownStore:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{_STATE_FILENAME}.",
-            dir=self._state_directory,
-        )
-        temporary_path = Path(temporary_name)
+        temporary_path: Path | None = None
         try:
-            if os.name == "posix":
-                os.fchmod(descriptor, _STATE_FILE_MODE)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{_STATE_FILENAME}.",
+                dir=self._state_directory,
+            )
+            temporary_path = Path(temporary_name)
             with os.fdopen(descriptor, "wb") as target:
+                if os.name == "posix":
+                    os.fchmod(target.fileno(), _STATE_FILE_MODE)
                 target.write(payload)
                 target.flush()
                 os.fsync(target.fileno())
@@ -150,7 +151,13 @@ class InstagramCooldownStore:
                 "Instagram cooldown state could not be persisted."
             ) from error
         finally:
-            temporary_path.unlink(missing_ok=True)
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError as error:
+                    raise InstagramCooldownStoreError(
+                        "Instagram cooldown state could not be persisted."
+                    ) from error
 
     def _ensure_state_directory(self) -> None:
         try:

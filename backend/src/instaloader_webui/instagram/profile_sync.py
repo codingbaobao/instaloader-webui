@@ -113,20 +113,20 @@ class ProfileSyncCoordinator:
                 active_phase = phase
                 active_text = status_text
                 self.progress(processed, None, phase, status_text)
+            if self._time_slice_expired(long_lived_started_at):
+                return self._backfill_pending_result(
+                    processed=processed,
+                    issue_count=issue_count,
+                    phase=phase,
+                )
             if pause_before_candidate:
                 self.pause_between_new_media()
-            if (
-                self.monotonic() - long_lived_started_at
-                >= self.time_slice_seconds
-            ):
-                self.progress(processed, None, phase, _BACKFILL_PENDING)
-                return ProfileSyncResult(
-                    processed=processed,
-                    total=None,
-                    issue_count=issue_count,
-                    stopped=False,
-                    backfill_pending=True,
-                )
+                if self._time_slice_expired(long_lived_started_at):
+                    return self._backfill_pending_result(
+                        processed=processed,
+                        issue_count=issue_count,
+                        phase=phase,
+                    )
             if not self.is_syncable():
                 self.progress(processed, None, phase, _STOPPED)
                 return ProfileSyncResult(
@@ -147,6 +147,25 @@ class ProfileSyncCoordinator:
             total=processed,
             issue_count=issue_count,
             stopped=False,
+        )
+
+    def _time_slice_expired(self, started_at: float) -> bool:
+        return self.monotonic() - started_at >= self.time_slice_seconds
+
+    def _backfill_pending_result(
+        self,
+        *,
+        processed: int,
+        issue_count: int,
+        phase: str,
+    ) -> ProfileSyncResult:
+        self.progress(processed, None, phase, _BACKFILL_PENDING)
+        return ProfileSyncResult(
+            processed=processed,
+            total=None,
+            issue_count=issue_count,
+            stopped=False,
+            backfill_pending=True,
         )
 
     def _process(

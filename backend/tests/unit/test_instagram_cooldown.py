@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from instaloader_webui.instagram import cooldown as cooldown_module
 from instaloader_webui.instagram.cooldown import (
     InstagramCooldownStore,
     InstagramCooldownStoreError,
@@ -124,3 +125,18 @@ def test_state_uses_restrictive_posix_modes(tmp_path: Path) -> None:
         stat.S_IMODE((tmp_path / "state" / "instagram_cooldown.json").stat().st_mode)
         == 0o600
     )
+
+
+def test_temporary_file_creation_failure_uses_store_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: leaking raw OSError makes callers unable to isolate all
+    # failures from this secondary persistence mechanism.
+    def fail_mkstemp(**_kwargs: object) -> tuple[int, str]:
+        raise OSError("filesystem unavailable")
+
+    monkeypatch.setattr(cooldown_module.tempfile, "mkstemp", fail_mkstemp)
+
+    with pytest.raises(InstagramCooldownStoreError):
+        InstagramCooldownStore(tmp_path).record_rate_limit(NOW)

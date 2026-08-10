@@ -21,12 +21,16 @@ from instaloader_webui.db.library_repositories import (
     NormalizedMedia,
 )
 from instaloader_webui.db.schema import initialize_database
-from instaloader_webui.instagram.cooldown import InstagramCooldownStore
+from instaloader_webui.instagram.cooldown import (
+    InstagramCooldownStore,
+    InstagramCooldownStoreError,
+)
 from instaloader_webui.instagram.errors import (
     RATE_LIMITED,
     SESSION_REJECTED,
     TRANSIENT,
 )
+from instaloader_webui.instagram.followee_discovery import FolloweeDiscoveryError
 from instaloader_webui.instagram.media_types import MediaCandidate
 from instaloader_webui.instagram.profile_lookup import (
     ProfileLookupMode,
@@ -566,6 +570,113 @@ def test_rate_limited_safe_adapter_error_increases_global_backoff(
     cooldown = cooldowns.status(NOW)
     assert cooldown.until == NOW + timedelta(hours=1)
     assert cooldown.consecutive_rate_limits == 2
+
+
+def test_rate_limited_followee_discovery_activates_global_cooldown(
+    runner: JobRunner,
+    jobs: JobRepository,
+    followee_imports: FolloweeImportRepository,
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: omitting the authenticated discovery path leaves one of the
+    # three Instagram job types outside global cooldown activation.
+    _freeze_job_runner_time(monkeypatch)
+    job, batch_id = _claimed_followee_discovery(followee_imports, jobs)
+
+    def fail_discovery(_job: JobSnapshot, _batch_id: str) -> None:
+        raise FolloweeDiscoveryError(RATE_LIMITED)
+
+    monkeypatch.setattr(runner, "_discover_followees", fail_discovery)
+
+    runner.run(job)
+
+    failed = jobs.get(job.id)
+    batch = followee_imports.get(batch_id)
+    assert failed is not None
+    assert failed.state == "failed"
+    assert failed.error == (
+        f"{RATE_LIMITED} All Instagram jobs are paused until 2026-07-31 08:30 UTC."
+    )
+    assert batch is not None
+    assert batch.state == "failed"
+    assert batch.error == failed.error
+    cooldown = InstagramCooldownStore(test_settings.data_root).status(NOW)
+    assert cooldown.until == NOW + timedelta(minutes=30)
+
+
+def test_rate_limit_persistence_failure_still_fails_job_safely(
+    runner: JobRunner,
+    jobs: JobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: a secondary state-file error must not strand the claimed
+    # rate-limited job in running or escape the worker loop.
+    _freeze_job_runner_time(monkeypatch)
+    job = _claimed_single_media(
+        jobs,
+        {
+            "media_kind": "reel",
+            "identity_type": "shortcode",
+            "identity_value": "RATEFAIL",
+            "shortcode": "RATEFAIL",
+            "original_url": "https://www.instagram.com/reel/RATEFAIL/",
+        },
+    )
+    issue = SafeMediaIssue(
+        identity=MediaIdentity("shortcode", "RATEFAIL"),
+        kind="reel",
+        error_code="instagram_rate_limited",
+        safe_message=RATE_LIMITED,
+        exception_class_chain=("TooManyRequestsException",),
+    )
+
+    class RateLimitedAdapter:
+        def download_input(self, _parsed: object, _job_id: str) -> None:
+            raise MediaItemFailure(issue)
+
+    class FailingCooldowns:
+        def record_rate_limit(self, _now: datetime) -> None:
+            raise InstagramCooldownStoreError("state unavailable")
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: RateLimitedAdapter())
+    monkeypatch.setattr(runner, "_cooldowns", FailingCooldowns())
+
+    runner.run(job)
+
+    failed = jobs.get(job.id)
+    assert failed is not None
+    assert failed.state == "failed"
+    assert failed.error == RATE_LIMITED
+
+
+def test_success_reset_failure_does_not_turn_success_into_failure(
+    runner: JobRunner,
+    library: LibraryRepository,
+    jobs: JobRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: cooldown cleanup is secondary bookkeeping and must not
+    # override a successfully completed Instagram operation.
+    _freeze_job_runner_time(monkeypatch)
+    job, _profile_id = _claimed_profile_sync(library, jobs)
+
+    class CleanAdapter:
+        def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
+            return ProfileSyncResult(0, 0, 0, False)
+
+    class FailingCooldowns:
+        def record_success(self) -> None:
+            raise InstagramCooldownStoreError("state unavailable")
+
+    monkeypatch.setattr(runner, "_adapter", lambda _job: CleanAdapter())
+    monkeypatch.setattr(runner, "_cooldowns", FailingCooldowns())
+
+    runner.run(job)
+
+    completed = jobs.get(job.id)
+    assert completed is not None
+    assert completed.state == "succeeded"
 
 
 def test_non_rate_instagram_failure_does_not_activate_cooldown(

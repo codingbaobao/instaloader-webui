@@ -15,7 +15,10 @@ from instaloader_webui.db.library_repositories import (
     JobSnapshot,
     LibraryRepository,
 )
-from instaloader_webui.instagram.cooldown import InstagramCooldownStore
+from instaloader_webui.instagram.cooldown import (
+    InstagramCooldownStore,
+    InstagramCooldownStoreError,
+)
 from instaloader_webui.instagram.errors import RATE_LIMITED
 from instaloader_webui.instagram.followee_discovery import (
     FolloweeDiscoveryAdapter,
@@ -83,7 +86,12 @@ class JobRunner:
             self._progress(job, 0, None, "Starting worker job.")
             outcome = self._dispatch(job)
             if job.type in _INSTAGRAM_JOB_TYPES:
-                self._cooldowns.record_success()
+                try:
+                    self._cooldowns.record_success()
+                except InstagramCooldownStoreError:
+                    _LOGGER.exception(
+                        "Could not reset Instagram cooldown after job success."
+                    )
         except MediaItemFailure as failure:
             now = datetime.now(UTC)
             error = failure.issue.safe_message
@@ -151,7 +159,11 @@ class JobRunner:
         )
 
     def _activate_rate_limit_cooldown(self, now: datetime) -> str:
-        status = self._cooldowns.record_rate_limit(now)
+        try:
+            status = self._cooldowns.record_rate_limit(now)
+        except InstagramCooldownStoreError:
+            _LOGGER.exception("Could not persist Instagram rate-limit cooldown.")
+            return RATE_LIMITED
         if status.until is None:  # pragma: no cover - store returns active state.
             raise RuntimeError("Instagram cooldown did not provide a deadline.")
         deadline = status.until.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")

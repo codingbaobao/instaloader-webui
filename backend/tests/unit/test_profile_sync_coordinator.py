@@ -481,6 +481,7 @@ def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> No
     events: list[str] = []
     progress: list[tuple[int, int | None, str, str]] = []
     processed: list[MediaCandidate] = []
+    pauses: list[str] = []
     source = RecordingSource(
         reels=(
             reel("first", published_at=NOW),
@@ -493,6 +494,7 @@ def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> No
         source=source,
         events=events,
         monotonic=lambda: next(times),
+        pause_between_new_media=lambda: pauses.append("pause"),
         processed=processed,
         progress=progress,
     ).run(profile=PROFILE, job_id="job-1")
@@ -501,6 +503,7 @@ def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> No
     assert result.processed == 1
     assert result.total is None
     assert result.backfill_pending is True
+    assert pauses == []
     assert progress[-1][3] == (
         "Profile sync time slice ended. More profile history will continue on "
         "the next scheduled sync."
