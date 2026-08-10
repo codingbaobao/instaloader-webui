@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import random
 import shutil
+import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -76,6 +78,7 @@ DirectMediaInput = PostInput | ReelInput | StoryInput
 ProgressCallback = Callable[..., None]
 _MISSING_STORY_METADATA = "Fetching StoryItem metadata failed."
 _LOGGER = logging.getLogger(__name__)
+_PROFILE_SYNC_TIME_SLICE_SECONDS = 5 * 60
 _AVATAR_DIAGNOSTIC_PREFIX_BYTES = 64
 _MAX_AVATAR_DIAGNOSTIC_VALUE_LENGTH = 160
 _AVATAR_DIAGNOSTIC_UNAVAILABLE = "[unavailable]"
@@ -911,6 +914,11 @@ class PublicInstaloaderAdapter:
                 ),
                 record_issue=self._issue,
                 is_syncable=lambda: self._profile_is_syncable(profile_id),
+                monotonic=time.monotonic,
+                pause_between_new_media=lambda: time.sleep(
+                    random.uniform(1, 3)
+                ),
+                time_slice_seconds=_PROFILE_SYNC_TIME_SLICE_SECONDS,
             ).run(
                 profile=profile,
                 job_id=job_id,

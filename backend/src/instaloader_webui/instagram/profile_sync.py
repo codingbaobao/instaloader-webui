@@ -23,10 +23,9 @@ _PROCESSING_REELS = "Processing Instagram reels."
 _PROCESSING_POSTS = "Processing Instagram posts."
 _STOPPED = "Profile synchronization stopped before the next media item."
 _BACKFILL_PENDING = (
-    "Saved 25 new posts and reels. More profile history will continue on the "
+    "Profile sync time slice ended. More profile history will continue on the "
     "next scheduled sync."
 )
-_NEW_LONG_LIVED_MEDIA_LIMIT = 25
 _BLOCKING_ISSUE_CODES = frozenset(
     {
         "challenge_required",
@@ -73,6 +72,9 @@ class ProfileSyncCoordinator:
     progress: ProgressCallback
     record_issue: IssueCallback
     is_syncable: SyncableCallback
+    monotonic: Callable[[], float]
+    pause_between_new_media: Callable[[], None]
+    time_slice_seconds: float
 
     def run(self, *, profile: object, job_id: str) -> ProfileSyncResult:
         """Run one bounded sync while keeping infrastructure errors fatal."""
@@ -100,7 +102,8 @@ class ProfileSyncCoordinator:
             self.source.iter_reels(profile),
             self.source.iter_posts(profile),
         )
-        new_media_count = 0
+        long_lived_started_at = self.monotonic()
+        pause_before_candidate = False
         active_phase: str | None = None
         active_text = ""
 
@@ -110,6 +113,20 @@ class ProfileSyncCoordinator:
                 active_phase = phase
                 active_text = status_text
                 self.progress(processed, None, phase, status_text)
+            if self._time_slice_expired(long_lived_started_at):
+                return self._backfill_pending_result(
+                    processed=processed,
+                    issue_count=issue_count,
+                    phase=phase,
+                )
+            if pause_before_candidate:
+                self.pause_between_new_media()
+                if self._time_slice_expired(long_lived_started_at):
+                    return self._backfill_pending_result(
+                        processed=processed,
+                        issue_count=issue_count,
+                        phase=phase,
+                    )
             if not self.is_syncable():
                 self.progress(processed, None, phase, _STOPPED)
                 return ProfileSyncResult(
@@ -122,24 +139,33 @@ class ProfileSyncCoordinator:
             failed, saved = self._process(candidate, job_id=job_id)
             processed += 1
             issue_count += int(failed)
-            new_media_count += int(saved)
+            pause_before_candidate = saved
             self.progress(processed, None, phase, active_text)
-
-            if new_media_count >= _NEW_LONG_LIVED_MEDIA_LIMIT:
-                self.progress(processed, None, phase, _BACKFILL_PENDING)
-                return ProfileSyncResult(
-                    processed=processed,
-                    total=None,
-                    issue_count=issue_count,
-                    stopped=False,
-                    backfill_pending=True,
-                )
 
         return ProfileSyncResult(
             processed=processed,
             total=processed,
             issue_count=issue_count,
             stopped=False,
+        )
+
+    def _time_slice_expired(self, started_at: float) -> bool:
+        return self.monotonic() - started_at >= self.time_slice_seconds
+
+    def _backfill_pending_result(
+        self,
+        *,
+        processed: int,
+        issue_count: int,
+        phase: str,
+    ) -> ProfileSyncResult:
+        self.progress(processed, None, phase, _BACKFILL_PENDING)
+        return ProfileSyncResult(
+            processed=processed,
+            total=None,
+            issue_count=issue_count,
+            stopped=False,
+            backfill_pending=True,
         )
 
     def _process(

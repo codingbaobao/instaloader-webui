@@ -15,6 +15,11 @@ from instaloader_webui.db.library_repositories import (
     JobSnapshot,
     LibraryRepository,
 )
+from instaloader_webui.instagram.cooldown import (
+    InstagramCooldownStore,
+    InstagramCooldownStoreError,
+)
+from instaloader_webui.instagram.errors import RATE_LIMITED
 from instaloader_webui.instagram.followee_discovery import (
     FolloweeDiscoveryAdapter,
     FolloweeDiscoveryError,
@@ -39,6 +44,7 @@ from instaloader_webui.services.profile_avatars import profile_avatar_candidates
 
 _MAXIMUM_ERROR_LENGTH = 240
 _MEDIA_ISSUE_REPORTING_FAILED = "Media issue reporting failed."
+_INSTAGRAM_JOB_TYPES = frozenset({"profile_sync", "single_media", "followee_discovery"})
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -62,6 +68,7 @@ class JobRunner:
         followee_imports: FolloweeImportRepository,
         loader_runtime: WorkerInstaloaderRuntime,
         profile_lookup_resolver: ProfileLookupResolver,
+        cooldowns: InstagramCooldownStore,
     ) -> None:
         self._data_root = data_root
         self._media_root = media_root.resolve()
@@ -71,13 +78,25 @@ class JobRunner:
         self._followee_imports = followee_imports
         self._loader_runtime = loader_runtime
         self._profile_lookup_resolver = profile_lookup_resolver
+        self._cooldowns = cooldowns
 
     def run(self, job: JobSnapshot) -> None:
         """Dispatch a claimed job and persist success or a concise failure."""
         try:
             self._progress(job, 0, None, "Starting worker job.")
             outcome = self._dispatch(job)
+            if job.type in _INSTAGRAM_JOB_TYPES:
+                try:
+                    self._cooldowns.record_success()
+                except InstagramCooldownStoreError:
+                    _LOGGER.exception(
+                        "Could not reset Instagram cooldown after job success."
+                    )
         except MediaItemFailure as failure:
+            now = datetime.now(UTC)
+            error = failure.issue.safe_message
+            if failure.issue.error_code == "instagram_rate_limited":
+                error = self._activate_rate_limit_cooldown(now)
             try:
                 self._record_media_issue(job, failure.issue)
             except Exception:  # noqa: BLE001
@@ -88,8 +107,8 @@ class JobRunner:
             else:
                 self._jobs.fail(
                     job_id=job.id,
-                    error=failure.issue.safe_message,
-                    now=datetime.now(UTC),
+                    error=error,
+                    now=now,
                 )
         except Exception as error:  # noqa: BLE001
             self._fail_job(job, error)
@@ -103,7 +122,7 @@ class JobRunner:
             now = datetime.now(UTC)
             if outcome.warning_count:
                 warning_status = (
-                    "Saved 25 new posts and reels with "
+                    "Profile sync time slice ended with "
                     f"{outcome.warning_count} warning(s). More profile history "
                     "will continue on the next scheduled sync."
                     if outcome.backfill_pending
@@ -122,7 +141,10 @@ class JobRunner:
                 )
 
     def _fail_job(self, job: JobSnapshot, error: Exception) -> None:
+        now = datetime.now(UTC)
         safe_error = shorten_job_error(error)
+        if _is_safe_rate_limit_error(error):
+            safe_error = self._activate_rate_limit_cooldown(now)
         try:
             self._record_profile_sync_failure(job)
             self._record_profile_deletion_failure(job)
@@ -133,8 +155,19 @@ class JobRunner:
         self._jobs.fail(
             job_id=job.id,
             error=safe_error,
-            now=datetime.now(UTC),
+            now=now,
         )
+
+    def _activate_rate_limit_cooldown(self, now: datetime) -> str:
+        try:
+            status = self._cooldowns.record_rate_limit(now)
+        except InstagramCooldownStoreError:
+            _LOGGER.exception("Could not persist Instagram rate-limit cooldown.")
+            return RATE_LIMITED
+        if status.until is None:  # pragma: no cover - store returns active state.
+            raise RuntimeError("Instagram cooldown did not provide a deadline.")
+        deadline = status.until.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+        return f"{RATE_LIMITED} All Instagram jobs are paused until {deadline}."
 
     def _dispatch(self, job: JobSnapshot) -> _DispatchOutcome:
         if job.type == "profile_sync":
@@ -371,6 +404,16 @@ def shorten_job_error(error: Exception) -> str:
         message = str(error) or error.__class__.__name__
     compact = " ".join(message.split())
     return compact[:_MAXIMUM_ERROR_LENGTH]
+
+
+def _is_safe_rate_limit_error(error: Exception) -> bool:
+    return (
+        isinstance(
+            error,
+            (PublicInstagramAdapterError, FolloweeDiscoveryError),
+        )
+        and str(error) == RATE_LIMITED
+    )
 
 
 def _required_payload_text(job: JobSnapshot, key: str) -> str:

@@ -112,6 +112,42 @@ def test_update_progress_persists_phase(jobs: JobRepository) -> None:
     assert updated.phase == "downloading"
 
 
+def test_claim_next_skips_excluded_instagram_types_without_reordering_local_jobs(
+    jobs: JobRepository,
+) -> None:
+    # Break caught: FIFO claiming without exclusions immediately runs another
+    # Instagram request during a global cooldown and leaves local work blocked.
+    instagram_jobs = [
+        jobs.enqueue(
+            job_type=job_type,
+            payload={"sequence": index},
+            status_text="Queued Instagram job.",
+            now=NOW + timedelta(seconds=index),
+        )
+        for index, job_type in enumerate(
+            ("profile_sync", "single_media", "followee_discovery")
+        )
+    ]
+    local = jobs.enqueue(
+        job_type="delete_media",
+        payload={"media_id": "local-media"},
+        status_text="Queued local deletion.",
+        now=NOW + timedelta(seconds=3),
+    )
+
+    claimed = jobs.claim_next(
+        NOW + timedelta(seconds=4),
+        excluded_types={"profile_sync", "single_media", "followee_discovery"},
+    )
+
+    assert claimed is not None
+    assert claimed.id == local.id
+    for instagram_job in instagram_jobs:
+        pending = jobs.get(instagram_job.id)
+        assert pending is not None
+        assert pending.state == "pending"
+
+
 def test_complete_with_warnings_only_updates_running_jobs(
     jobs: JobRepository,
 ) -> None:
