@@ -79,6 +79,8 @@ class LibraryService:
         return self._jobs.enqueue(
             job_type="single_media",
             payload=payload,
+            target_label=parsed.canonical_url,
+            target_url=parsed.canonical_url,
             status_text="Queued media download.",
             now=now,
         )

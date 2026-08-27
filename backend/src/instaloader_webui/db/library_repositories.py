@@ -15,6 +15,7 @@ from instaloader_webui.db.models import (
     AppSetting,
     Job,
     JobIssue,
+    JobProgressSegment,
     MediaAsset,
     MediaItem,
     Profile,
@@ -109,11 +110,26 @@ class JobSnapshot:
     status_text: str
     error: str | None
     phase: str | None
+    target_label: str | None
+    target_url: str | None
+    progress_segments: tuple[JobProgressSegmentSnapshot, ...]
     issue_count: int
     issues: tuple[JobIssueSnapshot, ...]
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class JobProgressSegmentSnapshot:
+    segment: Literal["stories", "feed"]
+    state: Literal["pending", "running", "completed", "failed"]
+    scanned: int
+    total: int | None
+    saved: int
+    existing: int
+    warnings: int
     updated_at: datetime
 
 
@@ -320,6 +336,7 @@ def _job_issue_snapshot(model: JobIssue) -> JobIssueSnapshot:
 def _job_snapshot(
     model: Job,
     *,
+    progress_segments: tuple[JobProgressSegmentSnapshot, ...] = (),
     issue_count: int = 0,
     issues: tuple[JobIssueSnapshot, ...] = (),
 ) -> JobSnapshot:
@@ -336,6 +353,9 @@ def _job_snapshot(
         status_text=model.status_text,
         error=model.error,
         phase=model.phase,
+        target_label=model.target_label,
+        target_url=model.target_url,
+        progress_segments=progress_segments,
         issue_count=issue_count,
         issues=issues,
         created_at=_as_utc(model.created_at),
@@ -345,6 +365,48 @@ def _job_snapshot(
         ),
         updated_at=_as_utc(model.updated_at),
     )
+
+
+def _job_progress_segment_snapshot(
+    model: JobProgressSegment,
+) -> JobProgressSegmentSnapshot:
+    segment = model.segment
+    state = model.state
+    if segment not in ("stories", "feed"):
+        raise ValueError("Persisted job progress segment is invalid.")
+    if state not in ("pending", "running", "completed", "failed"):
+        raise ValueError("Persisted job progress state is invalid.")
+    return JobProgressSegmentSnapshot(
+        segment=segment,
+        state=state,
+        scanned=model.scanned,
+        total=model.total,
+        saved=model.saved,
+        existing=model.existing,
+        warnings=model.warnings,
+        updated_at=_as_utc(model.updated_at),
+    )
+
+
+def _progress_segments_by_job_id(
+    session: Session,
+    job_ids: Collection[str],
+) -> dict[str, tuple[JobProgressSegmentSnapshot, ...]]:
+    if not job_ids:
+        return {}
+    grouped: dict[str, list[JobProgressSegmentSnapshot]] = {
+        job_id: [] for job_id in job_ids
+    }
+    rows = session.scalars(
+        select(JobProgressSegment).where(JobProgressSegment.job_id.in_(job_ids))
+    )
+    for row in rows:
+        grouped[row.job_id].append(_job_progress_segment_snapshot(row))
+    order = {"stories": 0, "feed": 1}
+    return {
+        job_id: tuple(sorted(segments, key=lambda item: order[item.segment]))
+        for job_id, segments in grouped.items()
+    }
 
 
 def job_snapshot(model: Job) -> JobSnapshot:
@@ -840,6 +902,8 @@ class JobRepository:
         *,
         job_type: str,
         payload: dict[str, object],
+        target_label: str | None = None,
+        target_url: str | None = None,
         status_text: str,
         now: datetime,
     ) -> JobSnapshot:
@@ -853,6 +917,8 @@ class JobRepository:
             progress_total=None,
             status_text=status_text,
             error=None,
+            target_label=target_label,
+            target_url=target_url,
             created_at=current_time,
             started_at=None,
             completed_at=None,
@@ -876,6 +942,8 @@ class JobRepository:
         payload_text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         with self._session_factory() as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            profile = session.get(Profile, profile_id)
+            target_label = f"@{profile.username}" if profile is not None else None
             existing = session.scalar(
                 select(Job)
                 .where(
@@ -899,6 +967,8 @@ class JobRepository:
                 progress_total=None,
                 status_text=status_text,
                 error=None,
+                target_label=target_label,
+                target_url=None,
                 created_at=current_time,
                 started_at=None,
                 completed_at=None,
@@ -954,6 +1024,8 @@ class JobRepository:
                 progress_total=None,
                 status_text=status_text,
                 error=None,
+                target_label=f"@{profile.username}",
+                target_url=None,
                 created_at=current_time,
                 started_at=None,
                 completed_at=None,
@@ -980,8 +1052,16 @@ class JobRepository:
                     .group_by(JobIssue.job_id)
                 ).tuples()
             }
+            progress_segments = _progress_segments_by_job_id(
+                session,
+                tuple(job.id for job in jobs),
+            )
             return tuple(
-                _job_snapshot(job, issue_count=issue_counts.get(job.id, 0))
+                _job_snapshot(
+                    job,
+                    progress_segments=progress_segments.get(job.id, ()),
+                    issue_count=issue_counts.get(job.id, 0),
+                )
                 for job in jobs
             )
 
@@ -1002,10 +1082,86 @@ class JobRepository:
                 if include_issues
                 else ()
             )
+            progress_segments = _progress_segments_by_job_id(session, (job_id,))
             return _job_snapshot(
                 model,
+                progress_segments=progress_segments.get(job_id, ()),
                 issue_count=len(issue_models),
                 issues=issues,
+            )
+
+    def initialize_profile_sync_progress(
+        self,
+        *,
+        job_id: str,
+        now: datetime,
+    ) -> None:
+        current_time = _as_utc(now)
+        with self._session_factory.begin() as session:
+            job = session.get(Job, job_id)
+            if job is None or job.type != "profile_sync":
+                raise ValueError("Profile sync job is missing.")
+            session.execute(
+                delete(JobProgressSegment).where(
+                    JobProgressSegment.job_id == job_id
+                )
+            )
+            session.add_all(
+                JobProgressSegment(
+                    job_id=job_id,
+                    segment=segment,
+                    state="pending",
+                    scanned=0,
+                    total=None,
+                    saved=0,
+                    existing=0,
+                    warnings=0,
+                    updated_at=current_time,
+                )
+                for segment in ("stories", "feed")
+            )
+
+    def update_segment_progress(
+        self,
+        *,
+        job_id: str,
+        segment: Literal["stories", "feed"],
+        state: Literal["pending", "running", "completed", "failed"],
+        scanned: int,
+        total: int | None,
+        saved: int,
+        existing: int,
+        warnings: int,
+        status_text: str,
+        now: datetime,
+    ) -> None:
+        current_time = _as_utc(now)
+        with self._session_factory.begin() as session:
+            segment_row = session.get(JobProgressSegment, (job_id, segment))
+            if segment_row is None:
+                raise ValueError("Profile sync progress segment is missing.")
+            segment_row.state = state
+            segment_row.scanned = scanned
+            segment_row.total = total
+            segment_row.saved = saved
+            segment_row.existing = existing
+            segment_row.warnings = warnings
+            segment_row.updated_at = current_time
+            session.execute(
+                update(Job)
+                .where(Job.id == job_id, Job.state == "running")
+                .values(status_text=status_text, updated_at=current_time)
+            )
+
+    def fail_active_segment(self, *, job_id: str, now: datetime) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(
+                update(JobProgressSegment)
+                .where(
+                    JobProgressSegment.job_id == job_id,
+                    JobProgressSegment.state == "running",
+                )
+                .values(state="failed", updated_at=_as_utc(now))
             )
 
     def claim_next(
