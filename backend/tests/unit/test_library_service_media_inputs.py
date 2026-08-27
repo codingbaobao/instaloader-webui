@@ -15,12 +15,16 @@ class StubLibraryRepository:
 class RecordingJobRepository:
     def __init__(self) -> None:
         self.enqueued_payload: dict[str, object] | None = None
+        self.target_label: str | None = None
+        self.target_url: str | None = None
 
     def enqueue(
         self,
         *,
         job_type: str,
         payload: dict[str, object],
+        target_label: str | None,
+        target_url: str | None,
         status_text: str,
         now: datetime,
     ) -> object:
@@ -28,6 +32,8 @@ class RecordingJobRepository:
         assert status_text == "Queued media download."
         assert now == NOW
         self.enqueued_payload = payload
+        self.target_label = target_label
+        self.target_url = target_url
         return object()
 
 
@@ -54,6 +60,11 @@ def test_add_story_enqueues_canonical_single_media_job() -> None:
             "katerina.soria/3952742051065980676/"
         ),
     }
+    assert jobs.target_label == (
+        "https://www.instagram.com/stories/"
+        "katerina.soria/3952742051065980676/"
+    )
+    assert jobs.target_url == jobs.target_label
 
 
 def test_add_post_enqueues_canonical_single_media_job() -> None:
@@ -71,6 +82,8 @@ def test_add_post_enqueues_canonical_single_media_job() -> None:
         "shortcode": "CmzV2H-rrlI",
         "original_url": "https://www.instagram.com/p/CmzV2H-rrlI/",
     }
+    assert jobs.target_label == "https://www.instagram.com/p/CmzV2H-rrlI/"
+    assert jobs.target_url == jobs.target_label
 
 
 def test_add_reel_enqueues_canonical_single_media_job() -> None:
@@ -88,6 +101,8 @@ def test_add_reel_enqueues_canonical_single_media_job() -> None:
         "shortcode": "DOqEJyxCRGJ",
         "original_url": "https://www.instagram.com/reel/DOqEJyxCRGJ/",
     }
+    assert jobs.target_label == "https://www.instagram.com/reel/DOqEJyxCRGJ/"
+    assert jobs.target_url == jobs.target_label
 
 
 def test_add_media_rejects_a_profile_input() -> None:
