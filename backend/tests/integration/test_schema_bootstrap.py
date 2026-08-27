@@ -21,6 +21,39 @@ SAFE_SCHEMA_ERROR = (
 LEGACY_SCHEMA_DIGEST = (
     "5edfc7cdd9d45fe1dea7ad4507417d5b1ea599793c49000cea26f90bab82e3b7"
 )
+VERSION_TWO_SCHEMA_DIGEST = (
+    "bcedde12385ce0343501808eb9d9b06070a8bf89b1c045b356662c06e8c36191"
+)
+_VERSION_TWO_MEDIA_ITEMS_DDL = """
+CREATE TABLE media_items (
+    id VARCHAR(36) NOT NULL,
+    instagram_media_id VARCHAR(64),
+    shortcode VARCHAR(64),
+    identity_type VARCHAR(32) NOT NULL,
+    identity_value VARCHAR(64) NOT NULL,
+    owner_profile_id VARCHAR(36) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    caption TEXT NOT NULL,
+    accessibility_caption TEXT NOT NULL,
+    published_at DATETIME NOT NULL,
+    original_url TEXT NOT NULL,
+    story_expires_at DATETIME,
+    downloaded_at DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    CONSTRAINT uq_media_items_identity UNIQUE (identity_type, identity_value),
+    CONSTRAINT ck_media_items_identity_type
+        CHECK (identity_type IN ('shortcode', 'story_media_id')),
+    CONSTRAINT ck_media_items_kind CHECK (kind IN ('post', 'reel', 'story')),
+    UNIQUE (instagram_media_id),
+    FOREIGN KEY(owner_profile_id) REFERENCES profiles (id) ON DELETE CASCADE
+)
+"""
+_VERSION_TWO_MEDIA_ITEMS_INDEX_DDL = (
+    "CREATE INDEX ix_media_items_owner_profile_published_at "
+    "ON media_items (owner_profile_id, published_at)"
+)
 
 
 def _schema_module() -> Any:
@@ -75,31 +108,34 @@ def _normalized_schema_digest(database_path: Path) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
-def _create_exact_version_one_database(test_settings: Settings) -> None:
+def _create_exact_version_two_schema(test_settings: Settings) -> None:
     schema = _schema_module()
     schema.initialize_database(test_settings)
     database_path = test_settings.database_path
 
     with sqlite3.connect(database_path) as connection:
-        tables = {
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_schema WHERE type = 'table'"
-            )
-        }
-        for table_name in ("job_progress_segments", "profile_sync_checkpoints"):
-            if table_name in tables:
-                connection.execute(f"DROP TABLE {table_name}")
-
-        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-        for column_name in ("target_url", "target_label"):
-            if column_name in job_columns:
-                connection.execute(f"ALTER TABLE jobs DROP COLUMN {column_name}")
-
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("PRAGMA legacy_alter_table = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("ALTER TABLE media_items RENAME TO media_items_v3")
+        connection.execute("DROP INDEX ix_media_items_owner_profile_published_at")
+        connection.execute(_VERSION_TWO_MEDIA_ITEMS_DDL)
+        connection.execute(_VERSION_TWO_MEDIA_ITEMS_INDEX_DDL)
+        connection.execute("DROP TABLE media_items_v3")
         connection.execute(
-            "UPDATE schema_marker SET version = 'pre-1.0-fresh-schema-1' "
+            "UPDATE schema_marker SET version = 'pre-1.0-feed-sync-2' "
             "WHERE id = 'global'"
         )
+        connection.commit()
+
+    assert _normalized_schema_digest(database_path) == VERSION_TWO_SCHEMA_DIGEST
+
+
+def _create_exact_version_two_database(test_settings: Settings) -> None:
+    _create_exact_version_two_schema(test_settings)
+    database_path = test_settings.database_path
+
+    with sqlite3.connect(database_path) as connection:
         now = "2026-08-27T00:00:00+00:00"
         connection.execute(
             "INSERT INTO profiles "
@@ -122,21 +158,106 @@ def _create_exact_version_one_database(test_settings: Settings) -> None:
                 now,
             ),
         )
-        jobs = (
-            (
-                "profile-job",
-                "profile_sync",
-                json.dumps({"profile_id": "profile-1"}),
-                "Syncing profile",
-            ),
-            (
-                "single-job",
-                "single_media",
-                json.dumps(
-                    {"original_url": "https://www.instagram.com/p/DcdTMB3iXSB/"}
+        connection.executemany(
+            "INSERT INTO media_items "
+            "(id, instagram_media_id, shortcode, identity_type, identity_value, "
+            "owner_profile_id, kind, caption, accessibility_caption, published_at, "
+            "original_url, story_expires_at, downloaded_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'profile-1', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "media-post",
+                    "instagram-post",
+                    "POST1",
+                    "shortcode",
+                    "POST1",
+                    "post",
+                    "post caption",
+                    "post accessibility caption",
+                    now,
+                    "https://www.instagram.com/p/POST1/",
+                    None,
+                    now,
+                    now,
+                    now,
                 ),
-                "Downloading media",
-            ),
+                (
+                    "media-reel",
+                    "instagram-reel",
+                    "REEL1",
+                    "shortcode",
+                    "REEL1",
+                    "reel",
+                    "reel caption",
+                    "reel accessibility caption",
+                    now,
+                    "https://www.instagram.com/reel/REEL1/",
+                    None,
+                    now,
+                    now,
+                    now,
+                ),
+                (
+                    "media-story",
+                    "STORY1",
+                    None,
+                    "story_media_id",
+                    "STORY1",
+                    "story",
+                    "story caption",
+                    "story accessibility caption",
+                    now,
+                    "https://www.instagram.com/stories/mihi_727/STORY1/",
+                    now,
+                    now,
+                    now,
+                    now,
+                ),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO media_assets "
+            "(id, media_item_id, relative_path, mime_type, kind, role, position, "
+            "file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    f"asset-{media_item_id}",
+                    media_item_id,
+                    f"profiles/mihi_727/{media_item_id}.jpg",
+                    "image/jpeg",
+                    "image",
+                    "content",
+                    0,
+                    123,
+                    now,
+                )
+                for media_item_id in ("media-post", "media-reel", "media-story")
+            ],
+        )
+
+
+def _create_exact_version_one_database(test_settings: Settings) -> None:
+    _create_exact_version_two_schema(test_settings)
+    database_path = test_settings.database_path
+
+    with sqlite3.connect(database_path) as connection:
+        for table_name in ("job_progress_segments", "profile_sync_checkpoints"):
+            connection.execute(f"DROP TABLE {table_name}")
+        for column_name in ("target_url", "target_label"):
+            connection.execute(f"ALTER TABLE jobs DROP COLUMN {column_name}")
+        connection.execute(
+            "UPDATE schema_marker SET version = 'pre-1.0-fresh-schema-1' "
+            "WHERE id = 'global'"
+        )
+        now = "2026-08-27T00:00:00+00:00"
+        connection.execute(
+            "INSERT INTO profiles "
+            "(id, instagram_user_id, username, full_name, biography, "
+            "profile_pic_url, tracked, status, last_sync_attempted_at, "
+            "last_sync_succeeded_at, created_at, updated_at) "
+            "VALUES ('profile-1', '727', 'mihi_727', 'Mihi', 'preserve biography', "
+            "'https://example.test/avatar.jpg', 1, 'active', NULL, NULL, :now, :now)",
+            {"now": now},
         )
         connection.executemany(
             "INSERT INTO jobs "
@@ -145,8 +266,28 @@ def _create_exact_version_one_database(test_settings: Settings) -> None:
             "updated_at) VALUES (?, ?, 'succeeded', ?, 1, 1, ?, NULL, NULL, "
             "?, ?, ?, ?)",
             [
-                (job_id, job_type, payload, status, now, now, now, now)
-                for job_id, job_type, payload, status in jobs
+                (
+                    "profile-job",
+                    "profile_sync",
+                    json.dumps({"profile_id": "profile-1"}),
+                    "Syncing profile",
+                    now,
+                    now,
+                    now,
+                    now,
+                ),
+                (
+                    "single-job",
+                    "single_media",
+                    json.dumps(
+                        {"original_url": "https://www.instagram.com/p/DcdTMB3iXSB/"}
+                    ),
+                    "Downloading media",
+                    now,
+                    now,
+                    now,
+                    now,
+                ),
             ],
         )
         connection.execute(
@@ -154,60 +295,120 @@ def _create_exact_version_one_database(test_settings: Settings) -> None:
             "(id, instagram_media_id, shortcode, identity_type, identity_value, "
             "owner_profile_id, kind, caption, accessibility_caption, published_at, "
             "original_url, story_expires_at, downloaded_at, created_at, updated_at) "
-            "VALUES (?, ?, ?, 'shortcode', ?, ?, 'post', ?, ?, ?, ?, NULL, ?, ?, ?)",
-            (
-                "media-1",
-                "instagram-media-1",
-                "DcdTMB3iXSB",
-                "DcdTMB3iXSB",
-                "profile-1",
-                "preserved caption",
-                "preserved accessibility caption",
-                now,
-                "https://www.instagram.com/p/DcdTMB3iXSB/",
-                now,
-                now,
-                now,
-            ),
+            "VALUES ('media-1', 'instagram-media-1', 'DcdTMB3iXSB', 'shortcode', "
+            "'DcdTMB3iXSB', 'profile-1', 'post', 'preserved caption', "
+            "'preserved accessibility caption', :now, "
+            "'https://www.instagram.com/p/DcdTMB3iXSB/', NULL, :now, :now, :now)",
+            {"now": now},
         )
         connection.execute(
             "INSERT INTO media_assets "
             "(id, media_item_id, relative_path, mime_type, kind, role, position, "
-            "file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "asset-1",
-                "media-1",
-                "profiles/mihi_727/DcdTMB3iXSB.jpg",
-                "image/jpeg",
-                "image",
-                "content",
-                0,
-                123,
-                now,
-            ),
+            "file_size, created_at) VALUES ('asset-1', 'media-1', "
+            "'profiles/mihi_727/DcdTMB3iXSB.jpg', 'image/jpeg', 'image', 'content', "
+            "0, 123, :now)",
+            {"now": now},
         )
         connection.execute(
             "INSERT INTO job_issues "
             "(id, job_id, identity_type, identity_value, media_kind, error_code, "
             "safe_message, exception_class_chain_text, occurred_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "issue-1",
-                "profile-job",
-                "shortcode",
-                "DcdTMB3iXSB",
-                "post",
-                "preserved-warning",
-                "Preserved warning.",
-                "RuntimeError",
-                now,
-            ),
+            "VALUES ('issue-1', 'profile-job', 'shortcode', 'DcdTMB3iXSB', 'post', "
+            "'preserved-warning', 'Preserved warning.', 'RuntimeError', :now)",
+            {"now": now},
         )
 
     assert _normalized_schema_digest(database_path) == LEGACY_SCHEMA_DIGEST
 
 
-def test_exact_version_one_database_migrates_to_feed_sync_version_two(
+def test_exact_version_two_database_migrates_to_unified_feed_version_three(
+    test_settings: Settings,
+) -> None:
+    # Break caught: retaining media_items.kind leaves the three former content
+    # classes incompatible with the unified Feed library.
+    _create_exact_version_two_database(test_settings)
+    schema = _schema_module()
+
+    schema.initialize_database(test_settings)
+
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        media_item_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(media_items)")
+        }
+        identities = connection.execute(
+            "SELECT identity_type, identity_value FROM media_items ORDER BY id"
+        ).fetchall()
+        asset_count = connection.execute(
+            "SELECT COUNT(*) FROM media_assets"
+        ).fetchone()[0]
+        foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    assert marker == "pre-1.0-unified-feed-3"
+    assert "kind" not in media_item_columns
+    assert identities == [
+        ("shortcode", "POST1"),
+        ("shortcode", "REEL1"),
+        ("story_media_id", "STORY1"),
+    ]
+    assert asset_count == 3
+    assert foreign_key_errors == []
+
+
+def test_drifted_version_two_database_fails_closed_before_migration(
+    test_settings: Settings,
+) -> None:
+    # Break caught: a version marker alone must not authorize rebuilding a
+    # media table whose declared constraints or indexes have drifted.
+    _create_exact_version_two_database(test_settings)
+    with sqlite3.connect(test_settings.database_path) as connection:
+        connection.execute("DROP INDEX ix_media_items_owner_profile_published_at")
+    before_bytes = test_settings.database_path.read_bytes()
+    schema = _schema_module()
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert test_settings.database_path.read_bytes() == before_bytes
+
+
+def test_version_two_migration_rolls_back_after_rebuild_failure(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: a rebuild failure must preserve the valid version-2
+    # database, including its marker, exact schema, and media graph.
+    _create_exact_version_two_database(test_settings)
+    schema = _schema_module()
+    rebuild_media_items = schema._rebuild_media_items_without_kind
+
+    def fail_after_rebuild(connection: Any) -> None:
+        rebuild_media_items(connection)
+        raise sqlite3.OperationalError("injected rebuild failure")
+
+    monkeypatch.setattr(schema, "_rebuild_media_items_without_kind", fail_after_rebuild)
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert _normalized_schema_digest(test_settings.database_path) == VERSION_TWO_SCHEMA_DIGEST
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        counts = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            for table_name in ("profiles", "media_items", "media_assets")
+        )
+    assert marker == "pre-1.0-feed-sync-2"
+    assert counts == (1, 3, 3)
+
+
+def test_exact_version_one_database_migrates_to_unified_feed_version_three(
     test_settings: Settings,
 ) -> None:
     _create_exact_version_one_database(test_settings)
@@ -236,7 +437,7 @@ def test_exact_version_one_database_migrates_to_feed_sync_version_two(
             for table_name in ("media_items", "media_assets", "job_issues")
         )
 
-    assert marker == "pre-1.0-feed-sync-2"
+    assert marker == "pre-1.0-unified-feed-3"
     assert job_columns >= {"target_label", "target_url"}
     assert profile_target == "@mihi_727"
     assert single_target == "https://www.instagram.com/p/DcdTMB3iXSB/"
