@@ -1,5 +1,7 @@
 import ast
+import hashlib
 import importlib
+import json
 import multiprocessing
 import sqlite3
 import tomllib
@@ -15,6 +17,9 @@ from instaloader_webui.db.engine import build_engine
 
 SAFE_SCHEMA_ERROR = (
     "Unsupported pre-1.0 database schema. Delete and recreate the database."
+)
+LEGACY_SCHEMA_DIGEST = (
+    "5edfc7cdd9d45fe1dea7ad4507417d5b1ea599793c49000cea26f90bab82e3b7"
 )
 
 
@@ -48,6 +53,271 @@ def _user_tables(database_path: Path) -> set[str]:
                 "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
             )
         }
+
+
+def _normalized_schema_digest(database_path: Path) -> str:
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' "
+            "AND type IN ('table', 'index', 'view', 'trigger') "
+            "AND sql IS NOT NULL ORDER BY type, name, tbl_name"
+        )
+        signature = tuple(
+            (str(row[0]), str(row[1]), str(row[2]), " ".join(str(row[3]).split()))
+            for row in rows
+        )
+    serialized = json.dumps(
+        signature,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _create_exact_version_one_database(test_settings: Settings) -> None:
+    schema = _schema_module()
+    schema.initialize_database(test_settings)
+    database_path = test_settings.database_path
+
+    with sqlite3.connect(database_path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+        for table_name in ("job_progress_segments", "profile_sync_checkpoints"):
+            if table_name in tables:
+                connection.execute(f"DROP TABLE {table_name}")
+
+        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        for column_name in ("target_url", "target_label"):
+            if column_name in job_columns:
+                connection.execute(f"ALTER TABLE jobs DROP COLUMN {column_name}")
+
+        connection.execute(
+            "UPDATE schema_marker SET version = 'pre-1.0-fresh-schema-1' "
+            "WHERE id = 'global'"
+        )
+        now = "2026-08-27T00:00:00+00:00"
+        connection.execute(
+            "INSERT INTO profiles "
+            "(id, instagram_user_id, username, full_name, biography, "
+            "profile_pic_url, tracked, status, last_sync_attempted_at, "
+            "last_sync_succeeded_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "profile-1",
+                "727",
+                "mihi_727",
+                "Mihi",
+                "preserve biography",
+                "https://example.test/avatar.jpg",
+                1,
+                "active",
+                None,
+                None,
+                now,
+                now,
+            ),
+        )
+        jobs = (
+            (
+                "profile-job",
+                "profile_sync",
+                json.dumps({"profile_id": "profile-1"}),
+                "Syncing profile",
+            ),
+            (
+                "single-job",
+                "single_media",
+                json.dumps(
+                    {"original_url": "https://www.instagram.com/p/DcdTMB3iXSB/"}
+                ),
+                "Downloading media",
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO jobs "
+            "(id, type, state, payload_text, progress_current, progress_total, "
+            "status_text, error, phase, created_at, started_at, completed_at, "
+            "updated_at) VALUES (?, ?, 'succeeded', ?, 1, 1, ?, NULL, NULL, "
+            "?, ?, ?, ?)",
+            [
+                (job_id, job_type, payload, status, now, now, now, now)
+                for job_id, job_type, payload, status in jobs
+            ],
+        )
+        connection.execute(
+            "INSERT INTO media_items "
+            "(id, instagram_media_id, shortcode, identity_type, identity_value, "
+            "owner_profile_id, kind, caption, accessibility_caption, published_at, "
+            "original_url, story_expires_at, downloaded_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'shortcode', ?, ?, 'post', ?, ?, ?, ?, NULL, ?, ?, ?)",
+            (
+                "media-1",
+                "instagram-media-1",
+                "DcdTMB3iXSB",
+                "DcdTMB3iXSB",
+                "profile-1",
+                "preserved caption",
+                "preserved accessibility caption",
+                now,
+                "https://www.instagram.com/p/DcdTMB3iXSB/",
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO media_assets "
+            "(id, media_item_id, relative_path, mime_type, kind, role, position, "
+            "file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "asset-1",
+                "media-1",
+                "profiles/mihi_727/DcdTMB3iXSB.jpg",
+                "image/jpeg",
+                "image",
+                "content",
+                0,
+                123,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO job_issues "
+            "(id, job_id, identity_type, identity_value, media_kind, error_code, "
+            "safe_message, exception_class_chain_text, occurred_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "issue-1",
+                "profile-job",
+                "shortcode",
+                "DcdTMB3iXSB",
+                "post",
+                "preserved-warning",
+                "Preserved warning.",
+                "RuntimeError",
+                now,
+            ),
+        )
+
+    assert _normalized_schema_digest(database_path) == LEGACY_SCHEMA_DIGEST
+
+
+def test_exact_version_one_database_migrates_to_feed_sync_version_two(
+    test_settings: Settings,
+) -> None:
+    _create_exact_version_one_database(test_settings)
+    schema = _schema_module()
+
+    schema.initialize_database(test_settings)
+
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        profile_target = connection.execute(
+            "SELECT target_label FROM jobs WHERE id = 'profile-job'"
+        ).fetchone()[0]
+        single_target = connection.execute(
+            "SELECT target_url FROM jobs WHERE id = 'single-job'"
+        ).fetchone()[0]
+        checkpoint_rows = connection.execute(
+            "SELECT profile_id, source, cursor_version, cursor_json, "
+            "backfill_complete FROM profile_sync_checkpoints "
+            "ORDER BY profile_id, source"
+        ).fetchall()
+        preserved_counts = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            for table_name in ("media_items", "media_assets", "job_issues")
+        )
+
+    assert marker == "pre-1.0-feed-sync-2"
+    assert job_columns >= {"target_label", "target_url"}
+    assert profile_target == "@mihi_727"
+    assert single_target == "https://www.instagram.com/p/DcdTMB3iXSB/"
+    assert checkpoint_rows == [
+        ("profile-1", "posts", 1, None, 0),
+        ("profile-1", "reels", 1, None, 0),
+    ]
+    assert preserved_counts == (1, 1, 1)
+
+
+def test_drifted_version_one_database_fails_closed_before_migration(
+    test_settings: Settings,
+) -> None:
+    _create_exact_version_one_database(test_settings)
+    with sqlite3.connect(test_settings.database_path) as connection:
+        connection.execute("DROP INDEX ix_job_issues_identity_type_identity_value")
+    before_bytes = test_settings.database_path.read_bytes()
+    schema = _schema_module()
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert test_settings.database_path.read_bytes() == before_bytes
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert marker == "pre-1.0-fresh-schema-1"
+    assert columns.isdisjoint({"target_label", "target_url"})
+
+
+def test_version_one_migration_rolls_back_after_alter_table_failure(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_exact_version_one_database(test_settings)
+    schema = _schema_module()
+
+    def fail_after_alter_table(_connection: Any) -> None:
+        raise sqlite3.OperationalError("injected migration failure")
+
+    monkeypatch.setattr(
+        schema,
+        "_create_version_two_tables",
+        fail_after_alter_table,
+    )
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert (
+        _normalized_schema_digest(test_settings.database_path) == LEGACY_SCHEMA_DIGEST
+    )
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type = 'table'"
+            )
+        }
+        preserved_counts = tuple(
+            connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+            for table_name in (
+                "profiles",
+                "jobs",
+                "media_items",
+                "media_assets",
+                "job_issues",
+            )
+        )
+    assert marker == "pre-1.0-fresh-schema-1"
+    assert columns.isdisjoint({"target_label", "target_url"})
+    assert tables.isdisjoint({"job_progress_segments", "profile_sync_checkpoints"})
+    assert preserved_counts == (1, 2, 1, 1, 1)
 
 
 def test_fresh_bootstrap_creates_the_complete_current_orm_schema_and_defaults(
