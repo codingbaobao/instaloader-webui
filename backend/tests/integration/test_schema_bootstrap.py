@@ -152,11 +152,46 @@ def _create_exact_version_two_database(test_settings: Settings) -> None:
                 "https://example.test/avatar.jpg",
                 1,
                 "active",
-                None,
-                None,
+                "2026-08-26T23:00:00+00:00",
+                "2026-08-26T23:30:00+00:00",
                 now,
                 now,
             ),
+        )
+        connection.executemany(
+            "INSERT INTO jobs "
+            "(id, type, state, payload_text, progress_current, progress_total, "
+            "status_text, error, phase, created_at, started_at, completed_at, "
+            "updated_at, target_label, target_url) "
+            "VALUES (?, ?, 'succeeded', ?, 1, 1, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "profile-job",
+                    "profile_sync",
+                    json.dumps({"profile_id": "profile-1"}),
+                    "Syncing profile",
+                    now,
+                    now,
+                    now,
+                    now,
+                    "@mihi_727",
+                    None,
+                ),
+                (
+                    "single-job",
+                    "single_media",
+                    json.dumps(
+                        {"original_url": "https://www.instagram.com/p/POST1/"}
+                    ),
+                    "Downloading media",
+                    now,
+                    now,
+                    now,
+                    now,
+                    "saved media target",
+                    "https://www.instagram.com/p/POST1/",
+                ),
+            ],
         )
         connection.executemany(
             "INSERT INTO media_items "
@@ -232,6 +267,23 @@ def _create_exact_version_two_database(test_settings: Settings) -> None:
                     now,
                 )
                 for media_item_id in ("media-post", "media-reel", "media-story")
+            ],
+        )
+        connection.execute(
+            "INSERT INTO job_issues "
+            "(id, job_id, identity_type, identity_value, media_kind, error_code, "
+            "safe_message, exception_class_chain_text, occurred_at) "
+            "VALUES ('issue-1', 'profile-job', 'shortcode', 'POST1', 'post', "
+            "'preserved-warning', 'Preserved warning.', 'RuntimeError', :now)",
+            {"now": now},
+        )
+        connection.executemany(
+            "INSERT INTO profile_sync_checkpoints "
+            "(profile_id, source, cursor_version, cursor_json, backfill_complete, "
+            "updated_at) VALUES ('profile-1', ?, 1, ?, ?, ?)",
+            [
+                ("posts", '{"cursor":"posts"}', 1, now),
+                ("reels", None, 0, now),
             ],
         )
 
@@ -341,6 +393,27 @@ def test_exact_version_two_database_migrates_to_unified_feed_version_three(
         identities = connection.execute(
             "SELECT identity_type, identity_value FROM media_items ORDER BY id"
         ).fetchall()
+        media_metadata = connection.execute(
+            "SELECT id, caption, accessibility_caption, original_url "
+            "FROM media_items ORDER BY id"
+        ).fetchall()
+        profile_metadata = connection.execute(
+            "SELECT instagram_user_id, username, full_name, biography, "
+            "profile_pic_url, tracked, status, last_sync_attempted_at, "
+            "last_sync_succeeded_at FROM profiles WHERE id = 'profile-1'"
+        ).fetchone()
+        jobs = connection.execute(
+            "SELECT id, type, payload_text, status_text, target_label, target_url "
+            "FROM jobs ORDER BY id"
+        ).fetchall()
+        issues = connection.execute(
+            "SELECT job_id, identity_type, identity_value, media_kind, error_code, "
+            "safe_message, exception_class_chain_text FROM job_issues"
+        ).fetchall()
+        checkpoints = connection.execute(
+            "SELECT profile_id, source, cursor_version, cursor_json, "
+            "backfill_complete FROM profile_sync_checkpoints ORDER BY source"
+        ).fetchall()
         asset_count = connection.execute(
             "SELECT COUNT(*) FROM media_assets"
         ).fetchone()[0]
@@ -352,6 +425,70 @@ def test_exact_version_two_database_migrates_to_unified_feed_version_three(
         ("shortcode", "POST1"),
         ("shortcode", "REEL1"),
         ("story_media_id", "STORY1"),
+    ]
+    assert media_metadata == [
+        (
+            "media-post",
+            "post caption",
+            "post accessibility caption",
+            "https://www.instagram.com/p/POST1/",
+        ),
+        (
+            "media-reel",
+            "reel caption",
+            "reel accessibility caption",
+            "https://www.instagram.com/reel/REEL1/",
+        ),
+        (
+            "media-story",
+            "story caption",
+            "story accessibility caption",
+            "https://www.instagram.com/stories/mihi_727/STORY1/",
+        ),
+    ]
+    assert profile_metadata == (
+        "727",
+        "mihi_727",
+        "Mihi",
+        "preserve biography",
+        "https://example.test/avatar.jpg",
+        1,
+        "active",
+        "2026-08-26T23:00:00+00:00",
+        "2026-08-26T23:30:00+00:00",
+    )
+    assert jobs == [
+        (
+            "profile-job",
+            "profile_sync",
+            '{"profile_id": "profile-1"}',
+            "Syncing profile",
+            "@mihi_727",
+            None,
+        ),
+        (
+            "single-job",
+            "single_media",
+            '{"original_url": "https://www.instagram.com/p/POST1/"}',
+            "Downloading media",
+            "saved media target",
+            "https://www.instagram.com/p/POST1/",
+        ),
+    ]
+    assert issues == [
+        (
+            "profile-job",
+            "shortcode",
+            "POST1",
+            "post",
+            "preserved-warning",
+            "Preserved warning.",
+            "RuntimeError",
+        )
+    ]
+    assert checkpoints == [
+        ("profile-1", "posts", 1, '{"cursor":"posts"}', 1),
+        ("profile-1", "reels", 1, None, 0),
     ]
     assert asset_count == 3
     assert foreign_key_errors == []
@@ -432,6 +569,21 @@ def test_exact_version_one_database_migrates_to_unified_feed_version_three(
             "backfill_complete FROM profile_sync_checkpoints "
             "ORDER BY profile_id, source"
         ).fetchall()
+        profile_metadata = connection.execute(
+            "SELECT instagram_user_id, username, full_name, biography, "
+            "profile_pic_url, tracked, status FROM profiles WHERE id = 'profile-1'"
+        ).fetchone()
+        media_metadata = connection.execute(
+            "SELECT caption, accessibility_caption, original_url "
+            "FROM media_items WHERE id = 'media-1'"
+        ).fetchone()
+        job_payloads = connection.execute(
+            "SELECT id, payload_text, status_text FROM jobs ORDER BY id"
+        ).fetchall()
+        issue_values = connection.execute(
+            "SELECT job_id, identity_type, identity_value, media_kind, error_code, "
+            "safe_message FROM job_issues"
+        ).fetchall()
         preserved_counts = tuple(
             connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
             for table_name in ("media_items", "media_assets", "job_issues")
@@ -444,6 +596,42 @@ def test_exact_version_one_database_migrates_to_unified_feed_version_three(
     assert checkpoint_rows == [
         ("profile-1", "posts", 1, None, 0),
         ("profile-1", "reels", 1, None, 0),
+    ]
+    assert profile_metadata == (
+        "727",
+        "mihi_727",
+        "Mihi",
+        "preserve biography",
+        "https://example.test/avatar.jpg",
+        1,
+        "active",
+    )
+    assert media_metadata == (
+        "preserved caption",
+        "preserved accessibility caption",
+        "https://www.instagram.com/p/DcdTMB3iXSB/",
+    )
+    assert job_payloads == [
+        (
+            "profile-job",
+            '{"profile_id": "profile-1"}',
+            "Syncing profile",
+        ),
+        (
+            "single-job",
+            '{"original_url": "https://www.instagram.com/p/DcdTMB3iXSB/"}',
+            "Downloading media",
+        ),
+    ]
+    assert issue_values == [
+        (
+            "profile-job",
+            "shortcode",
+            "DcdTMB3iXSB",
+            "post",
+            "preserved-warning",
+            "Preserved warning.",
+        )
     ]
     assert preserved_counts == (1, 1, 1)
 
