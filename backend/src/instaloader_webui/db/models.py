@@ -35,12 +35,8 @@ class AdminUser(Base):
     must_change_password: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class WebSession(Base):
@@ -138,8 +134,12 @@ class Profile(Base):
     last_sync_succeeded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class MediaItem(Base):
@@ -232,6 +232,69 @@ class Job(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    target_label: Mapped[str | None] = mapped_column(Text)
+    target_url: Mapped[str | None] = mapped_column(Text)
+
+
+class JobProgressSegment(Base):
+    __tablename__ = "job_progress_segments"
+    __table_args__ = (
+        CheckConstraint(
+            "segment IN ('stories', 'feed')",
+            name="ck_job_progress_segment",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'running', 'completed', 'failed')",
+            name="ck_job_progress_state",
+        ),
+        CheckConstraint(
+            "scanned >= 0 AND saved >= 0 AND existing >= 0 AND warnings >= 0",
+            name="ck_job_progress_counts",
+        ),
+        CheckConstraint(
+            "total IS NULL OR total >= 0",
+            name="ck_job_progress_total",
+        ),
+    )
+
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    segment: Mapped[str] = mapped_column(String(16), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    scanned: Mapped[int] = mapped_column(Integer, nullable=False)
+    total: Mapped[int | None] = mapped_column(Integer)
+    saved: Mapped[int] = mapped_column(Integer, nullable=False)
+    existing: Mapped[int] = mapped_column(Integer, nullable=False)
+    warnings: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class ProfileSyncCheckpoint(Base):
+    __tablename__ = "profile_sync_checkpoints"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('posts', 'reels')",
+            name="ck_profile_sync_checkpoints_source",
+        ),
+        CheckConstraint(
+            "cursor_version = 1",
+            name="ck_profile_sync_checkpoints_cursor_version",
+        ),
+    )
+
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True
+    )
+    source: Mapped[str] = mapped_column(String(16), primary_key=True)
+    cursor_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    cursor_json: Mapped[str | None] = mapped_column(Text)
+    backfill_complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
 
 class JobIssue(Base):
