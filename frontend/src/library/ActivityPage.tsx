@@ -1,13 +1,61 @@
 import { useCallback } from "react";
+import { Link } from "react-router-dom";
 
 import { listJobs } from "./api";
 import { formatDate } from "./dateFormatters";
 import { JobIssues } from "./JobIssues";
-import type { JobSummary } from "./types";
+import type { JobProgressSegment, JobSummary } from "./types";
 import { usePolling } from "./usePolling";
 
 function jobTitle(job: JobSummary): string {
   return job.type.replaceAll("_", " ");
+}
+
+function profileId(job: JobSummary): string | null {
+  const value = job.payload.profile_id;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function canonicalInstagramUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.protocol !== "https:"
+      || parsed.hostname !== "www.instagram.com"
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+    ) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function JobTarget({ job }: Readonly<{ job: JobSummary }>) {
+  const label = job.target_label;
+  if (!label) return null;
+  const localProfileId = job.type === "profile_sync" ? profileId(job) : null;
+  if (localProfileId) {
+    return (
+      <Link className="job-target" to={`/profiles/${encodeURIComponent(localProfileId)}`}>
+        {label}
+      </Link>
+    );
+  }
+  const externalUrl = canonicalInstagramUrl(job.target_url);
+  if (externalUrl) {
+    return (
+      <a className="job-target" href={externalUrl} target="_blank" rel="noreferrer">
+        {label}
+      </a>
+    );
+  }
+  return <span className="job-target">{label}</span>;
 }
 
 function progress(job: JobSummary): number {
@@ -34,6 +82,38 @@ function stateLabel(state: string): string {
     default:
       return state.replaceAll("_", " ");
   }
+}
+
+function segmentPercent(segment: JobProgressSegment): number | undefined {
+  if (segment.state === "completed") return 100;
+  if (segment.total === null || segment.total <= 0) return undefined;
+  return Math.min(100, Math.round((segment.scanned / segment.total) * 100));
+}
+
+function SegmentProgress({
+  segment,
+  target,
+}: Readonly<{ segment: JobProgressSegment; target: string }>) {
+  const percent = segmentPercent(segment);
+  return (
+    <section className={`job-segment job-segment-${segment.state}`}>
+      <div className="job-segment-heading">
+        <strong>{segment.label}</strong>
+        <span>{stateLabel(segment.state)}</span>
+      </div>
+      <progress
+        aria-label={`${target} ${segment.label} progress`}
+        max="100"
+        value={percent}
+      />
+      <div className="job-segment-counts">
+        <span>Scanned {segment.scanned}</span>
+        <span>Saved {segment.saved}</span>
+        <span>Existing {segment.existing}</span>
+        <span>Warnings {segment.warnings}</span>
+      </div>
+    </section>
+  );
 }
 
 export function ActivityPage() {
@@ -77,14 +157,24 @@ export function ActivityPage() {
             <article className="job-card" key={job.id}>
               <div className="job-card-heading">
                 <div>
-                  <h2>{jobTitle(job)}</h2>
+                  <h2>{jobTitle(job)} <JobTarget job={job} /></h2>
                   <p>{job.status_text || "Waiting for an update."}</p>
                 </div>
                 <span className={`status-badge status-badge-${job.state}`}>
                   {stateLabel(job.state)}
                 </span>
               </div>
-              {job.progress_total !== null && job.progress_total > 0 ? (
+              {job.type === "profile_sync" && job.progress_segments?.length ? (
+                <div className="job-segments">
+                  {job.progress_segments.map((segment) => (
+                    <SegmentProgress
+                      key={segment.segment}
+                      segment={segment}
+                      target={job.target_label || jobTitle(job)}
+                    />
+                  ))}
+                </div>
+              ) : job.progress_total !== null && job.progress_total > 0 ? (
                 <>
                   <div className="job-progress-copy">
                     <span>{job.progress_current} of {job.progress_total}</span>

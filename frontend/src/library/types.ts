@@ -78,6 +78,18 @@ export type JobIssue = Readonly<{
   occurred_at: string;
 }>;
 
+export type JobProgressSegment = Readonly<{
+  segment: "stories" | "feed";
+  label: string;
+  state: "pending" | "running" | "completed" | "failed";
+  scanned: number;
+  total: number | null;
+  saved: number;
+  existing: number;
+  warnings: number;
+  updated_at: string;
+}>;
+
 export type JobSummary = Readonly<{
   id: string;
   type: string;
@@ -88,6 +100,9 @@ export type JobSummary = Readonly<{
   status_text: string;
   error: string | null;
   phase: string | null;
+  target_label?: string | null;
+  target_url?: string | null;
+  progress_segments?: readonly JobProgressSegment[];
   issue_count: number;
   issues: readonly JobIssue[];
   created_at: string;
