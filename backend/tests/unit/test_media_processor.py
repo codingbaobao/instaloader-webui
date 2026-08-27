@@ -163,7 +163,6 @@ def _persist_existing(
     repository: LibraryRepository,
     profile: ProfileSnapshot,
     media_root: Path,
-    kind: MediaKind,
     assets: tuple[
         tuple[
             str,
@@ -203,7 +202,6 @@ def _persist_existing(
             identity=MediaIdentity("shortcode", SHORTCODE),
             instagram_media_id="17800000000000001",
             shortcode=SHORTCODE,
-            kind=kind,
             caption="Old caption",
             accessibility_caption="",
             published_at=NOW,
@@ -392,7 +390,6 @@ def test_complete_existing_media_with_valid_files_and_roles_skips_resolution(
         repository=repository,
         profile=profile,
         media_root=test_settings.media_root,
-        kind="reel",
         assets=(
             (f"{SHORTCODE}.mp4", "video", 0, "content", b"old-video"),
             (f"{SHORTCODE}.jpg", "image", 0, "poster", b"old-poster"),
@@ -414,6 +411,39 @@ def test_complete_existing_media_with_valid_files_and_roles_skips_resolution(
     assert result.media == existing
 
 
+def test_complete_shortcode_returns_existing_without_reconciling_reel_kind(
+    processor: MediaProcessor,
+    repository: LibraryRepository,
+    profile: ProfileSnapshot,
+    test_settings: Settings,
+) -> None:
+    # Break caught: reclassifying complete media by candidate kind mutates stored data.
+    _persist_existing(
+        repository=repository,
+        profile=profile,
+        media_root=test_settings.media_root,
+        assets=(
+            (f"{SHORTCODE}.mp4", "video", 0, "content", b"old-video"),
+            (f"{SHORTCODE}.jpg", "image", 0, "poster", b"old-poster"),
+        ),
+    )
+    download_call_count = 0
+
+    def count_downloads(_loader: Instaloader, _target: str) -> None:
+        nonlocal download_call_count
+        download_call_count += 1
+
+    reel_candidate = _candidate(
+        _resolved_media(profile=profile, kind="reel", download=count_downloads)
+    )
+
+    result = processor.process(reel_candidate, job_id="job-existing-reel")
+
+    assert result.status == "existing"
+    assert result.media.collection == "feed"
+    assert download_call_count == 0
+
+
 def test_legacy_reel_with_jpg_and_mp4_both_content_is_reprocessed(
     processor: MediaProcessor,
     repository: LibraryRepository,
@@ -425,7 +455,6 @@ def test_legacy_reel_with_jpg_and_mp4_both_content_is_reprocessed(
         repository=repository,
         profile=profile,
         media_root=test_settings.media_root,
-        kind="reel",
         assets=(
             (f"{SHORTCODE}.jpg", "image", 0, "content", b"legacy-jpeg"),
             (f"{SHORTCODE}.mp4", "video", 1, "content", b"legacy-video"),
@@ -656,7 +685,6 @@ def test_database_failure_restores_previous_final_directory(
         repository=repository,
         profile=profile,
         media_root=test_settings.media_root,
-        kind="reel",
         assets=(
             (f"{SHORTCODE}.jpg", "image", 0, "content", b"legacy-jpeg"),
             (f"{SHORTCODE}.mp4", "video", 1, "content", b"legacy-video"),

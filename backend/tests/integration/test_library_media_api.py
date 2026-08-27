@@ -38,7 +38,6 @@ def _seed_story(library: LibraryRepository):
             identity=MediaIdentity("shortcode", "DOqEJyxCRGJ"),
             instagram_media_id="17800000000000001",
             shortcode="DOqEJyxCRGJ",
-            kind="post",
             caption="A post",
             accessibility_caption="A still image",
             published_at=NOW - timedelta(hours=1),
@@ -63,7 +62,6 @@ def _seed_story(library: LibraryRepository):
             identity=MediaIdentity("story_media_id", STORY_MEDIA_ID),
             instagram_media_id=STORY_MEDIA_ID,
             shortcode=None,
-            kind="story",
             caption="",
             accessibility_caption="",
             published_at=NOW,
@@ -102,14 +100,12 @@ def _seed_feed_media(
     profile_id: str,
     shortcode: str,
     published_at: datetime,
-    kind: str = "post",
 ):
     return library.upsert_media(
         normalized=NormalizedMedia(
             identity=MediaIdentity("shortcode", shortcode),
             instagram_media_id=None,
             shortcode=shortcode,
-            kind=kind,
             caption=shortcode,
             accessibility_caption="",
             published_at=published_at,

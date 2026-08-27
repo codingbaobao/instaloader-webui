@@ -29,12 +29,11 @@ def profile(repository: LibraryRepository):
     )
 
 
-def _shortcode_media(shortcode: str, *, kind: str) -> NormalizedMedia:
+def _shortcode_media(shortcode: str) -> NormalizedMedia:
     return NormalizedMedia(
         identity=MediaIdentity("shortcode", shortcode),
-        instagram_media_id="17800000000000001",
+        instagram_media_id=f"178000000000{shortcode}",
         shortcode=shortcode,
-        kind=kind,
         caption="Caption",
         accessibility_caption="Accessibility caption",
         published_at=NOW,
@@ -70,7 +69,6 @@ def test_upsert_story_uses_story_identity_and_orders_poster_after_content(
             identity=identity,
             instagram_media_id="3952742051065980676",
             shortcode=None,
-            kind="story",
             caption="",
             accessibility_caption="",
             published_at=NOW,
@@ -108,19 +106,19 @@ def test_upsert_story_uses_story_identity_and_orders_poster_after_content(
     assert repository.find_media_by_identity(identity) == saved
 
 
-def test_upsert_shortcode_repairs_post_to_reel_without_duplication(
+def test_upsert_shortcode_replaces_assets_without_duplicate_identity(
     repository: LibraryRepository, profile
 ) -> None:
     shortcode = "DOqEJyxCRGJ"
     created = repository.upsert_media(
-        normalized=_shortcode_media(shortcode, kind="post"),
+        normalized=_shortcode_media(shortcode),
         profile_id=profile.id,
         assets=(_asset("profiles/1/post/content.jpg"),),
         now=NOW,
     )
 
     repaired = repository.upsert_media(
-        normalized=_shortcode_media(shortcode, kind="reel"),
+        normalized=_shortcode_media(shortcode),
         profile_id=profile.id,
         assets=(
             _asset("profiles/1/reel/content.mp4", kind="video"),
@@ -130,7 +128,7 @@ def test_upsert_shortcode_repairs_post_to_reel_without_duplication(
     )
 
     assert repaired.id == created.id
-    assert repaired.kind == "reel"
+    assert repaired.collection == "feed"
     assert repository.count_media(profile_id=profile.id) == 1
     assert repository.find_media_by_shortcode(shortcode) == repaired
 
@@ -140,7 +138,7 @@ def test_asset_replacement_removes_prior_role_rows(
 ) -> None:
     shortcode = "DOqEJyxCRGJ"
     created = repository.upsert_media(
-        normalized=_shortcode_media(shortcode, kind="reel"),
+        normalized=_shortcode_media(shortcode),
         profile_id=profile.id,
         assets=(
             _asset("profiles/1/old/content.mp4", kind="video"),
@@ -150,7 +148,7 @@ def test_asset_replacement_removes_prior_role_rows(
     )
 
     replaced = repository.upsert_media(
-        normalized=_shortcode_media(shortcode, kind="reel"),
+        normalized=_shortcode_media(shortcode),
         profile_id=profile.id,
         assets=(_asset("profiles/1/new/content.mp4", kind="video"),),
         now=NOW + timedelta(minutes=1),
@@ -167,7 +165,7 @@ def test_failed_asset_replacement_rolls_back_prior_assets(
     repository: LibraryRepository, profile
 ) -> None:
     first = repository.upsert_media(
-        normalized=_shortcode_media("DOqEJyxCRGJ", kind="reel"),
+        normalized=_shortcode_media("DOqEJyxCRGJ"),
         profile_id=profile.id,
         assets=(_asset("profiles/1/first/content.jpg"),),
         now=NOW,
@@ -177,7 +175,6 @@ def test_failed_asset_replacement_rolls_back_prior_assets(
             identity=MediaIdentity("shortcode", "CmzV2H-rrlI"),
             instagram_media_id="17800000000000002",
             shortcode="CmzV2H-rrlI",
-            kind="post",
             caption="",
             accessibility_caption="",
             published_at=NOW,
@@ -191,7 +188,7 @@ def test_failed_asset_replacement_rolls_back_prior_assets(
 
     with pytest.raises(IntegrityError):
         repository.upsert_media(
-            normalized=_shortcode_media("DOqEJyxCRGJ", kind="reel"),
+            normalized=_shortcode_media("DOqEJyxCRGJ"),
             profile_id=profile.id,
             assets=(_asset("profiles/1/second/content.jpg"),),
             now=NOW + timedelta(minutes=1),
@@ -202,3 +199,53 @@ def test_failed_asset_replacement_rolls_back_prior_assets(
     assert [asset.relative_path for asset in unchanged.assets] == [
         "profiles/1/first/content.jpg"
     ]
+
+
+def test_media_collection_filters_list_count_and_feed_windows(
+    repository: LibraryRepository, profile
+) -> None:
+    # Break caught: filtering by a former stored kind would exclude Reels or stories.
+    post = repository.upsert_media(
+        normalized=_shortcode_media("POST1"),
+        profile_id=profile.id,
+        assets=(),
+        now=NOW,
+    )
+    reel = repository.upsert_media(
+        normalized=_shortcode_media("REEL1"),
+        profile_id=profile.id,
+        assets=(),
+        now=NOW + timedelta(minutes=1),
+    )
+    story = repository.upsert_media(
+        normalized=NormalizedMedia(
+            identity=MediaIdentity("story_media_id", "STORY1"),
+            instagram_media_id="178000000000STORY1",
+            shortcode=None,
+            caption="",
+            accessibility_caption="",
+            published_at=NOW + timedelta(minutes=2),
+            story_expires_at=NOW + timedelta(hours=24),
+            original_url="https://www.instagram.com/stories/katerina.soria/STORY1/",
+        ),
+        profile_id=profile.id,
+        assets=(),
+        now=NOW,
+    )
+
+    feed = repository.list_media(profile_id=profile.id, collection="feed")
+    stories = repository.list_media(profile_id=profile.id, collection="story")
+
+    assert {item.identity_value for item in feed} == {"POST1", "REEL1"}
+    assert all(item.collection == "feed" for item in feed)
+    assert [item.identity_value for item in stories] == ["STORY1"]
+    assert repository.count_media(profile_id=profile.id, collection="feed") == 2
+    assert repository.list_media_feed(
+        anchor_id=story.id, profile_id=profile.id, collection="feed"
+    ) is None
+    assert repository.list_media_feed(
+        anchor_id=post.id, profile_id=profile.id, collection="story"
+    ) is None
+    assert repository.list_media_feed(
+        anchor_id=reel.id, profile_id=profile.id, collection="feed"
+    ) is not None

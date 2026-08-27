@@ -1144,7 +1144,6 @@ def test_fatal_profile_scan_preserves_story_and_records_failed_attempt(
                     identity=story_identity,
                     instagram_media_id=story_identity.value,
                     shortcode=None,
-                    kind="story",
                     caption="Current Story",
                     accessibility_caption="",
                     published_at=NOW,
@@ -1213,7 +1212,7 @@ def test_fatal_profile_scan_preserves_story_and_records_failed_attempt(
     assert stored_profile.last_sync_succeeded_at is None
     saved_story = library.find_media_by_identity(story_identity)
     assert saved_story is not None
-    assert saved_story.kind == "story"
+    assert saved_story.collection == "story"
 
 
 def raise_unexpected_resolution():

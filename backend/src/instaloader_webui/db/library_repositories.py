@@ -25,6 +25,8 @@ GLOBAL_APP_SETTINGS_ID = "global"
 _MAX_EXCEPTION_CLASS_CHAIN_LENGTH = 8
 _MAX_EXCEPTION_CLASS_NAME_LENGTH = 128
 
+MediaCollection = Literal["feed", "story"]
+
 
 def _as_utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
@@ -47,6 +49,22 @@ class AssetSnapshot:
 class MediaIdentity:
     identity_type: Literal["shortcode", "story_media_id"]
     value: str
+
+
+def media_collection(identity_type: str) -> MediaCollection:
+    if identity_type == "shortcode":
+        return "feed"
+    if identity_type == "story_media_id":
+        return "story"
+    raise ValueError("Unsupported media identity type.")
+
+
+def _collection_filter(collection: MediaCollection):
+    if collection == "feed":
+        return MediaItem.identity_type == "shortcode"
+    if collection == "story":
+        return MediaItem.identity_type == "story_media_id"
+    raise ValueError("Unsupported media collection.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +92,7 @@ class MediaSnapshot:
     identity_type: str
     identity_value: str
     owner_profile_id: str
-    kind: str
+    collection: MediaCollection
     caption: str
     accessibility_caption: str
     published_at: datetime
@@ -182,7 +200,6 @@ class NormalizedMedia:
     identity: MediaIdentity
     instagram_media_id: str | None
     shortcode: str | None
-    kind: str
     caption: str
     accessibility_caption: str
     published_at: datetime
@@ -249,7 +266,7 @@ def _media_snapshot(model: MediaItem, assets: list[MediaAsset]) -> MediaSnapshot
         identity_type=model.identity_type,
         identity_value=model.identity_value,
         owner_profile_id=model.owner_profile_id,
-        kind=model.kind,
+        collection=media_collection(model.identity_type),
         caption=model.caption,
         accessibility_caption=model.accessibility_caption,
         published_at=_as_utc(model.published_at),
@@ -597,7 +614,7 @@ class LibraryRepository:
         self,
         *,
         profile_id: str | None = None,
-        kind: str | None = None,
+        collection: MediaCollection | None = None,
         limit: int = 100,
     ) -> tuple[MediaSnapshot, ...]:
         query = (
@@ -607,8 +624,8 @@ class LibraryRepository:
         )
         if profile_id is not None:
             query = query.where(MediaItem.owner_profile_id == profile_id)
-        if kind is not None:
-            query = query.where(MediaItem.kind == kind)
+        if collection is not None:
+            query = query.where(_collection_filter(collection))
         with self._session_factory() as session:
             media_items = list(session.scalars(query).all())
             return self._media_snapshots(session, media_items)
@@ -620,14 +637,14 @@ class LibraryRepository:
         position: MediaFeedPosition | None = None,
         direction: Literal["newer", "older"] | None = None,
         profile_id: str | None = None,
-        kind: str | None = None,
+        collection: MediaCollection | None = None,
         limit: int = 20,
     ) -> MediaFeedWindow | None:
         filters = []
         if profile_id is not None:
             filters.append(MediaItem.owner_profile_id == profile_id)
-        if kind is not None:
-            filters.append(MediaItem.kind == kind)
+        if collection is not None:
+            filters.append(_collection_filter(collection))
 
         with self._session_factory() as session:
             anchor: MediaItem | None = None
@@ -639,7 +656,10 @@ class LibraryRepository:
                         profile_id is not None
                         and anchor.owner_profile_id != profile_id
                     )
-                    or (kind is not None and anchor.kind != kind)
+                    or (
+                        collection is not None
+                        and media_collection(anchor.identity_type) != collection
+                    )
                 ):
                     return None
                 position = MediaFeedPosition(
@@ -730,13 +750,13 @@ class LibraryRepository:
         self,
         *,
         profile_id: str | None = None,
-        kind: str | None = None,
+        collection: MediaCollection | None = None,
     ) -> int:
         query = select(func.count(MediaItem.id))
         if profile_id is not None:
             query = query.where(MediaItem.owner_profile_id == profile_id)
-        if kind is not None:
-            query = query.where(MediaItem.kind == kind)
+        if collection is not None:
+            query = query.where(_collection_filter(collection))
         with self._session_factory() as session:
             return int(session.scalar(query) or 0)
 
@@ -764,23 +784,6 @@ class LibraryRepository:
                 return None
             return self._media_snapshots(session, [model])[0]
 
-    def set_media_kind(
-        self, *, shortcode: str, kind: str, now: datetime
-    ) -> MediaSnapshot | None:
-        """Update a known item's normalized kind without replacing its assets."""
-        if kind not in {"post", "reel"}:
-            raise ValueError("Media kind must be post or reel.")
-        with self._session_factory.begin() as session:
-            model = session.scalar(
-                select(MediaItem).where(MediaItem.shortcode == shortcode)
-            )
-            if model is None:
-                return None
-            model.kind = kind
-            model.updated_at = _as_utc(now)
-            session.flush()
-            return self._media_snapshots(session, [model])[0]
-
     def upsert_media(
         self,
         *,
@@ -805,7 +808,6 @@ class LibraryRepository:
                     identity_type=normalized.identity.identity_type,
                     identity_value=normalized.identity.value,
                     owner_profile_id=profile_id,
-                    kind=normalized.kind,
                     caption=normalized.caption,
                     accessibility_caption=normalized.accessibility_caption,
                     published_at=_as_utc(normalized.published_at),
@@ -827,7 +829,6 @@ class LibraryRepository:
                 model.identity_type = normalized.identity.identity_type
                 model.identity_value = normalized.identity.value
                 model.owner_profile_id = profile_id
-                model.kind = normalized.kind
                 model.caption = normalized.caption
                 model.accessibility_caption = normalized.accessibility_caption
                 model.published_at = _as_utc(normalized.published_at)

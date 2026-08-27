@@ -270,7 +270,6 @@ def persist_incomplete_media(
             identity=identity,
             instagram_media_id=identity.value,
             shortcode=None if kind == "story" else SHORTCODE,
-            kind=kind,
             caption="Incomplete local media",
             accessibility_caption="",
             published_at=NOW,
@@ -308,7 +307,7 @@ def test_direct_story_validates_owner_and_downloads_only_story(
 
     saved = adapter.download_input(story_input(), "job-story")
 
-    assert saved.kind == "story"
+    assert saved.collection == "story"
     assert saved.story_media_id == STORY_MEDIA_ID
     assert lookup_calls == [(loader.context, int(STORY_MEDIA_ID))]
     assert item.download_calls == 1
@@ -601,7 +600,7 @@ def test_typed_post_and_reel_inputs_use_shortcode_resolution(
 
     saved = adapter.download_input(parsed, f"job-{expected_kind}")
 
-    assert saved.kind == expected_kind
+    assert saved.collection == "feed"
     assert saved.original_url == expected_url
     assert calls == [(loader.context, SHORTCODE)]
     assert loader.downloaded_posts == [post]
