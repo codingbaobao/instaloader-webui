@@ -25,6 +25,7 @@ from instaloader import (
     Profile,
     StoryItem,
 )
+from instaloader.nodeiterator import FrozenNodeIterator
 
 from instaloader_webui.db.library_repositories import (
     LibraryRepository,
@@ -40,6 +41,7 @@ from instaloader_webui.instagram.errors import (
 )
 from instaloader_webui.instagram.feed_manifest import (
     FeedManifestEntry,
+    FeedManifestIterator,
     build_posts_manifest,
     build_reels_manifest,
 )
@@ -54,6 +56,10 @@ from instaloader_webui.instagram.profile_sync import (
     IssueCallback,
     ProfileSyncCoordinator,
     ProfileSyncResult,
+    SegmentProgressCallback,
+)
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointRepository,
 )
 from instaloader_webui.instagram.safe_issues import (
     MediaItemFailure,
@@ -83,7 +89,6 @@ DirectMediaInput = PostInput | ReelInput | StoryInput
 ProgressCallback = Callable[..., None]
 _MISSING_STORY_METADATA = "Fetching StoryItem metadata failed."
 _LOGGER = logging.getLogger(__name__)
-_PROFILE_SYNC_TIME_SLICE_SECONDS = 5 * 60
 _AVATAR_DIAGNOSTIC_PREFIX_BYTES = 64
 _MAX_AVATAR_DIAGNOSTIC_VALUE_LENGTH = 160
 _AVATAR_DIAGNOSTIC_UNAVAILABLE = "[unavailable]"
@@ -279,6 +284,26 @@ class _PublicProfileMediaSource:
     loader: Instaloader
     owner: ProfileSnapshot
 
+    def open_feed_manifest(
+        self,
+        profile: object,
+        source: Literal["posts", "reels"],
+    ) -> _CandidateManifest:
+        typed_profile = cast(Profile, profile)
+        manifest = (
+            build_reels_manifest(typed_profile)
+            if source == "reels"
+            else build_posts_manifest(typed_profile)
+        )
+        return _CandidateManifest(
+            manifest=manifest,
+            candidate=lambda entry: self.adapter._profile_manifest_candidate(
+                loader=self.loader,
+                entry=entry,
+                owner=self.owner,
+            ),
+        )
+
     def iter_stories(self, profile: object) -> Iterator[MediaCandidate]:
         return self.adapter._iter_story_candidates(
             loader=self.loader,
@@ -287,26 +312,32 @@ class _PublicProfileMediaSource:
         )
 
     def iter_reels(self, profile: object) -> Iterator[MediaCandidate]:
-        typed_profile = cast(Profile, profile)
-        return (
-            self.adapter._profile_manifest_candidate(
-                loader=self.loader,
-                entry=entry,
-                owner=self.owner,
-            )
-            for entry in build_reels_manifest(typed_profile)
-        )
+        return iter(self.open_feed_manifest(profile, "reels"))
 
     def iter_posts(self, profile: object) -> Iterator[MediaCandidate]:
-        typed_profile = cast(Profile, profile)
-        return (
-            self.adapter._profile_manifest_candidate(
-                loader=self.loader,
-                entry=entry,
-                owner=self.owner,
-            )
-            for entry in build_posts_manifest(typed_profile)
-        )
+        return iter(self.open_feed_manifest(profile, "posts"))
+
+
+@dataclass(slots=True)
+class _CandidateManifest:
+    manifest: FeedManifestIterator
+    candidate: Callable[[FeedManifestEntry], MediaCandidate]
+
+    @property
+    def count(self) -> int | None:
+        return self.manifest.count
+
+    def __iter__(self) -> _CandidateManifest:
+        return self
+
+    def __next__(self) -> MediaCandidate:
+        return self.candidate(next(self.manifest))
+
+    def freeze(self) -> FrozenNodeIterator:
+        return self.manifest.freeze()
+
+    def thaw(self, frozen: FrozenNodeIterator) -> None:
+        self.manifest.thaw(frozen)
 
 
 class PublicInstaloaderAdapter:
@@ -323,6 +354,8 @@ class PublicInstaloaderAdapter:
         loader_runtime: WorkerInstaloaderRuntime,
         profile_lookup_resolver: ProfileLookupResolver,
         issue: IssueCallback | None = None,
+        checkpoints: ProfileSyncCheckpointRepository | None = None,
+        segment_progress: SegmentProgressCallback | None = None,
     ) -> None:
         self._data_root = data_root.resolve()
         self._media_root = self._require_data_subdirectory(media_root)
@@ -333,6 +366,8 @@ class PublicInstaloaderAdapter:
         self._issue = issue or (lambda _issue: None)
         self._loader_runtime = loader_runtime
         self._profile_lookup_resolver = profile_lookup_resolver
+        self._checkpoints = checkpoints
+        self._segment_progress = segment_progress
 
     def fetch_profile(self, username: str) -> PublicProfile:
         """Load normalized metadata for one publicly accessible profile."""
@@ -917,11 +952,12 @@ class PublicInstaloaderAdapter:
                 ),
                 record_issue=self._issue,
                 is_syncable=lambda: self._profile_is_syncable(profile_id),
-                monotonic=time.monotonic,
                 pause_between_new_media=lambda: time.sleep(
                     random.uniform(1, 3)
                 ),
-                time_slice_seconds=_PROFILE_SYNC_TIME_SLICE_SECONDS,
+                profile_id=profile_id,
+                checkpoints=self._checkpoints,
+                segment_progress=self._segment_progress,
             ).run(
                 profile=profile,
                 job_id=job_id,
