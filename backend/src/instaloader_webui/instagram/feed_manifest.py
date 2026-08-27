@@ -78,10 +78,13 @@ class _NodeFeedManifestIterator:
 
 
 def _published_at_hint(value: object) -> datetime | None:
-    if type(value) not in (int, float) or not math.isfinite(value):
+    if type(value) not in (int, float):
+        return None
+    timestamp = float(cast(int | float, value))
+    if not math.isfinite(timestamp):
         return None
     try:
-        return datetime.fromtimestamp(value, UTC)
+        return datetime.fromtimestamp(timestamp, UTC)
     except (OverflowError, OSError, ValueError):
         return None
 
