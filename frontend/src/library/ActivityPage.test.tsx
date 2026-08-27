@@ -1,5 +1,5 @@
 import { HttpResponse, http } from "msw";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -44,7 +44,7 @@ function successEnvelope<T>(data: T) {
 }
 
 describe("ActivityPage", () => {
-  it("shows a profile target and ordered Stories and Feed content progress", async () => {
+  it("shows ordered profile sync metrics without false progress bars", async () => {
     server.use(
       http.get("/api/jobs", () =>
         HttpResponse.json(successEnvelope([
@@ -55,9 +55,9 @@ describe("ActivityPage", () => {
               {
                 segment: "stories",
                 label: "Stories",
-                state: "running",
+                state: "completed",
                 scanned: 3,
-                total: null,
+                total: 3,
                 saved: 1,
                 existing: 2,
                 warnings: 0,
@@ -87,19 +87,74 @@ describe("ActivityPage", () => {
     const profileLink = await screen.findByRole("link", { name: "@mihi_727" });
     expect(profileLink).toHaveAttribute("href", "/profiles/profile-1");
     expect(screen.getByRole("heading", { name: /profile sync @mihi_727/i })).toBeVisible();
-    const progressbars = screen.getAllByRole("progressbar");
-    expect(progressbars).toHaveLength(2);
-    expect(progressbars[0]).toHaveAccessibleName("@mihi_727 Stories progress");
-    expect(progressbars[0]).not.toHaveAttribute("value");
-    expect(progressbars[1]).toHaveAccessibleName("@mihi_727 Feed content progress");
-    expect(progressbars[1]).toHaveAttribute("value", "50");
-    expect(screen.getByText("Scanned 3")).toBeVisible();
-    expect(screen.getByText("Saved 1")).toBeVisible();
-    expect(screen.getAllByText("Existing 2")).toHaveLength(2);
-    expect(screen.getByText("Warnings 1")).toBeVisible();
-    expect(screen.getAllByText(/Stories|Feed content/).map((node) => node.textContent)).toEqual(
-      expect.arrayContaining(["Stories", "Feed content"]),
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+
+    const jobCard = profileLink.closest("article");
+    expect(jobCard).not.toBeNull();
+    const segments = within(jobCard as HTMLElement).getAllByRole("region");
+    expect(segments).toHaveLength(2);
+    expect(segments[0]).toHaveAccessibleName("Stories");
+    expect(segments[1]).toHaveAccessibleName("Feed content");
+
+    expect(within(segments[0]).getByText("Complete")).toBeVisible();
+    expect(within(segments[0]).getByText("Scanned")).toBeVisible();
+    expect(within(segments[0]).getByText("3")).toBeVisible();
+    expect(within(segments[0]).getByText("Saved")).toBeVisible();
+    expect(within(segments[0]).getByText("1")).toBeVisible();
+    expect(within(segments[0]).getByText("Already in library")).toBeVisible();
+    expect(within(segments[0]).getByText("2")).toBeVisible();
+
+    expect(within(segments[1]).getByText("Scanning & downloading")).toBeVisible();
+    expect(within(segments[1]).getByText("Scanned")).toBeVisible();
+    expect(within(segments[1]).getByText("5")).toBeVisible();
+    expect(within(segments[1]).getByText("Warnings")).toBeVisible();
+    expect(within(segments[1]).getByText("1")).toBeVisible();
+  });
+
+  it("uses dashes instead of zero counts before a profile sync segment starts", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            target_label: "@mihi_727",
+            progress_segments: [
+              {
+                segment: "stories",
+                label: "Stories",
+                state: "running",
+                scanned: 1,
+                total: null,
+                saved: 1,
+                existing: 0,
+                warnings: 0,
+                updated_at: "2026-07-31T08:00:03Z",
+              },
+              {
+                segment: "feed",
+                label: "Feed content",
+                state: "pending",
+                scanned: 0,
+                total: null,
+                saved: 0,
+                existing: 0,
+                warnings: 0,
+                updated_at: "2026-07-31T08:00:03Z",
+              },
+            ],
+          }),
+        ])),
+      ),
     );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    const feedSegment = await screen.findByRole("region", { name: "Feed content" });
+    expect(within(feedSegment).getByText("Waiting")).toBeVisible();
+    expect(within(feedSegment).getAllByText("—")).toHaveLength(4);
+    expect(within(feedSegment).queryByText("0")).not.toBeInTheDocument();
   });
 
   it("shows a canonical single-media target as a safe external link", async () => {
@@ -183,6 +238,33 @@ describe("ActivityPage", () => {
     expect(screen.queryByText("0 of 0")).not.toBeInTheDocument();
     expect(screen.queryByText(/%/)).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("keeps determinate progress for non-profile jobs with a known total", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            type: "single_media",
+            progress_current: 1,
+            progress_total: 4,
+            status_text: "Downloading media.",
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter
+        initialPath="/activity"
+        initialSession={authenticatedSession}
+      />,
+    );
+
+    expect(await screen.findByText("1 of 4")).toBeVisible();
+    expect(screen.getByText("25%")).toBeVisible();
+    expect(screen.getByRole("progressbar", { name: "single media progress" }))
+      .toHaveAttribute("value", "25");
   });
 
   it("shows the sanitized failure reason for an ordinary failed job", async () => {

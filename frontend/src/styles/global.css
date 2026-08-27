@@ -510,11 +510,33 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 .job-segment { padding: 12px 14px; border: 1px solid #e5e5e5; border-radius: 10px; background: #fafafa; }
 
-.job-segment-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; color: #2d2d2d; font-size: 13px; }
+.job-segment-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: #2d2d2d; }
 
-.job-segment-heading span { color: #737373; font-size: 12px; font-weight: 700; }
+.job-segment-heading h3 { margin: 0; font-size: 13px; }
 
-.job-segment-counts { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 7px; color: #656565; font-size: 11px; font-weight: 700; }
+.job-segment-state { color: #737373; font-size: 12px; font-weight: 700; text-align: right; }
+
+.job-segment-state-running { color: #0064a8; }
+
+.job-segment-state-completed { color: #067647; }
+
+.job-segment-state-failed { color: #b42318; }
+
+.job-segment-counts { display: grid; grid-template-columns: 1.05fr 1fr 1.4fr 1fr; gap: 8px; margin: 0; }
+
+.job-segment-count { min-width: 0; padding-left: 12px; border-left: 1px solid #e4e4e4; }
+
+.job-segment-count:first-child { padding-left: 0; border-left: 0; }
+
+.job-segment-count dt { margin-bottom: 4px; color: #737373; font-size: 11px; }
+
+.job-segment-count dd { margin: 0; color: #343434; font-size: 16px; font-weight: 750; font-variant-numeric: tabular-nums; }
+
+.job-segment-count-primary dd { color: #111; font-size: 24px; }
+
+.job-segment-count-warning dd { color: #93370d; }
+
+.job-segment-running { border-color: #b9ddf6; background: #f7fbfe; }
 
 .job-segment-failed { border-color: #f0b8b3; background: #fff5f4; }
 
@@ -723,6 +745,8 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
   .instagram-session-card { padding: 20px; }
   .instagram-session-status dl { grid-template-columns: 1fr; }
   .job-card-heading, .job-issue-heading { align-items: flex-start; flex-direction: column; }
+  .job-segment-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 8px; }
+  .job-segment-count:nth-child(3) { padding-left: 0; border-left: 0; }
   .job-issue-fields { grid-template-columns: 1fr; }
   .job-issue-message, .job-issue-chain { grid-column: auto; }
   .job-result { grid-template-columns: 1fr; }
