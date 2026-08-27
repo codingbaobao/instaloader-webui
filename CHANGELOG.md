@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.3.0...v0.4.0) (2026-08-27)
+
+
+### Features
+
+* add fair profile sync scheduling and global cooldown ([#15](https://github.com/codingbaobao/instaloader-webui/issues/15)) ([b1eb4b8](https://github.com/codingbaobao/instaloader-webui/commit/b1eb4b80c698a5008a96f65295655a6a6f3bb750))
+
+
+### Bug Fixes
+
+* improve profile sync activity metrics ([#18](https://github.com/codingbaobao/instaloader-webui/issues/18)) ([177fcbd](https://github.com/codingbaobao/instaloader-webui/commit/177fcbdde9740fc533d6caa3a79dd9855888397e))
+* make profile sync resumable and anchor viewer directly ([#13](https://github.com/codingbaobao/instaloader-webui/issues/13)) ([3adfe03](https://github.com/codingbaobao/instaloader-webui/commit/3adfe0381bdb74dc44e219d2b5a464515aac565e))
+* resume complete profile feed syncs ([#17](https://github.com/codingbaobao/instaloader-webui/issues/17)) ([253aa22](https://github.com/codingbaobao/instaloader-webui/commit/253aa223f6e5f4fb0c0ba6c09f4ae905ab8778d5))
+
 ## [0.3.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.2.0...v0.3.0) (2026-08-05)
 
 
