@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -10,6 +10,7 @@ from instaloader_webui.db.library_repositories import (
     AppSettingsSnapshot,
     AssetSnapshot,
     JobIssueSnapshot,
+    JobProgressSegmentSnapshot,
     JobSnapshot,
     MediaSnapshot,
     ProfileSnapshot,
@@ -93,6 +94,20 @@ class JobIssueResponse(BaseModel):
     occurred_at: datetime
 
 
+class JobProgressSegmentResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    segment: Literal["stories", "feed"]
+    label: str
+    state: Literal["pending", "running", "completed", "failed"]
+    scanned: int
+    total: int | None
+    saved: int
+    existing: int
+    warnings: int
+    updated_at: datetime
+
+
 class JobResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -105,6 +120,9 @@ class JobResponse(BaseModel):
     status_text: str
     error: str | None
     phase: str | None
+    target_label: str | None
+    target_url: str | None
+    progress_segments: tuple[JobProgressSegmentResponse, ...]
     issue_count: int
     issues: tuple[JobIssueResponse, ...]
     created_at: datetime
@@ -200,6 +218,23 @@ def serialize_job_issue(issue: JobIssueSnapshot) -> JobIssueResponse:
     )
 
 
+def serialize_job_progress_segment(
+    segment: JobProgressSegmentSnapshot,
+) -> JobProgressSegmentResponse:
+    label = "Stories" if segment.segment == "stories" else "Feed content"
+    return JobProgressSegmentResponse(
+        segment=segment.segment,
+        label=label,
+        state=segment.state,
+        scanned=segment.scanned,
+        total=segment.total,
+        saved=segment.saved,
+        existing=segment.existing,
+        warnings=segment.warnings,
+        updated_at=segment.updated_at,
+    )
+
+
 def serialize_job(job: JobSnapshot) -> JobResponse:
     return JobResponse(
         id=job.id,
@@ -211,6 +246,12 @@ def serialize_job(job: JobSnapshot) -> JobResponse:
         status_text=job.status_text,
         error=job.error,
         phase=job.phase,
+        target_label=job.target_label,
+        target_url=job.target_url,
+        progress_segments=tuple(
+            serialize_job_progress_segment(segment)
+            for segment in job.progress_segments
+        ),
         issue_count=job.issue_count,
         issues=tuple(serialize_job_issue(issue) for issue in job.issues),
         created_at=job.created_at,
