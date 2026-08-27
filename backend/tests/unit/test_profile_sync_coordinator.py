@@ -1541,6 +1541,56 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert "instagram_profile_avatar_invalid_response" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("stored_url", "stored_avatar", "expected_avatar_requests"),
+    [
+        ("https://cdn.example/avatar-standard.jpg", JPEG_AVATAR, 0),
+        ("https://cdn.example/old-avatar.jpg", JPEG_AVATAR, 1),
+        ("https://cdn.example/avatar-standard.jpg", b"not-an-image", 1),
+    ],
+)
+def test_profile_sync_reuses_only_valid_avatar_with_unchanged_url(
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+    stored_url: str,
+    stored_avatar: bytes,
+    expected_avatar_requests: int,
+) -> None:
+    upstream = AdapterProfile()
+    profile_repository.update_profile_metadata(
+        profile_id=tracked_profile.id,
+        instagram_user_id=str(upstream.userid),
+        username=upstream.username,
+        full_name=upstream.full_name,
+        biography=upstream.biography,
+        profile_pic_url=stored_url,
+        now=NOW,
+    )
+    avatar_path = profile_avatar_path(test_settings.media_root, tracked_profile.id)
+    avatar_path.parent.mkdir(parents=True, exist_ok=True)
+    avatar_path.write_bytes(stored_avatar)
+    events: list[str] = []
+    upstream.events = events
+    loader = AdapterLoader(events=events, response=AvatarResponse())
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=RecordingProfileLookupResolver(
+            upstream,
+            events=events,
+        ),
+    )
+
+    adapter.sync_profile(tracked_profile.id, "job-avatar-cache")
+
+    assert sum(event.startswith("avatar:") for event in events) == (
+        expected_avatar_requests
+    )
+    assert avatar_path.read_bytes() == JPEG_AVATAR
+
+
 def test_profile_sync_safely_classifies_abort_during_reel_enumeration(
     monkeypatch: pytest.MonkeyPatch,
     profile_repository: LibraryRepository,
