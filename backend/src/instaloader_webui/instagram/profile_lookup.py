@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from typing import Any, Literal, cast
 
 from instaloader import (
@@ -38,6 +39,7 @@ _LEGACY_RESULT_KEY = "xdt_api__v1__fbsearch__non_profiled_serp"
 _MAX_EXCEPTION_NODES = 8
 _SCHEMA_ERROR_MESSAGE = "Instagram profile lookup response was unavailable."
 _TERMINAL_ERROR_MESSAGE = "Instagram profile lookup failed."
+_NATIVE_CIRCUIT_SECONDS = 1_800.0
 
 
 class _LegacyProfileLookupSchemaError(InstaloaderException):
@@ -55,11 +57,23 @@ class ProfileLookupFailure(InstaloaderException):
 class ProfileLookupResolver:
     """Resolve a Profile through the configured lookup path."""
 
-    def __init__(self, mode: ProfileLookupMode, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        mode: ProfileLookupMode,
+        logger: logging.Logger,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        native_circuit_seconds: float = _NATIVE_CIRCUIT_SECONDS,
+    ) -> None:
         if mode not in _LOOKUP_MODES:
             raise ValueError("Invalid Instagram profile lookup mode.")
+        if native_circuit_seconds <= 0:
+            raise ValueError("Native profile lookup circuit duration must be positive.")
         self._mode = mode
         self._logger = logger
+        self._monotonic = monotonic
+        self._native_circuit_seconds = native_circuit_seconds
+        self._native_blocked_until: float | None = None
 
     def resolve(self, context: InstaloaderContext, username: str) -> Profile:
         """Resolve ``username`` into a Profile bound to ``context``."""
@@ -68,6 +82,18 @@ class ProfileLookupResolver:
                 return self._resolve_legacy(context, username)
             except RequestException as legacy_error:
                 raise ProfileLookupFailure(legacy_error) from legacy_error
+
+        if (
+            self._mode == "fallback"
+            and self._native_blocked_until is not None
+            and self._monotonic() < self._native_blocked_until
+        ):
+            self._log_event(
+                path="native",
+                outcome="fallback",
+                status_class="rate_limited",
+            )
+            return self._resolve_fallback_legacy(context, username)
 
         fallback_error: Exception | None = None
         try:
@@ -81,6 +107,9 @@ class ProfileLookupResolver:
                     outcome="fallback",
                     status_class="rate_limited",
                 )
+                self._native_blocked_until = (
+                    self._monotonic() + self._native_circuit_seconds
+                )
                 fallback_error = native_error
             else:
                 self._log_event(
@@ -92,6 +121,7 @@ class ProfileLookupResolver:
                     raise ProfileLookupFailure(native_error) from native_error
                 raise
         else:
+            self._native_blocked_until = None
             self._log_event(
                 path="native",
                 outcome="success",
@@ -99,6 +129,19 @@ class ProfileLookupResolver:
             )
             return profile
 
+        return self._resolve_fallback_legacy(
+            context,
+            username,
+            fallback_error=fallback_error,
+        )
+
+    def _resolve_fallback_legacy(
+        self,
+        context: InstaloaderContext,
+        username: str,
+        *,
+        fallback_error: Exception | None = None,
+    ) -> Profile:
         try:
             return self._resolve_legacy(context, username)
         except (InstaloaderException, RequestException) as legacy_error:

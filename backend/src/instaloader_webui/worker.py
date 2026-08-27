@@ -19,6 +19,9 @@ from instaloader_webui.db.library_repositories import (
 from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.cooldown import InstagramCooldownStore
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointRepository,
+)
 from instaloader_webui.instagram.session_store import InstagramSessionStore
 from instaloader_webui.instagram.worker_runtime import WorkerInstaloaderRuntime
 from instaloader_webui.services.job_runner import JobRunner, enqueue_due_profile_syncs
@@ -53,6 +56,7 @@ def main() -> None:
     jobs = JobRepository(session_factory)
     followee_imports = FolloweeImportRepository(session_factory)
     scheduling = SettingsRepository(session_factory)
+    checkpoints = ProfileSyncCheckpointRepository(session_factory)
     app_secret = load_or_create_app_secret(settings.data_root)
     instagram_sessions = InstagramSessionStore(settings.data_root, app_secret)
     cooldowns = InstagramCooldownStore(settings.data_root)
@@ -71,6 +75,7 @@ def main() -> None:
         loader_runtime=loader_runtime,
         profile_lookup_resolver=profile_lookup_resolver,
         cooldowns=cooldowns,
+        checkpoints=checkpoints,
     )
     jobs.recover_interrupted(datetime.now(UTC))
 

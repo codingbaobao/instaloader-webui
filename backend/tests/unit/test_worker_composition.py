@@ -66,6 +66,7 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
         "JobRepository",
         "FolloweeImportRepository",
         "SettingsRepository",
+        "ProfileSyncCheckpointRepository",
     ):
         monkeypatch.setattr(
             worker_module,
@@ -106,6 +107,7 @@ def test_worker_builds_one_shared_resolver_from_exact_setting(
     assert len(runner_kwargs) == 1
     assert runner_kwargs[0]["profile_lookup_resolver"] is resolver
     assert isinstance(runner_kwargs[0]["cooldowns"], InstagramCooldownStore)
+    assert runner_kwargs[0]["checkpoints"] is not None
 
 
 def test_worker_claims_local_job_while_global_cooldown_is_active(

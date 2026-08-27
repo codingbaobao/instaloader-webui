@@ -24,6 +24,9 @@ const baseJob: JobSummary = {
   status_text: "Syncing profile.",
   error: null,
   phase: null,
+  target_label: null,
+  target_url: null,
+  progress_segments: [],
   issue_count: 0,
   issues: [],
   created_at: "2026-07-31T08:00:00Z",
@@ -41,6 +44,88 @@ function successEnvelope<T>(data: T) {
 }
 
 describe("ActivityPage", () => {
+  it("shows a profile target and ordered Stories and Feed content progress", async () => {
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            payload: { profile_id: "profile-1" },
+            target_label: "@mihi_727",
+            progress_segments: [
+              {
+                segment: "stories",
+                label: "Stories",
+                state: "running",
+                scanned: 3,
+                total: null,
+                saved: 1,
+                existing: 2,
+                warnings: 0,
+                updated_at: "2026-07-31T08:00:03Z",
+              },
+              {
+                segment: "feed",
+                label: "Feed content",
+                state: "running",
+                scanned: 5,
+                total: 10,
+                saved: 2,
+                existing: 2,
+                warnings: 1,
+                updated_at: "2026-07-31T08:00:04Z",
+              },
+            ],
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    const profileLink = await screen.findByRole("link", { name: "@mihi_727" });
+    expect(profileLink).toHaveAttribute("href", "/profiles/profile-1");
+    expect(screen.getByRole("heading", { name: /profile sync @mihi_727/i })).toBeVisible();
+    const progressbars = screen.getAllByRole("progressbar");
+    expect(progressbars).toHaveLength(2);
+    expect(progressbars[0]).toHaveAccessibleName("@mihi_727 Stories progress");
+    expect(progressbars[0]).not.toHaveAttribute("value");
+    expect(progressbars[1]).toHaveAccessibleName("@mihi_727 Feed content progress");
+    expect(progressbars[1]).toHaveAttribute("value", "50");
+    expect(screen.getByText("Scanned 3")).toBeVisible();
+    expect(screen.getByText("Saved 1")).toBeVisible();
+    expect(screen.getAllByText("Existing 2")).toHaveLength(2);
+    expect(screen.getByText("Warnings 1")).toBeVisible();
+    expect(screen.getAllByText(/Stories|Feed content/).map((node) => node.textContent)).toEqual(
+      expect.arrayContaining(["Stories", "Feed content"]),
+    );
+  });
+
+  it("shows a canonical single-media target as a safe external link", async () => {
+    const canonicalUrl = "https://www.instagram.com/reel/DOqEJyxCRGJ/";
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            type: "single_media",
+            target_label: canonicalUrl,
+            target_url: canonicalUrl,
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    const target = await screen.findByRole("link", { name: canonicalUrl });
+    expect(target).toHaveAttribute("href", canonicalUrl);
+    expect(target).toHaveAttribute("target", "_blank");
+    expect(target).toHaveAttribute("rel", "noreferrer");
+  });
+
   it("shows a scanning phase without a false count, percentage, or progress bar", async () => {
     server.use(
       http.get("/api/jobs", () =>

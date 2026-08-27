@@ -40,6 +40,9 @@ from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
 )
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointRepository,
+)
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
@@ -82,6 +85,11 @@ def profile_lookup_resolver() -> ProfileLookupResolver:
 
 
 @pytest.fixture
+def checkpoints(session_factory) -> ProfileSyncCheckpointRepository:
+    return ProfileSyncCheckpointRepository(session_factory)
+
+
+@pytest.fixture
 def runner(
     test_settings,
     library: LibraryRepository,
@@ -89,6 +97,7 @@ def runner(
     followee_imports: FolloweeImportRepository,
     session_factory,
     profile_lookup_resolver: ProfileLookupResolver,
+    checkpoints: ProfileSyncCheckpointRepository,
 ) -> JobRunner:
     return JobRunner(
         data_root=test_settings.data_root,
@@ -100,6 +109,7 @@ def runner(
         loader_runtime=cast(WorkerInstaloaderRuntime, object()),
         profile_lookup_resolver=profile_lookup_resolver,
         cooldowns=InstagramCooldownStore(test_settings.data_root),
+        checkpoints=checkpoints,
     )
 
 
@@ -433,36 +443,36 @@ def test_profile_sync_with_item_issues_completes_with_warnings(
     assert completed.status_text == "Completed with 1 warning(s)."
 
 
-def test_profile_backfill_with_item_issues_preserves_pending_status(
+def test_profile_sync_initializes_two_segments_before_adapter_runs(
     runner: JobRunner,
     library: LibraryRepository,
     jobs: JobRepository,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Break caught: the warning terminal transition used to erase the signal
-    # that more profile history will continue on the next scheduled sync.
+    # Break caught: creating progress rows only after the first callback leaves
+    # queued/running profile jobs without stable Stories and Feed content rows.
     job, _profile_id = _claimed_profile_sync(library, jobs)
 
-    class BackfillWarningAdapter:
+    class WarningAdapter:
         def sync_profile(self, _profile_id: str, _job_id: str) -> ProfileSyncResult:
             return ProfileSyncResult(
                 processed=26,
-                total=None,
+                total=26,
                 issue_count=1,
                 stopped=False,
-                backfill_pending=True,
             )
 
-    monkeypatch.setattr(runner, "_adapter", lambda _job: BackfillWarningAdapter())
+    monkeypatch.setattr(runner, "_adapter", lambda _job: WarningAdapter())
 
     runner.run(job)
 
     completed = jobs.get(job.id, include_issues=True)
     assert completed is not None
     assert completed.state == "completed_with_warnings"
-    assert completed.status_text == (
-        "Profile sync time slice ended with 1 warning(s). More profile history "
-        "will continue on the next scheduled sync."
+    assert completed.status_text == "Completed with 1 warning(s)."
+    assert tuple(segment.segment for segment in completed.progress_segments) == (
+        "stories",
+        "feed",
     )
 
 
@@ -1173,9 +1183,7 @@ def test_fatal_profile_scan_preserves_story_and_records_failed_attempt(
                 progress=self._progress,
                 record_issue=self._issue,
                 is_syncable=lambda: True,
-                monotonic=lambda: 0.0,
                 pause_between_new_media=lambda: None,
-                time_slice_seconds=300,
             ).run(profile=object(), job_id=job_id)
 
     def fake_adapter(**kwargs):
