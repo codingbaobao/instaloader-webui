@@ -38,6 +38,11 @@ from instaloader_webui.instagram.errors import (
     SESSION_REJECTED,
     classify_instaloader_error,
 )
+from instaloader_webui.instagram.feed_manifest import (
+    FeedManifestEntry,
+    build_posts_manifest,
+    build_reels_manifest,
+)
 from instaloader_webui.instagram.media_processor import MediaProcessor
 from instaloader_webui.instagram.media_types import (
     ContentKind,
@@ -284,25 +289,23 @@ class _PublicProfileMediaSource:
     def iter_reels(self, profile: object) -> Iterator[MediaCandidate]:
         typed_profile = cast(Profile, profile)
         return (
-            self.adapter._profile_post_candidate(
+            self.adapter._profile_manifest_candidate(
                 loader=self.loader,
-                post=post,
-                kind="reel",
+                entry=entry,
                 owner=self.owner,
             )
-            for post in typed_profile.get_reels()
+            for entry in build_reels_manifest(typed_profile)
         )
 
     def iter_posts(self, profile: object) -> Iterator[MediaCandidate]:
         typed_profile = cast(Profile, profile)
         return (
-            self.adapter._profile_post_candidate(
+            self.adapter._profile_manifest_candidate(
                 loader=self.loader,
-                post=post,
-                kind="post",
+                entry=entry,
                 owner=self.owner,
             )
-            for post in typed_profile.get_posts()
+            for entry in build_posts_manifest(typed_profile)
         )
 
 
@@ -1028,26 +1031,27 @@ class PublicInstaloaderAdapter:
         finally:
             response.close()
 
-    def _profile_post_candidate(
+    def _profile_manifest_candidate(
         self,
         *,
         loader: Instaloader,
-        post: Post,
-        kind: MediaKind,
+        entry: FeedManifestEntry,
         owner: ProfileSnapshot | None,
     ) -> MediaCandidate:
+        kind: MediaKind = "reel" if entry.source == "reels" else "post"
         return MediaCandidate(
-            identity=MediaIdentity("shortcode", post.shortcode),
+            identity=MediaIdentity("shortcode", entry.shortcode),
             kind=kind,
             session_configured=loader.context.is_logged_in,
             resolve=lambda: self._resolve_post(
                 loader=loader,
-                post=post,
+                post=entry.resolve(),
                 kind=kind,
-                original_url=self._canonical_original_url(post.shortcode, kind),
+                original_url=self._canonical_original_url(entry.shortcode, kind),
                 owner=owner,
             ),
-            published_at_hint=self._as_utc(post.date_utc),
+            published_at_hint=entry.published_at_hint,
+            source=entry.source,
         )
 
     def _resolve_shortcode(

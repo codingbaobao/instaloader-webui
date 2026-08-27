@@ -14,6 +14,7 @@ from instaloader import (
     AbortDownloadException,
     BadResponseException,
     LoginRequiredException,
+    Post,
     Profile,
     TooManyRequestsException,
 )
@@ -33,6 +34,7 @@ from instaloader_webui.instagram.errors import (
     SESSION_REJECTED,
     TRANSIENT,
 )
+from instaloader_webui.instagram.feed_manifest import build_reels_manifest
 from instaloader_webui.instagram.media_types import MediaCandidate, MediaKind
 from instaloader_webui.instagram.profile_lookup import (
     ProfileLookupMode,
@@ -445,6 +447,74 @@ def test_posts_and_reels_are_lazily_interleaved_newest_first() -> None:
     ]
     assert result.processed == 4
     assert result.backfill_pending is False
+
+
+def test_reels_manifest_resolves_full_metadata_only_for_missing_shortcode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shortcode_lookups: list[str] = []
+    nodes = [
+        {"media": {"code": "existing-one", "taken_at": 1_700_000_003}},
+        {"media": {"code": "existing-two", "taken_at": 1_700_000_002}},
+        {"media": {"code": "missing-code", "taken_at": 1_700_000_001}},
+    ]
+
+    class ManifestContext:
+        username = "session-owner"
+
+        def doc_id_graphql_query(
+            self,
+            doc_id: str,
+            variables: object,
+            referer: str,
+        ) -> dict[str, object]:
+            assert doc_id == "7845543455542541"
+            assert variables == {
+                "data": {
+                    "page_size": 12,
+                    "include_feed_video": True,
+                    "target_user_id": "727",
+                },
+                "__relay_internal__pv__PolarisFeedShareMenurelayprovider": False,
+            }
+            assert referer == "https://www.instagram.com/mihi_727/"
+            return {
+                "data": {
+                    "xdt_api__v1__clips__user__connection_v2": {
+                        "edges": [{"node": node} for node in nodes],
+                        "page_info": {"has_next_page": False},
+                    }
+                }
+            }
+
+    class ManifestProfile:
+        userid = 727
+        username = "mihi_727"
+        _context = ManifestContext()
+
+        def _obtain_metadata(self) -> None:
+            return None
+
+    def from_shortcode(context: object, shortcode: str) -> object:
+        assert context is ManifestProfile._context
+        shortcode_lookups.append(shortcode)
+        return SimpleNamespace(shortcode=shortcode)
+
+    monkeypatch.setattr(Post, "from_shortcode", staticmethod(from_shortcode))
+
+    entries = list(build_reels_manifest(cast(Profile, ManifestProfile())))
+    existing = {"existing-one", "existing-two"}
+    resolved = [entry.resolve() for entry in entries if entry.shortcode not in existing]
+
+    assert [entry.shortcode for entry in entries] == [
+        "existing-one",
+        "existing-two",
+        "missing-code",
+    ]
+    assert all(entry.source == "reels" for entry in entries)
+    assert all(entry.published_at_hint is not None for entry in entries)
+    assert shortcode_lookups == ["missing-code"]
+    assert [post.shortcode for post in resolved] == ["missing-code"]
 
 
 def test_fast_backfill_is_not_limited_to_25_new_saves() -> None:
