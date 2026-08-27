@@ -922,12 +922,16 @@ class PublicInstaloaderAdapter:
                 profile,
                 authenticated=True,
             )
-            self._refresh_profile_avatar(
-                loader=loader,
-                profile=profile,
-                profile_id=profile_id,
-                staging_directory=staging_directory,
-            )
+            if not self._can_reuse_profile_avatar(
+                stored_profile,
+                profile_data.profile_pic_url,
+            ):
+                self._refresh_profile_avatar(
+                    loader=loader,
+                    profile=profile,
+                    profile_id=profile_id,
+                    staging_directory=staging_directory,
+                )
             refreshed_profile = self._library.update_profile_metadata(
                 profile_id=profile_id,
                 instagram_user_id=str(profile_data.instagram_user_id),
@@ -1066,6 +1070,29 @@ class PublicInstaloaderAdapter:
                     candidate.path.unlink(missing_ok=True)
         finally:
             response.close()
+
+    def _can_reuse_profile_avatar(
+        self,
+        stored_profile: ProfileSnapshot,
+        current_url: str | None,
+    ) -> bool:
+        if not current_url or stored_profile.profile_pic_url != current_url:
+            return False
+        avatar = stored_profile_avatar(self._media_root, stored_profile.id)
+        if avatar is None:
+            return False
+        expected_kind = {
+            PROFILE_AVATAR_MEDIA_TYPE: "jpeg",
+            PROFILE_AVATAR_WEBP_MEDIA_TYPE: "webp",
+        }.get(avatar.media_type)
+        if expected_kind is None:
+            return False
+        try:
+            with avatar.path.open("rb") as avatar_file:
+                prefix = avatar_file.read(12)
+        except OSError:
+            return False
+        return _avatar_prefix_kind(prefix) == expected_kind
 
     def _profile_manifest_candidate(
         self,

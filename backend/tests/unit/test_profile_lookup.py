@@ -223,6 +223,77 @@ def test_fallback_uses_legacy_once_for_native_typed_rate_limit(
     assert len(_query_calls(context)) == 1
 
 
+def test_fallback_circuit_skips_native_429_path_for_thirty_minutes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(_users(_node("Target")))
+    native_profile = Profile(context, _node("Target"))
+    native_results: list[Profile | BaseException] = [
+        TooManyRequestsException("private-native-detail"),
+        native_profile,
+        native_profile,
+    ]
+    native_calls: list[str] = []
+
+    def native_lookup(_context: InstaloaderContext, username: str) -> Profile:
+        native_calls.append(username)
+        result = native_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    now = [0.0]
+    resolver = ProfileLookupResolver(
+        "fallback",
+        logging.getLogger(__name__),
+        monotonic=lambda: now[0],
+    )
+
+    assert isinstance(resolver.resolve(context, "Target"), Profile)
+    now[0] = 60.0
+    assert isinstance(resolver.resolve(context, "Target"), Profile)
+    now[0] = 1_801.0
+    assert resolver.resolve(context, "Target") is native_profile
+    now[0] = 1_802.0
+    assert resolver.resolve(context, "Target") is native_profile
+
+    assert native_calls == ["Target", "Target", "Target"]
+    assert len(_query_calls(context)) == 2
+
+
+def test_fallback_non_429_failure_does_not_open_native_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context(_users(_node("Target")))
+    native_profile = Profile(context, _node("Target"))
+    native_results: list[Profile | BaseException] = [
+        BadResponseException("temporary native failure"),
+        native_profile,
+    ]
+    native_calls: list[str] = []
+
+    def native_lookup(_context: InstaloaderContext, username: str) -> Profile:
+        native_calls.append(username)
+        result = native_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(Profile, "from_username", staticmethod(native_lookup))
+    resolver = ProfileLookupResolver(
+        "fallback",
+        logging.getLogger(__name__),
+        monotonic=lambda: 60.0,
+    )
+
+    with pytest.raises(BadResponseException):
+        resolver.resolve(context, "Target")
+    assert resolver.resolve(context, "Target") is native_profile
+    assert native_calls == ["Target", "Target"]
+    assert _query_calls(context) == []
+
+
 @pytest.mark.parametrize("chain_attribute", ["__cause__", "__context__"])
 def test_fallback_recognizes_typed_http_429_in_preserved_chain(
     monkeypatch: pytest.MonkeyPatch,
