@@ -12,6 +12,7 @@ from instaloader import Instaloader
 from instaloader_webui.db.library_repositories import MediaIdentity, MediaSnapshot
 
 MediaKind = Literal["post", "reel", "story"]
+FeedSource = Literal["posts", "reels"]
 ContentKind = Literal["image", "video"]
 DownloadAction = Callable[[Instaloader, str], None]
 ResolveAction = Callable[[], "ResolvedMedia"]
@@ -26,6 +27,7 @@ class MediaCandidate:
     session_configured: bool
     resolve: ResolveAction = field(repr=False, compare=False)
     published_at_hint: datetime | None = None
+    source: FeedSource | None = None
 
 
 @dataclass(frozen=True, slots=True)
