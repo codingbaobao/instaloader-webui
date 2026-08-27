@@ -6,7 +6,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NoReturn, cast
 
 from instaloader.nodeiterator import FrozenNodeIterator
 from sqlalchemy.orm import Session, sessionmaker
@@ -167,7 +167,7 @@ def _as_utc(value: datetime) -> datetime:
 def _validate_source(source: str) -> Literal["posts", "reels"]:
     if source not in ("posts", "reels"):
         raise ValueError("Profile sync checkpoint source is invalid.")
-    return source
+    return cast(Literal["posts", "reels"], source)
 
 
 def _snapshot(model: ProfileSyncCheckpoint) -> ProfileSyncCheckpointSnapshot:

@@ -9,10 +9,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
-from sqlalchemy import create_engine, insert
+from sqlalchemy import Table, create_engine, insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from instaloader_webui.config import Settings
@@ -166,8 +166,8 @@ def _validate_legacy_schema(database_path: Path, tables: set[str]) -> bool:
 
 
 def _create_version_two_tables(connection: Any) -> None:
-    JobProgressSegment.__table__.create(connection)
-    ProfileSyncCheckpoint.__table__.create(connection)
+    cast(Table, JobProgressSegment.__table__).create(connection)
+    cast(Table, ProfileSyncCheckpoint.__table__).create(connection)
 
 
 def _assert_current_schema_in_transaction(connection: Any) -> None:

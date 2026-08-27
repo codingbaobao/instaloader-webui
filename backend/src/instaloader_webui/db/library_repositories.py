@@ -5,7 +5,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import Literal
+from typing import Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -370,8 +370,11 @@ def _job_snapshot(
 def _job_progress_segment_snapshot(
     model: JobProgressSegment,
 ) -> JobProgressSegmentSnapshot:
-    segment = model.segment
-    state = model.state
+    segment = cast(Literal["stories", "feed"], model.segment)
+    state = cast(
+        Literal["pending", "running", "completed", "failed"],
+        model.state,
+    )
     if segment not in ("stories", "feed"):
         raise ValueError("Persisted job progress segment is invalid.")
     if state not in ("pending", "running", "completed", "failed"):
