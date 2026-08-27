@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,6 +74,7 @@ class MediaProcessor:
         candidate: MediaCandidate,
         *,
         job_id: str,
+        before_network: Callable[[], None] | None = None,
     ) -> MediaProcessResult:
         """Return a complete existing item or atomically replace it from staging."""
         existing = self._library.find_media_by_identity(candidate.identity)
@@ -80,6 +82,8 @@ class MediaProcessor:
             reconciled = self._reconcile_existing_kind(candidate, existing)
             return MediaProcessResult(status="existing", media=reconciled)
 
+        if before_network is not None:
+            before_network()
         staging_directory = self._staging_directory(candidate, job_id)
         self._recreate_directory(staging_directory)
         self._loader.dirname_pattern = str(staging_directory)

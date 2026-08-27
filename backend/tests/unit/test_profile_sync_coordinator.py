@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
@@ -14,9 +14,11 @@ from instaloader import (
     AbortDownloadException,
     BadResponseException,
     LoginRequiredException,
+    Post,
     Profile,
     TooManyRequestsException,
 )
+from instaloader.nodeiterator import FrozenNodeIterator
 from requests import Response
 from requests.exceptions import HTTPError
 
@@ -33,6 +35,7 @@ from instaloader_webui.instagram.errors import (
     SESSION_REJECTED,
     TRANSIENT,
 )
+from instaloader_webui.instagram.feed_manifest import build_reels_manifest
 from instaloader_webui.instagram.media_types import MediaCandidate, MediaKind
 from instaloader_webui.instagram.profile_lookup import (
     ProfileLookupMode,
@@ -41,6 +44,10 @@ from instaloader_webui.instagram.profile_lookup import (
 from instaloader_webui.instagram.profile_sync import (
     ProfileSyncCoordinator,
     ProfileSyncResult,
+    SegmentCounts,
+)
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointError,
 )
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
@@ -128,6 +135,112 @@ class RecordingSource:
 
 
 @dataclass(slots=True)
+class RecordingManifest:
+    items: tuple[MediaCandidate, ...]
+    resumed_items: tuple[MediaCandidate, ...] | None = None
+    index: int = 0
+    thawed: bool = False
+    freeze_count: int = 0
+
+    @property
+    def count(self) -> int:
+        return len(self.items)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> MediaCandidate:
+        if self.index >= len(self.items):
+            raise StopIteration
+        item = self.items[self.index]
+        self.index += 1
+        return item
+
+    def freeze(self) -> FrozenNodeIterator:
+        self.freeze_count += 1
+        return FrozenNodeIterator(
+            query_hash=None,
+            query_variables={"manifest": id(self)},
+            query_referer=None,
+            context_username="session-owner",
+            total_index=self.index,
+            best_before=NOW.timestamp(),
+            remaining_data={"edges": [], "page_info": {}},
+            first_node=None,
+            doc_id="recording",
+        )
+
+    def thaw(self, _frozen: FrozenNodeIterator) -> None:
+        self.thawed = True
+        if self.resumed_items is not None:
+            self.items = self.resumed_items
+        self.index = 0
+
+
+@dataclass(slots=True)
+class ResumableRecordingSource(RecordingSource):
+    manifests: dict[str, list[RecordingManifest]] = field(default_factory=dict)
+
+    def open_feed_manifest(
+        self,
+        profile: object,
+        source: Literal["posts", "reels"],
+    ) -> RecordingManifest:
+        assert profile is PROFILE
+        self.events.append(f"scan:{source}")
+        return self.manifests[source].pop(0)
+
+
+@dataclass(slots=True)
+class RecordingCheckpointStore:
+    states: dict[str, SimpleNamespace]
+    saved: list[tuple[str, FrozenNodeIterator]] = field(default_factory=list)
+    completed: list[str] = field(default_factory=list)
+    reset_sources: list[str] = field(default_factory=list)
+    corrupt_sources: set[str] = field(default_factory=set)
+
+    def get(self, _profile_id: str, source: str) -> SimpleNamespace | None:
+        if source in self.corrupt_sources:
+            self.corrupt_sources.remove(source)
+            raise ProfileSyncCheckpointError("Profile sync checkpoint is invalid.")
+        return self.states.get(source)
+
+    def save_frozen(
+        self,
+        *,
+        profile_id: str,
+        source: str,
+        frozen: FrozenNodeIterator,
+        now: datetime,
+    ) -> None:
+        assert profile_id == "profile-1"
+        assert now.tzinfo is not None
+        self.saved.append((source, frozen))
+
+    def mark_complete(
+        self,
+        *,
+        profile_id: str,
+        source: str,
+        now: datetime,
+    ) -> None:
+        assert profile_id == "profile-1"
+        assert now.tzinfo is not None
+        self.completed.append(source)
+
+    def reset(
+        self,
+        *,
+        profile_id: str,
+        source: str,
+        now: datetime,
+    ) -> None:
+        assert profile_id == "profile-1"
+        assert now.tzinfo is not None
+        self.reset_sources.append(source)
+
+
+@dataclass(slots=True)
 class RecordingProcessor:
     events: list[str]
     failures: dict[str, BaseException] = field(default_factory=dict)
@@ -136,8 +249,19 @@ class RecordingProcessor:
         default_factory=dict
     )
 
-    def process(self, item: MediaCandidate, *, job_id: str) -> object:
+    def process(
+        self,
+        item: MediaCandidate,
+        *,
+        job_id: str,
+        before_network: Callable[[], None] | None = None,
+    ) -> object:
         assert job_id == "job-1"
+        if (
+            before_network is not None
+            and self.statuses.get(item.identity.value, "saved") != "existing"
+        ):
+            before_network()
         self.events.append(f"process:{item.identity.value}")
         self.processed.append(item)
         failure = self.failures.get(item.identity.value)
@@ -187,9 +311,7 @@ def make_coordinator(
         ),
         record_issue=recorded_issues.append,
         is_syncable=syncable,
-        monotonic=monotonic,
         pause_between_new_media=pause_between_new_media,
-        time_slice_seconds=time_slice_seconds,
     )
 
 
@@ -257,27 +379,24 @@ def test_sync_saves_stories_before_scanning_reels_and_posts() -> None:
             0,
             None,
             "saving_stories",
-            "Saving current Instagram stories before they expire…",
+            "Saving current Instagram Stories before they expire…",
         ),
         (
             2,
             None,
             "scanning_media",
-            "Scanning Instagram posts and reels…",
+            "Scanning Instagram Feed content…",
         ),
-        (2, None, "processing_reels", "Processing Instagram reels."),
-        (4, None, "processing_posts", "Processing Instagram posts."),
+        (1, None, "processing_feed", "Scanning Instagram Feed content…"),
     ]
     assert [current for current, *_rest in progress] == [
         0,
         1,
         2,
         2,
+        1,
         2,
         3,
-        4,
-        4,
-        5,
     ]
     assert [total for _current, total, *_rest in progress[:4]] == [
         None,
@@ -310,7 +429,7 @@ def test_empty_story_manifest_is_valid_and_finishes_with_an_exact_total() -> Non
     assert result.total == 1
     assert progress[0][:3] == (0, None, "saving_stories")
     assert progress[1][:3] == (0, None, "scanning_media")
-    assert progress[2][:3] == (0, None, "processing_reels")
+    assert progress[2][:3] == (1, None, "processing_feed")
 
 
 def test_duplicate_story_media_ids_produce_one_outcome() -> None:
@@ -444,7 +563,323 @@ def test_posts_and_reels_are_lazily_interleaved_newest_first() -> None:
         ("post", "post-oldest"),
     ]
     assert result.processed == 4
-    assert result.backfill_pending is False
+
+
+def test_reels_manifest_resolves_full_metadata_only_for_missing_shortcode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shortcode_lookups: list[str] = []
+    nodes = [
+        {"media": {"code": "existing-one", "taken_at": 1_700_000_003}},
+        {"media": {"code": "existing-two", "taken_at": 1_700_000_002}},
+        {"media": {"code": "missing-code", "taken_at": 1_700_000_001}},
+    ]
+
+    class ManifestContext:
+        username = "session-owner"
+
+        def doc_id_graphql_query(
+            self,
+            doc_id: str,
+            variables: object,
+            referer: str,
+        ) -> dict[str, object]:
+            assert doc_id == "7845543455542541"
+            assert variables == {
+                "data": {
+                    "page_size": 12,
+                    "include_feed_video": True,
+                    "target_user_id": "727",
+                },
+                "__relay_internal__pv__PolarisFeedShareMenurelayprovider": False,
+            }
+            assert referer == "https://www.instagram.com/mihi_727/"
+            return {
+                "data": {
+                    "xdt_api__v1__clips__user__connection_v2": {
+                        "edges": [{"node": node} for node in nodes],
+                        "page_info": {"has_next_page": False},
+                    }
+                }
+            }
+
+    class ManifestProfile:
+        userid = 727
+        username = "mihi_727"
+        _context = ManifestContext()
+
+        def _obtain_metadata(self) -> None:
+            return None
+
+    def from_shortcode(context: object, shortcode: str) -> object:
+        assert context is ManifestProfile._context
+        shortcode_lookups.append(shortcode)
+        return SimpleNamespace(shortcode=shortcode)
+
+    monkeypatch.setattr(Post, "from_shortcode", staticmethod(from_shortcode))
+
+    entries = list(build_reels_manifest(cast(Profile, ManifestProfile())))
+    existing = {"existing-one", "existing-two"}
+    resolved = [entry.resolve() for entry in entries if entry.shortcode not in existing]
+
+    assert [entry.shortcode for entry in entries] == [
+        "existing-one",
+        "existing-two",
+        "missing-code",
+    ]
+    assert all(entry.source == "reels" for entry in entries)
+    assert all(entry.published_at_hint is not None for entry in entries)
+    assert shortcode_lookups == ["missing-code"]
+    assert [post.shortcode for post in resolved] == ["missing-code"]
+
+
+def make_resumable_coordinator(
+    *,
+    source: ResumableRecordingSource,
+    checkpoints: RecordingCheckpointStore,
+    statuses: dict[str, Literal["saved", "existing"]] | None = None,
+    failures: dict[str, BaseException] | None = None,
+    processed: list[MediaCandidate] | None = None,
+    segment_progress: list[tuple[str, str, SegmentCounts]] | None = None,
+) -> ProfileSyncCoordinator:
+    events = source.events
+    progress_events = segment_progress if segment_progress is not None else []
+    return ProfileSyncCoordinator(
+        source=source,
+        processor=RecordingProcessor(
+            events,
+            failures or {},
+            processed if processed is not None else [],
+            statuses or {},
+        ),
+        progress=lambda *_args: None,
+        record_issue=lambda _issue: None,
+        is_syncable=lambda: True,
+        pause_between_new_media=lambda: None,
+        profile_id="profile-1",
+        checkpoints=checkpoints,
+        segment_progress=lambda segment, state, counts, _total, _text: (
+            progress_events.append((segment, state, counts))
+        ),
+    )
+
+
+def test_profile_sync_has_no_time_or_item_cap_and_reports_two_segments() -> None:
+    candidates = tuple(
+        reel(f"existing-{index:03d}", published_at=NOW - timedelta(minutes=index))
+        for index in range(500)
+    ) + tuple(
+        reel(
+            f"saved-{index:03d}",
+            published_at=NOW - timedelta(minutes=500 + index),
+        )
+        for index in range(30)
+    )
+    source = ResumableRecordingSource(
+        stories=(),
+        manifests={
+            "reels": [RecordingManifest(candidates)],
+            "posts": [RecordingManifest(())],
+        },
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=False, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=False, frozen=None),
+        }
+    )
+    progress: list[tuple[str, str, SegmentCounts]] = []
+    processed: list[MediaCandidate] = []
+
+    result = make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={f"existing-{index:03d}": "existing" for index in range(500)},
+        processed=processed,
+        segment_progress=progress,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert len(processed) == 530
+    assert result.feed == SegmentCounts(
+        scanned=530,
+        saved=30,
+        existing=500,
+        warnings=0,
+    )
+    transitions = [
+        (segment, state)
+        for index, (segment, state, _counts) in enumerate(progress)
+        if index == 0 or (segment, state) != progress[index - 1][:2]
+    ]
+    assert transitions == [
+        ("stories", "pending"),
+        ("feed", "pending"),
+        ("stories", "running"),
+        ("stories", "completed"),
+        ("feed", "running"),
+        ("feed", "completed"),
+    ]
+    assert set(checkpoints.completed) == {"posts", "reels"}
+
+
+@pytest.mark.parametrize(
+    ("backfill_complete", "expected"),
+    [
+        (True, ["new-one", "new-two", "existing-boundary"]),
+        (
+            False,
+            ["new-one", "new-two", "existing-boundary", "historical-older"],
+        ),
+    ],
+)
+def test_recent_existing_boundary_depends_on_completed_backfill(
+    backfill_complete: bool,
+    expected: list[str],
+) -> None:
+    items = tuple(reel(value, published_at=NOW - timedelta(minutes=index)) for index, value in enumerate((
+        "new-one",
+        "new-two",
+        "existing-boundary",
+        "historical-older",
+    )))
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [RecordingManifest(items)],
+            "posts": [RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(
+                backfill_complete=backfill_complete,
+                frozen=None,
+            ),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        }
+    )
+    processed: list[MediaCandidate] = []
+
+    make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={"existing-boundary": "existing"},
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == expected
+
+
+def test_stored_cursor_scans_recent_then_thaws_historical_manifest() -> None:
+    cursor = RecordingManifest(()).freeze()
+    historical = RecordingManifest(
+        (),
+        resumed_items=(
+            reel("historical-one", published_at=NOW - timedelta(days=1)),
+            reel("historical-two", published_at=NOW - timedelta(days=2)),
+        ),
+    )
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [
+                RecordingManifest(
+                    (
+                        reel("newest", published_at=NOW),
+                        reel("existing-boundary", published_at=NOW - timedelta(minutes=1)),
+                    )
+                ),
+                historical,
+            ],
+            "posts": [RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=False, frozen=cursor),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        }
+    )
+    processed: list[MediaCandidate] = []
+
+    make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={"existing-boundary": "existing"},
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == [
+        "newest",
+        "existing-boundary",
+        "historical-one",
+        "historical-two",
+    ]
+    assert historical.thawed is True
+    assert "reels" in checkpoints.completed
+
+
+def test_blocking_feed_failure_freezes_both_active_manifests_before_escape() -> None:
+    blocked = reel("rate-limited", published_at=NOW)
+    reels_manifest = RecordingManifest((blocked,))
+    posts_manifest = RecordingManifest(
+        (post("post-later", published_at=NOW - timedelta(minutes=1)),)
+    )
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [reels_manifest],
+            "posts": [posts_manifest],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=False, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=False, frozen=None),
+        }
+    )
+
+    with pytest.raises(MediaItemFailure):
+        make_resumable_coordinator(
+            source=source,
+            checkpoints=checkpoints,
+            failures={blocked.identity.value: rate_limited_failure(blocked)},
+        ).run(profile=PROFILE, job_id="job-1")
+
+    assert {source_name for source_name, _frozen in checkpoints.saved} == {
+        "posts",
+        "reels",
+    }
+    assert reels_manifest.freeze_count == 1
+    assert posts_manifest.freeze_count == 1
+    assert {
+        source_name: frozen.total_index
+        for source_name, frozen in checkpoints.saved
+    } == {"posts": 0, "reels": 0}
+
+
+def test_corrupt_checkpoint_is_reset_before_source_restarts_from_newest() -> None:
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [RecordingManifest((reel("newest", published_at=NOW),))],
+            "posts": [RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=False, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        },
+        corrupt_sources={"reels"},
+    )
+    processed: list[MediaCandidate] = []
+
+    make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == ["newest"]
+    assert checkpoints.reset_sources == ["reels"]
+    assert "reels" in checkpoints.completed
 
 
 def test_fast_backfill_is_not_limited_to_25_new_saves() -> None:
@@ -471,12 +906,11 @@ def test_fast_backfill_is_not_limited_to_25_new_saves() -> None:
     ]
     assert result.processed == 30
     assert result.total == 30
-    assert result.backfill_pending is False
 
 
-def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> None:
-    # Break caught: omitting elapsed-time checks lets one large profile occupy
-    # the single worker indefinitely.
+def test_elapsed_time_does_not_truncate_profile_feed_sync() -> None:
+    # Break caught: restoring the old five-minute slice would restart this
+    # profile from the newest Feed item on every run.
     times = iter((0.0, 0.0, 301.0))
     events: list[str] = []
     progress: list[tuple[int, int | None, str, str]] = []
@@ -499,20 +933,16 @@ def test_long_lived_backfill_pauses_before_item_after_time_slice_expires() -> No
         progress=progress,
     ).run(profile=PROFILE, job_id="job-1")
 
-    assert [item.identity.value for item in processed] == ["first"]
-    assert result.processed == 1
-    assert result.total is None
-    assert result.backfill_pending is True
-    assert pauses == []
-    assert progress[-1][3] == (
-        "Profile sync time slice ended. More profile history will continue on "
-        "the next scheduled sync."
-    )
+    assert [item.identity.value for item in processed] == ["first", "deferred"]
+    assert result.processed == 2
+    assert result.total == 2
+    assert pauses == ["pause"]
+    assert progress[-1][3] == "Scanning Instagram Feed content…"
 
 
-def test_stories_are_saved_before_long_lived_time_slice_starts() -> None:
-    # Break caught: starting the five-minute slice before Stories can defer
-    # expiring content when Story enumeration or download is slow.
+def test_slow_stories_do_not_reduce_feed_scan_budget() -> None:
+    # Break caught: Story work must stay first, but elapsed Story time must not
+    # cause the complete Feed scan to be skipped.
     times = iter((1000.0, 1301.0))
     events: list[str] = []
     source = RecordingSource(
@@ -532,9 +962,10 @@ def test_stories_are_saved_before_long_lived_time_slice_starts() -> None:
         "process:story-first",
         "scan:reels",
         "scan:posts",
+        "process:deferred",
     ]
-    assert result.processed == 1
-    assert result.backfill_pending is True
+    assert result.processed == 2
+    assert result.total == 2
 
 
 def test_new_media_pause_occurs_only_before_a_following_candidate() -> None:
@@ -554,12 +985,18 @@ def test_new_media_pause_occurs_only_before_a_following_candidate() -> None:
     result = make_coordinator(
         source=source,
         events=events,
-        pause_between_new_media=lambda: pauses.append("pause"),
+        pause_between_new_media=lambda: (pauses.append("pause"), events.append("pause")),
         statuses={"existing": "existing"},
     ).run(profile=PROFILE, job_id="job-1")
 
     assert result.processed == 3
     assert pauses == ["pause"]
+    assert events[-4:] == [
+        "process:saved",
+        "process:existing",
+        "pause",
+        "process:saved-last",
+    ]
 
 
 def test_non_item_processor_error_remains_fatal() -> None:
@@ -1102,6 +1539,56 @@ def test_profile_sync_accepts_standard_avatar_before_story_enumeration(
     assert refreshed.last_sync_succeeded_at is not None
     assert response.closed is True
     assert "instagram_profile_avatar_invalid_response" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("stored_url", "stored_avatar", "expected_avatar_requests"),
+    [
+        ("https://cdn.example/avatar-standard.jpg", JPEG_AVATAR, 0),
+        ("https://cdn.example/old-avatar.jpg", JPEG_AVATAR, 1),
+        ("https://cdn.example/avatar-standard.jpg", b"not-an-image", 1),
+    ],
+)
+def test_profile_sync_reuses_only_valid_avatar_with_unchanged_url(
+    profile_repository: LibraryRepository,
+    tracked_profile,
+    test_settings: Settings,
+    stored_url: str,
+    stored_avatar: bytes,
+    expected_avatar_requests: int,
+) -> None:
+    upstream = AdapterProfile()
+    profile_repository.update_profile_metadata(
+        profile_id=tracked_profile.id,
+        instagram_user_id=str(upstream.userid),
+        username=upstream.username,
+        full_name=upstream.full_name,
+        biography=upstream.biography,
+        profile_pic_url=stored_url,
+        now=NOW,
+    )
+    avatar_path = profile_avatar_path(test_settings.media_root, tracked_profile.id)
+    avatar_path.parent.mkdir(parents=True, exist_ok=True)
+    avatar_path.write_bytes(stored_avatar)
+    events: list[str] = []
+    upstream.events = events
+    loader = AdapterLoader(events=events, response=AvatarResponse())
+    adapter = make_profile_adapter(
+        test_settings=test_settings,
+        repository=profile_repository,
+        loader=loader,
+        profile_lookup_resolver=RecordingProfileLookupResolver(
+            upstream,
+            events=events,
+        ),
+    )
+
+    adapter.sync_profile(tracked_profile.id, "job-avatar-cache")
+
+    assert sum(event.startswith("avatar:") for event in events) == (
+        expected_avatar_requests
+    )
+    assert avatar_path.read_bytes() == JPEG_AVATAR
 
 
 def test_profile_sync_safely_classifies_abort_during_reel_enumeration(

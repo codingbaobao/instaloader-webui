@@ -1,24 +1,35 @@
-"""Create and validate the one supported pre-1.0 database schema."""
+"""Create, migrate, and validate the supported pre-1.0 database schema."""
 
 import fcntl
+import hashlib
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
-from sqlalchemy import create_engine, insert
+from sqlalchemy import Table, create_engine, insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from instaloader_webui.config import Settings
 from instaloader_webui.db.base import Base
 from instaloader_webui.db.engine import build_engine
-from instaloader_webui.db.models import AppSetting, SchemaMarker
+from instaloader_webui.db.models import (
+    AppSetting,
+    JobProgressSegment,
+    ProfileSyncCheckpoint,
+    SchemaMarker,
+)
 
-CURRENT_SCHEMA_VERSION = "pre-1.0-fresh-schema-1"
+CURRENT_SCHEMA_VERSION = "pre-1.0-feed-sync-2"
+_LEGACY_SCHEMA_VERSION = "pre-1.0-fresh-schema-1"
+_LEGACY_SCHEMA_DIGEST = (
+    "5edfc7cdd9d45fe1dea7ad4507417d5b1ea599793c49000cea26f90bab82e3b7"
+)
 SCHEMA_COMPATIBILITY_ERROR = (
     "Unsupported pre-1.0 database schema. Delete and recreate the database."
 )
@@ -78,6 +89,15 @@ def _schema_signature(rows: Any) -> SchemaSignature:
     )
 
 
+def _schema_digest(signature: SchemaSignature) -> str:
+    serialized = json.dumps(
+        signature,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
 @lru_cache(maxsize=1)
 def _expected_schema_signature() -> SchemaSignature:
     engine = create_engine("sqlite://")
@@ -114,6 +134,124 @@ def _validate_supported_schema(database_path: Path, tables: set[str]) -> None:
         raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
     if actual_schema_signature != _expected_schema_signature():
         raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+
+
+def _read_marker_and_signature(
+    database_path: Path,
+) -> tuple[list[tuple[str, str]], SchemaSignature]:
+    database_uri = f"file:{quote(database_path.as_posix(), safe='/')}?mode=ro"
+    try:
+        with sqlite3.connect(database_uri, uri=True) as connection:
+            marker_rows = [
+                (str(row[0]), str(row[1]))
+                for row in connection.execute(
+                    "SELECT id, version FROM schema_marker"
+                ).fetchall()
+            ]
+            signature = _schema_signature(connection.execute(_SCHEMA_DEFINITION_QUERY))
+    except sqlite3.DatabaseError as error:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR) from error
+    return marker_rows, signature
+
+
+def _validate_legacy_schema(database_path: Path, tables: set[str]) -> bool:
+    if "alembic_version" in tables or "schema_marker" not in tables:
+        return False
+    marker_rows, signature = _read_marker_and_signature(database_path)
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, _LEGACY_SCHEMA_VERSION)]:
+        return False
+    if _schema_digest(signature) != _LEGACY_SCHEMA_DIGEST:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    return True
+
+
+def _create_version_two_tables(connection: Any) -> None:
+    cast(Table, JobProgressSegment.__table__).create(connection)
+    cast(Table, ProfileSyncCheckpoint.__table__).create(connection)
+
+
+def _assert_current_schema_in_transaction(connection: Any) -> None:
+    actual_tables = {
+        str(row[0])
+        for row in connection.exec_driver_sql(
+            "SELECT name FROM sqlite_schema "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+    marker_rows = [
+        (str(row[0]), str(row[1]))
+        for row in connection.exec_driver_sql("SELECT id, version FROM schema_marker")
+    ]
+    signature = _schema_signature(connection.exec_driver_sql(_SCHEMA_DEFINITION_QUERY))
+    if actual_tables != set(Base.metadata.tables):
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, CURRENT_SCHEMA_VERSION)]:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    if signature != _expected_schema_signature():
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+
+
+def _migrate_version_one_schema(database_path: Path) -> None:
+    engine = build_engine(database_path)
+    now = datetime.now(UTC).isoformat()
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                connection.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN target_label TEXT"
+                )
+                connection.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN target_url TEXT"
+                )
+                _create_version_two_tables(connection)
+                connection.exec_driver_sql(
+                    "UPDATE jobs SET target_label = ("
+                    "SELECT '@' || profiles.username FROM profiles "
+                    "WHERE profiles.id = json_extract(jobs.payload_text, '$.profile_id')"
+                    ") WHERE type = 'profile_sync' AND json_valid(payload_text) "
+                    "AND json_type(payload_text, '$.profile_id') = 'text'"
+                )
+                connection.exec_driver_sql(
+                    "UPDATE jobs SET "
+                    "target_label = json_extract(payload_text, '$.original_url'), "
+                    "target_url = json_extract(payload_text, '$.original_url') "
+                    "WHERE type = 'single_media' AND json_valid(payload_text) "
+                    "AND json_type(payload_text, '$.original_url') = 'text'"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO profile_sync_checkpoints "
+                    "(profile_id, source, cursor_version, cursor_json, "
+                    "backfill_complete, updated_at) "
+                    "SELECT profiles.id, sources.source, 1, NULL, 0, :updated_at "
+                    "FROM profiles CROSS JOIN ("
+                    "SELECT 'posts' AS source UNION ALL SELECT 'reels'"
+                    ") AS sources "
+                    "WHERE profiles.tracked = 1 AND profiles.status = 'active'",
+                    {"updated_at": now},
+                )
+                connection.exec_driver_sql(
+                    "UPDATE schema_marker SET version = :version "
+                    "WHERE id = :singleton_id",
+                    {
+                        "version": CURRENT_SCHEMA_VERSION,
+                        "singleton_id": _GLOBAL_SINGLETON_ID,
+                    },
+                )
+                _assert_current_schema_in_transaction(connection)
+            except SchemaCompatibilityError:
+                connection.rollback()
+                raise
+            except Exception as error:
+                connection.rollback()
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR) from error
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
+    finally:
+        engine.dispose()
 
 
 def _seed_settings_statement() -> Any:
@@ -163,7 +301,7 @@ def _repair_required_settings(database_path: Path) -> None:
 
 
 def initialize_database(settings: Settings) -> None:
-    """Create a fresh current schema or validate a supported current database."""
+    """Create, migrate, or validate the supported current database schema."""
     database_path = settings.database_path.resolve()
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with _schema_lock(database_path):
@@ -172,5 +310,15 @@ def initialize_database(settings: Settings) -> None:
             _create_fresh_schema(database_path)
             return
 
-        _validate_supported_schema(database_path, existing_tables)
+        marker_rows, _ = _read_marker_and_signature(database_path)
+        if marker_rows == [(_GLOBAL_SINGLETON_ID, CURRENT_SCHEMA_VERSION)]:
+            _validate_supported_schema(database_path, existing_tables)
+        elif _validate_legacy_schema(database_path, existing_tables):
+            _migrate_version_one_schema(database_path)
+            migrated_tables = _read_existing_tables(database_path)
+            if migrated_tables is None:
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+            _validate_supported_schema(database_path, migrated_tables)
+        else:
+            raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
         _repair_required_settings(database_path)
