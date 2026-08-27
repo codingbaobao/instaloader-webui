@@ -58,7 +58,7 @@ def list_media(
     library: Annotated[LibraryRepository, Depends(get_library_repository)],
     _: Annotated[object, Depends(require_password_change_complete)],
     profile_id: str | None = None,
-    kind: Literal["post", "reel", "story"] | None = None,
+    collection: Literal["feed", "story"] | None = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> ApiEnvelope[tuple[MediaResponse, ...]]:
     return ApiEnvelope(
@@ -66,7 +66,7 @@ def list_media(
         data=tuple(
             serialize_media(media)
             for media in library.list_media(
-                profile_id=profile_id, kind=kind, limit=limit
+                profile_id=profile_id, collection=collection, limit=limit
             )
         ),
     )
@@ -79,7 +79,7 @@ def list_media_feed(
     anchor_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
     cursor: Annotated[str | None, Query(min_length=1, max_length=1024)] = None,
     profile_id: str | None = None,
-    kind: Literal["post", "reel", "story"] | None = None,
+    collection: Literal["feed", "story"] | None = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> ApiEnvelope[MediaFeedResponse]:
     if (anchor_id is None) == (cursor is None):
@@ -89,7 +89,7 @@ def list_media_feed(
         window = library.list_media_feed(
             anchor_id=anchor_id,
             profile_id=profile_id,
-            kind=kind,
+            collection=collection,
             limit=limit,
         )
         if window is None:
@@ -99,13 +99,13 @@ def list_media_feed(
         decoded = _decode_feed_cursor(
             cursor,
             profile_id=profile_id,
-            kind=kind,
+            collection=collection,
         )
         window = library.list_media_feed(
             position=decoded.position,
             direction=decoded.direction,
             profile_id=profile_id,
-            kind=kind,
+            collection=collection,
             limit=limit,
         )
         assert window is not None
@@ -120,7 +120,7 @@ def list_media_feed(
                     items[0],
                     direction="newer",
                     profile_id=profile_id,
-                    kind=kind,
+                    collection=collection,
                 )
                 if window.has_newer and items
                 else None
@@ -130,7 +130,7 @@ def list_media_feed(
                     items[-1],
                     direction="older",
                     profile_id=profile_id,
-                    kind=kind,
+                    collection=collection,
                 )
                 if window.has_older and items
                 else None
@@ -144,16 +144,16 @@ def _encode_feed_cursor(
     *,
     direction: Literal["newer", "older"],
     profile_id: str | None,
-    kind: str | None,
+    collection: Literal["feed", "story"] | None,
 ) -> str:
     payload = json.dumps(
         {
             "direction": direction,
             "id": media.id,
-            "kind": kind,
+            "collection": collection,
             "profile_id": profile_id,
             "published_at": media.published_at.isoformat(),
-            "version": 1,
+            "version": 2,
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -165,7 +165,7 @@ def _decode_feed_cursor(
     cursor: str,
     *,
     profile_id: str | None,
-    kind: str | None,
+    collection: Literal["feed", "story"] | None,
 ) -> _FeedCursor:
     try:
         padding = "=" * (-len(cursor) % 4)
@@ -182,14 +182,14 @@ def _decode_feed_cursor(
         media_id = payload.get("id")
         published_at_raw = payload.get("published_at")
         if (
-            payload.get("version") != 1
+            payload.get("version") != 2
             or direction not in ("newer", "older")
             or not isinstance(media_id, str)
             or not media_id
             or len(media_id) > 36
             or not isinstance(published_at_raw, str)
             or payload.get("profile_id") != profile_id
-            or payload.get("kind") != kind
+            or payload.get("collection") != collection
         ):
             raise ValueError
         published_at = datetime.fromisoformat(published_at_raw)
