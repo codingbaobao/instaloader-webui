@@ -25,6 +25,14 @@ from instaloader_webui.instagram.followee_discovery import (
     FolloweeDiscoveryError,
 )
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_sync import (
+    Segment,
+    SegmentCounts,
+    SegmentState,
+)
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointRepository,
+)
 from instaloader_webui.instagram.public_adapter import (
     PublicInstagramAdapterError,
     PublicInstaloaderAdapter,
@@ -51,7 +59,6 @@ _LOGGER = logging.getLogger(__name__)
 @dataclass(frozen=True, slots=True)
 class _DispatchOutcome:
     warning_count: int = 0
-    backfill_pending: bool = False
 
 
 class JobRunner:
@@ -69,6 +76,7 @@ class JobRunner:
         loader_runtime: WorkerInstaloaderRuntime,
         profile_lookup_resolver: ProfileLookupResolver,
         cooldowns: InstagramCooldownStore,
+        checkpoints: ProfileSyncCheckpointRepository,
     ) -> None:
         self._data_root = data_root
         self._media_root = media_root.resolve()
@@ -79,6 +87,7 @@ class JobRunner:
         self._loader_runtime = loader_runtime
         self._profile_lookup_resolver = profile_lookup_resolver
         self._cooldowns = cooldowns
+        self._checkpoints = checkpoints
 
     def run(self, job: JobSnapshot) -> None:
         """Dispatch a claimed job and persist success or a concise failure."""
@@ -94,6 +103,7 @@ class JobRunner:
                     )
         except MediaItemFailure as failure:
             now = datetime.now(UTC)
+            self._fail_active_profile_segment(job, now)
             error = failure.issue.safe_message
             if failure.issue.error_code == "instagram_rate_limited":
                 error = self._activate_rate_limit_cooldown(now)
@@ -111,6 +121,7 @@ class JobRunner:
                     now=now,
                 )
         except Exception as error:  # noqa: BLE001
+            self._fail_active_profile_segment(job, datetime.now(UTC))
             self._fail_job(job, error)
         else:
             completed = self._jobs.get(job.id)
@@ -121,16 +132,9 @@ class JobRunner:
             )
             now = datetime.now(UTC)
             if outcome.warning_count:
-                warning_status = (
-                    "Profile sync time slice ended with "
-                    f"{outcome.warning_count} warning(s). More profile history "
-                    "will continue on the next scheduled sync."
-                    if outcome.backfill_pending
-                    else f"Completed with {outcome.warning_count} warning(s)."
-                )
                 self._jobs.complete_with_warnings(
                     job_id=job.id,
-                    status_text=warning_status,
+                    status_text=f"Completed with {outcome.warning_count} warning(s).",
                     now=now,
                 )
             else:
@@ -172,11 +176,12 @@ class JobRunner:
     def _dispatch(self, job: JobSnapshot) -> _DispatchOutcome:
         if job.type == "profile_sync":
             profile_id = _required_payload_text(job, "profile_id")
-            result = self._adapter(job).sync_profile(profile_id, job.id)
-            return _DispatchOutcome(
-                warning_count=result.issue_count,
-                backfill_pending=result.backfill_pending,
+            self._jobs.initialize_profile_sync_progress(
+                job_id=job.id,
+                now=datetime.now(UTC),
             )
+            result = self._adapter(job).sync_profile(profile_id, job.id)
+            return _DispatchOutcome(warning_count=result.issue_count)
         if job.type == "single_media":
             self._adapter(job).download_input(_decode_media_input(job), job.id)
             return _DispatchOutcome()
@@ -245,7 +250,49 @@ class JobRunner:
                 phase=phase,
             ),
             issue=lambda issue: self._record_media_issue(job, issue),
+            checkpoints=self._checkpoints,
+            segment_progress=lambda segment, state, counts, total, status_text: (
+                self._segment_progress(
+                    job,
+                    segment=segment,
+                    state=state,
+                    counts=counts,
+                    total=total,
+                    status_text=status_text,
+                )
+            ),
         )
+
+    def _segment_progress(
+        self,
+        job: JobSnapshot,
+        *,
+        segment: Segment,
+        state: SegmentState,
+        counts: SegmentCounts,
+        total: int | None,
+        status_text: str,
+    ) -> None:
+        self._jobs.update_segment_progress(
+            job_id=job.id,
+            segment=segment,
+            state=state,
+            scanned=counts.scanned,
+            total=total,
+            saved=counts.saved,
+            existing=counts.existing,
+            warnings=counts.warnings,
+            status_text=status_text,
+            now=datetime.now(UTC),
+        )
+
+    def _fail_active_profile_segment(
+        self,
+        job: JobSnapshot,
+        now: datetime,
+    ) -> None:
+        if job.type == "profile_sync":
+            self._jobs.fail_active_segment(job_id=job.id, now=now)
 
     def _delete_media(self, job: JobSnapshot, media_id: str) -> None:
         media = self._library.get_media(media_id)
