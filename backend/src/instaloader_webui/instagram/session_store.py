@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass, field
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import secrets
 import stat
-from typing import Any
 import unicodedata
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -22,7 +22,6 @@ from instaloader_webui.instagram.cookie_file import (
     REQUIRED_COOKIE_NAMES,
     InstagramCookie,
 )
-
 
 INSTAGRAM_SESSION_FILENAME = "instagram_session.enc"
 INSTAGRAM_SESSION_VERSION = 1

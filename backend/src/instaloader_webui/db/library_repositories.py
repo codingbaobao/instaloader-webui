@@ -5,10 +5,11 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session, sessionmaker
 
 from instaloader_webui.db.models import (
@@ -322,7 +323,9 @@ def _decode_exception_class_chain(value: str) -> tuple[str, ...]:
     except (json.JSONDecodeError, TypeError) as error:
         raise ValueError("Persisted exception class chain is malformed.") from error
     if not isinstance(decoded, list):
-        raise ValueError("Persisted exception class chain is malformed.")
+        raise ValueError(  # noqa: TRY004 - persisted data violates the schema
+            "Persisted exception class chain is malformed."
+        )
     return _validate_exception_class_chain(decoded)
 
 
@@ -359,7 +362,9 @@ def _job_snapshot(
 ) -> JobSnapshot:
     payload = json.loads(model.payload_text)
     if not isinstance(payload, dict):
-        raise ValueError("Persisted job payload must be a JSON object.")
+        raise ValueError(  # noqa: TRY004 - persisted data violates the schema
+            "Persisted job payload must be a JSON object."
+        )
     return JobSnapshot(
         id=model.id,
         type=model.type,
@@ -1292,13 +1297,16 @@ class JobRepository:
 
     def recover_interrupted(self, now: datetime) -> int:
         with self._session_factory.begin() as session:
-            result = session.execute(
-                update(Job)
-                .where(Job.state == "running")
-                .values(
-                    state="pending",
-                    started_at=None,
-                    updated_at=_as_utc(now),
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(Job)
+                    .where(Job.state == "running")
+                    .values(
+                        state="pending",
+                        started_at=None,
+                        updated_at=_as_utc(now),
+                    )
                 )
             )
             return result.rowcount

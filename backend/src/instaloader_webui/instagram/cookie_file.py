@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import unicodedata
-
+from dataclasses import dataclass, field
 
 MAXIMUM_COOKIE_FILE_BYTES = 256 * 1024
 REQUIRED_COOKIE_NAMES = frozenset({"sessionid", "csrftoken"})
@@ -47,8 +46,7 @@ def parse_netscape_cookie_file(payload: bytes) -> tuple[InstagramCookie, ...]:
         ):
             continue
 
-        if line.startswith("#HttpOnly_"):
-            line = line[len("#HttpOnly_") :]
+        line = line.removeprefix("#HttpOnly_")
 
         fields = line.split("\t")
         if len(fields) != 7:

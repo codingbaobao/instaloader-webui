@@ -95,7 +95,7 @@ class InstagramSessionService:
             request_timeout=20,
             rate_controller=_ValidationRateController,
         )
-        loader.context.error = _discard_validation_error
+        loader.context.error = _discard_validation_error  # type: ignore[method-assign]
         try:
             loader.load_session("cookie-import", cookie_dict(cookies))
             response = loader.context.graphql_query(_LOGIN_CHECK_QUERY_HASH, {})
