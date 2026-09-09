@@ -26,35 +26,28 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { formatDate } from "./dateFormatters";
 import { MediaGrid } from "./MediaGrid";
 import { ProfileAvatar } from "./ProfileAvatar";
-import type { JobSummary, MediaKind } from "./types";
+import type { JobSummary, MediaCollection } from "./types";
 import { usePolling } from "./usePolling";
 
 type ProfilePageProps = Readonly<{ session: SessionData }>;
-type MediaTab = MediaKind;
+type MediaTab = MediaCollection;
 
 const mediaTabs: readonly Readonly<{
-  kind: MediaTab;
+  collection: MediaTab;
   id: string;
   label: string;
   emptyTitle: string;
   emptyDetail: string;
 }>[] = [
   {
-    kind: "post",
-    id: "posts-tab",
-    label: "Posts",
-    emptyTitle: "No posts yet",
-    emptyDetail: "No posts have been saved from this profile yet.",
+    collection: "feed",
+    id: "feed-tab",
+    label: "Feed",
+    emptyTitle: "No feed media yet",
+    emptyDetail: "No feed media has been saved from this profile yet.",
   },
   {
-    kind: "reel",
-    id: "reels-tab",
-    label: "Reels",
-    emptyTitle: "No reels yet",
-    emptyDetail: "No reels have been saved from this profile yet.",
-  },
-  {
-    kind: "story",
+    collection: "story",
     id: "story-tab",
     label: "Story",
     emptyTitle: "No stories yet",
@@ -64,7 +57,7 @@ const mediaTabs: readonly Readonly<{
 
 function mediaTabFromSearch(searchParams: URLSearchParams): MediaTab {
   const requested = searchParams.get("tab");
-  return requested === "reel" || requested === "story" ? requested : "post";
+  return requested === "story" ? "story" : "feed";
 }
 
 export function ProfilePage({ session }: ProfilePageProps) {
@@ -73,8 +66,7 @@ export function ProfilePage({ session }: ProfilePageProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = mediaTabFromSearch(searchParams);
   const tabRefs = useRef<Record<MediaTab, HTMLButtonElement | null>>({
-    post: null,
-    reel: null,
+    feed: null,
     story: null,
   });
   const selectedTabRef = useRef<MediaTab>(tab);
@@ -92,9 +84,9 @@ export function ProfilePage({ session }: ProfilePageProps) {
     const requestedTab = selectedTabRef.current;
     const [profile, media] = await Promise.all([
       getProfile(profileId, signal),
-      listMedia({ profileId, kind: requestedTab, limit: 200 }, signal),
+      listMedia({ profileId, collection: requestedTab, limit: 200 }, signal),
     ]);
-    return { profile, media, mediaKind: requestedTab };
+    return { profile, media, mediaCollection: requestedTab };
   }, [profileId]);
   const { data, error, loading, reload } = usePolling(loadProfile, 0, true);
 
@@ -190,8 +182,8 @@ export function ProfilePage({ session }: ProfilePageProps) {
     }
     event.preventDefault();
     const nextTab = mediaTabs[nextIndex];
-    selectTab(nextTab.kind);
-    tabRefs.current[nextTab.kind]?.focus();
+    selectTab(nextTab.collection);
+    tabRefs.current[nextTab.collection]?.focus();
   }
 
   if (data === null) {
@@ -209,8 +201,9 @@ export function ProfilePage({ session }: ProfilePageProps) {
   }
 
   const { profile } = data;
-  const media = data.mediaKind === tab ? data.media : [];
-  const activeTab = mediaTabs.find((item) => item.kind === tab) ?? mediaTabs[0];
+  const media = data.mediaCollection === tab ? data.media : [];
+  const activeTab = mediaTabs.find((item) => item.collection === tab)
+    ?? mediaTabs[0];
   return (
     <section className="library-page profile-page" aria-labelledby="profile-title">
       <Link className="back-link" to="/profiles">Back to profiles</Link>
@@ -272,19 +265,21 @@ export function ProfilePage({ session }: ProfilePageProps) {
         {mediaTabs.map((item, index) => (
           <button
             aria-controls="profile-media-panel"
-            aria-selected={tab === item.kind}
+            aria-selected={tab === item.collection}
             className={
-              tab === item.kind ? "media-tab media-tab-active" : "media-tab"
+              tab === item.collection
+                ? "media-tab media-tab-active"
+                : "media-tab"
             }
             id={item.id}
-            key={item.kind}
+            key={item.collection}
             ref={(element) => {
-              tabRefs.current[item.kind] = element;
+              tabRefs.current[item.collection] = element;
             }}
             role="tab"
-            tabIndex={tab === item.kind ? 0 : -1}
+            tabIndex={tab === item.collection ? 0 : -1}
             type="button"
-            onClick={() => selectTab(item.kind)}
+            onClick={() => selectTab(item.collection)}
             onKeyDown={(event) => handleTabKeyDown(event, index)}
           >
             {item.label}
@@ -307,7 +302,11 @@ export function ProfilePage({ session }: ProfilePageProps) {
           media={media}
           emptyDetail={activeTab.emptyDetail}
           emptyTitle={activeTab.emptyTitle}
-          source={{ type: "profile", profileId: profile.id, kind: tab }}
+          source={{
+            type: "profile",
+            profileId: profile.id,
+            collection: tab,
+          }}
         />
       </div>
       <ConfirmDialog

@@ -79,8 +79,7 @@ class MediaProcessor:
         """Return a complete existing item or atomically replace it from staging."""
         existing = self._library.find_media_by_identity(candidate.identity)
         if existing is not None and self._has_complete_local_assets(existing):
-            reconciled = self._reconcile_existing_kind(candidate, existing)
-            return MediaProcessResult(status="existing", media=reconciled)
+            return MediaProcessResult(status="existing", media=existing)
 
         if before_network is not None:
             before_network()
@@ -104,7 +103,6 @@ class MediaProcessor:
                         identity=resolved.identity,
                         instagram_media_id=resolved.instagram_media_id,
                         shortcode=resolved.shortcode,
-                        kind=resolved.kind,
                         caption=resolved.caption,
                         accessibility_caption=resolved.accessibility_caption,
                         published_at=resolved.published_at,
@@ -415,25 +413,6 @@ class MediaProcessor:
             return None
         sequence_text = path.stem.removeprefix(prefix)
         return int(sequence_text) - 1 if sequence_text.isdigit() else None
-
-    def _reconcile_existing_kind(
-        self,
-        candidate: MediaCandidate,
-        existing: MediaSnapshot,
-    ) -> MediaSnapshot:
-        if (
-            candidate.kind == "reel"
-            and existing.kind != "reel"
-            and candidate.identity.identity_type == "shortcode"
-        ):
-            updated = self._library.set_media_kind(
-                shortcode=candidate.identity.value,
-                kind="reel",
-                now=datetime.now(UTC),
-            )
-            if updated is not None:
-                return updated
-        return existing
 
     @staticmethod
     def _asset_validation_failure(candidate: MediaCandidate) -> MediaItemFailure:

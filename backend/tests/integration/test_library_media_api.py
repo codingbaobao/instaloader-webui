@@ -1,3 +1,5 @@
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -33,37 +35,11 @@ def _seed_story(library: LibraryRepository):
         tracked=True,
         now=NOW,
     )
-    library.upsert_media(
-        normalized=NormalizedMedia(
-            identity=MediaIdentity("shortcode", "DOqEJyxCRGJ"),
-            instagram_media_id="17800000000000001",
-            shortcode="DOqEJyxCRGJ",
-            kind="post",
-            caption="A post",
-            accessibility_caption="A still image",
-            published_at=NOW - timedelta(hours=1),
-            story_expires_at=None,
-            original_url="https://www.instagram.com/p/DOqEJyxCRGJ/",
-        ),
-        profile_id=profile.id,
-        assets=(
-            NormalizedAsset(
-                relative_path="profiles/katerina.soria/posts/DOqEJyxCRGJ.jpg",
-                mime_type="image/jpeg",
-                kind="image",
-                role="content",
-                position=0,
-                file_size=101,
-            ),
-        ),
-        now=NOW,
-    )
     story = library.upsert_media(
         normalized=NormalizedMedia(
             identity=MediaIdentity("story_media_id", STORY_MEDIA_ID),
             instagram_media_id=STORY_MEDIA_ID,
             shortcode=None,
-            kind="story",
             caption="",
             accessibility_caption="",
             published_at=NOW,
@@ -102,14 +78,12 @@ def _seed_feed_media(
     profile_id: str,
     shortcode: str,
     published_at: datetime,
-    kind: str = "post",
 ):
     return library.upsert_media(
         normalized=NormalizedMedia(
             identity=MediaIdentity("shortcode", shortcode),
             instagram_media_id=None,
             shortcode=shortcode,
-            kind=kind,
             caption=shortcode,
             accessibility_caption="",
             published_at=published_at,
@@ -122,7 +96,57 @@ def _seed_feed_media(
     )
 
 
-async def test_story_filter_returns_story_identity_and_asset_roles(
+def _decode_cursor(cursor: str) -> dict[str, object]:
+    return json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+
+
+def _encode_cursor(payload: dict[str, object]) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
+    return encoded.decode("ascii").rstrip("=")
+
+
+async def test_media_list_filters_collection_and_omits_browsing_kind(
+    authenticated_client,
+) -> None:
+    await _complete_password_change(authenticated_client)
+    library = authenticated_client.app.state.library_repository
+    profile, _ = _seed_story(library)
+    _seed_feed_media(
+        library,
+        profile_id=profile.id,
+        shortcode="POST1",
+        published_at=NOW + timedelta(minutes=1),
+    )
+    _seed_feed_media(
+        library,
+        profile_id=profile.id,
+        shortcode="REEL1",
+        published_at=NOW + timedelta(minutes=2),
+    )
+
+    response = await authenticated_client.get(
+        "/api/media",
+        params={"profile_id": profile.id, "collection": "feed"},
+    )
+
+    assert response.status_code == 200
+    items = response.json()["data"]
+    assert {item["shortcode"] for item in items} == {"POST1", "REEL1"}
+    assert {item["collection"] for item in items} == {"feed"}
+    assert all("kind" not in item for item in items)
+
+
+async def test_media_list_rejects_unsupported_collection(authenticated_client) -> None:
+    await _complete_password_change(authenticated_client)
+
+    response = await authenticated_client.get("/api/media", params={"collection": "reel"})
+
+    assert response.status_code == 422
+
+
+async def test_story_collection_serializes_story_identity_and_asset_roles(
     authenticated_client,
 ) -> None:
     await _complete_password_change(authenticated_client)
@@ -130,14 +154,15 @@ async def test_story_filter_returns_story_identity_and_asset_roles(
 
     response = await authenticated_client.get(
         "/api/media",
-        params={"profile_id": profile.id, "kind": "story"},
+        params={"profile_id": profile.id, "collection": "story"},
     )
 
     assert response.status_code == 200
     assert response.json()["success"] is True
     [serialized] = response.json()["data"]
     assert serialized["id"] == story.id
-    assert serialized["kind"] == "story"
+    assert serialized["collection"] == "story"
+    assert "kind" not in serialized
     assert serialized["shortcode"] is None
     assert serialized["story_media_id"] == STORY_MEDIA_ID
     assert serialized["identity_type"] == "story_media_id"
@@ -163,7 +188,8 @@ async def test_story_detail_serializes_nullable_shortcode_and_identity(
     assert response.status_code == 200
     serialized = response.json()["data"]
     assert serialized["owner_profile_id"] == profile.id
-    assert serialized["kind"] == "story"
+    assert serialized["collection"] == "story"
+    assert "kind" not in serialized
     assert serialized["shortcode"] is None
     assert serialized["story_media_id"] == STORY_MEDIA_ID
     assert serialized["identity_type"] == "story_media_id"
@@ -194,7 +220,12 @@ async def test_feed_anchor_returns_adjacent_media_and_bidirectional_cursors(
 
     response = await authenticated_client.get(
         "/api/media/feed",
-        params={"anchor_id": media[2].id, "profile_id": profile.id, "limit": 3},
+        params={
+            "anchor_id": media[2].id,
+            "profile_id": profile.id,
+            "collection": "feed",
+            "limit": 3,
+        },
     )
 
     assert response.status_code == 200
@@ -229,16 +260,30 @@ async def test_feed_cursors_traverse_both_directions_without_duplicates(
     ]
     initial_response = await authenticated_client.get(
         "/api/media/feed",
-        params={"anchor_id": media[2].id, "profile_id": profile.id, "limit": 3},
+        params={
+            "anchor_id": media[2].id,
+            "profile_id": profile.id,
+            "collection": "feed",
+            "limit": 3,
+        },
     )
     assert initial_response.status_code == 200
     initial = initial_response.json()["data"]
+    assert _decode_cursor(initial["newer_cursor"]) == {
+        "collection": "feed",
+        "direction": "newer",
+        "id": media[3].id,
+        "profile_id": profile.id,
+        "published_at": (NOW + timedelta(minutes=4)).isoformat(),
+        "version": 2,
+    }
 
     newer_response = await authenticated_client.get(
         "/api/media/feed",
         params={
             "cursor": initial["newer_cursor"],
             "profile_id": profile.id,
+            "collection": "feed",
             "limit": 3,
         },
     )
@@ -247,6 +292,7 @@ async def test_feed_cursors_traverse_both_directions_without_duplicates(
         params={
             "cursor": initial["older_cursor"],
             "profile_id": profile.id,
+            "collection": "feed",
             "limit": 3,
         },
     )
@@ -264,7 +310,7 @@ async def test_feed_cursors_traverse_both_directions_without_duplicates(
     } == {item.id for item in media}
 
 
-async def test_feed_cursor_rejects_different_filter_context(
+async def test_feed_cursor_rejects_different_collection_context(
     authenticated_client,
 ) -> None:
     await _complete_password_change(authenticated_client)
@@ -274,31 +320,77 @@ async def test_feed_cursor_rejects_different_filter_context(
         tracked=True,
         now=NOW,
     )
-    second_profile = library.upsert_profile_stub(
-        username="second.owner",
-        tracked=True,
-        now=NOW,
-    )
     anchor = _seed_feed_media(
         library,
         profile_id=first_profile.id,
         shortcode="FILTER1",
         published_at=NOW,
-        kind="reel",
     )
     _seed_feed_media(
         library,
         profile_id=first_profile.id,
         shortcode="FILTER2",
         published_at=NOW - timedelta(minutes=1),
-        kind="reel",
     )
     initial_response = await authenticated_client.get(
         "/api/media/feed",
         params={
             "anchor_id": anchor.id,
             "profile_id": first_profile.id,
-            "kind": "reel",
+            "collection": "feed",
+            "limit": 1,
+        },
+    )
+    assert initial_response.status_code == 200
+    cursor = initial_response.json()["data"]["older_cursor"]
+
+    response = await authenticated_client.get(
+        "/api/media/feed",
+        params={
+            "cursor": cursor,
+            "profile_id": first_profile.id,
+            "collection": "story",
+            "limit": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_media_feed_cursor"
+
+
+async def test_feed_cursor_rejects_different_profile_context(
+    authenticated_client,
+) -> None:
+    await _complete_password_change(authenticated_client)
+    library = authenticated_client.app.state.library_repository
+    first_profile = library.upsert_profile_stub(
+        username="first.cursor.owner",
+        tracked=True,
+        now=NOW,
+    )
+    second_profile = library.upsert_profile_stub(
+        username="second.cursor.owner",
+        tracked=True,
+        now=NOW,
+    )
+    anchor = _seed_feed_media(
+        library,
+        profile_id=first_profile.id,
+        shortcode="PROFILE1",
+        published_at=NOW,
+    )
+    _seed_feed_media(
+        library,
+        profile_id=first_profile.id,
+        shortcode="PROFILE2",
+        published_at=NOW - timedelta(minutes=1),
+    )
+    initial_response = await authenticated_client.get(
+        "/api/media/feed",
+        params={
+            "anchor_id": anchor.id,
+            "profile_id": first_profile.id,
+            "collection": "feed",
             "limit": 1,
         },
     )
@@ -310,7 +402,7 @@ async def test_feed_cursor_rejects_different_filter_context(
         params={
             "cursor": cursor,
             "profile_id": second_profile.id,
-            "kind": "reel",
+            "collection": "feed",
             "limit": 1,
         },
     )
@@ -327,6 +419,72 @@ async def test_feed_rejects_malformed_cursor_payload(
     response = await authenticated_client.get(
         "/api/media/feed",
         params={"cursor": "not-a-valid-cursor"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_media_feed_cursor"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2.0,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "kind": "post",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": "0001-01-01T00:00:00+01:00",
+            "version": 2,
+        },
+    ],
+    ids=[
+        "missing-profile-id",
+        "missing-collection",
+        "float-version",
+        "extra-legacy-kind",
+        "overflowing-timestamp",
+    ],
+)
+async def test_feed_rejects_noncanonical_v2_cursor_payloads(
+    authenticated_client,
+    payload: dict[str, object],
+) -> None:
+    await _complete_password_change(authenticated_client)
+
+    response = await authenticated_client.get(
+        "/api/media/feed",
+        params={"cursor": _encode_cursor(payload)},
     )
 
     assert response.status_code == 422

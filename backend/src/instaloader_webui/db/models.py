@@ -154,9 +154,6 @@ class MediaItem(Base):
             "identity_type IN ('shortcode', 'story_media_id')",
             name="ck_media_items_identity_type",
         ),
-        CheckConstraint(
-            "kind IN ('post', 'reel', 'story')", name="ck_media_items_kind"
-        ),
         Index(
             "ix_media_items_owner_profile_published_at",
             "owner_profile_id",
@@ -172,7 +169,6 @@ class MediaItem(Base):
     owner_profile_id: Mapped[str] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
     )
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
     caption: Mapped[str] = mapped_column(Text, nullable=False)
     accessibility_caption: Mapped[str] = mapped_column(Text, nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

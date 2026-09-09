@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { getJob } from "./api";
 import { formatDateTime } from "./dateFormatters";
-import type { JobDetail, JobIssue, MediaKind } from "./types";
+import type { JobDetail, JobIssue, OperationalMediaKind } from "./types";
 
 type JobIssuesProps = Readonly<{
   jobId: string;
@@ -13,7 +13,7 @@ function warningLabel(count: number): string {
   return `${count} ${count === 1 ? "warning" : "warnings"}`;
 }
 
-function mediaKindLabel(kind: MediaKind): string {
+function mediaKindLabel(kind: OperationalMediaKind): string {
   switch (kind) {
     case "post":
       return "Post";

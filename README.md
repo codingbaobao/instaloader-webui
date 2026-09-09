@@ -10,7 +10,7 @@ require an authenticated session to access public profiles or media. An
 administrator can import one browser session through the WebUI; it is encrypted
 at rest and used by new worker jobs without a container restart. This milestone
 does not support Instagram password entry, two-factor authentication, private
-profiles or media, Stories, or Tagged content.
+profiles or media, or Tagged content.
 
 ## Docker Compose deployment
 
@@ -83,15 +83,16 @@ operate on this local deployment must include both Compose files.
 
 1. Sign in with the bootstrap administrator and complete the initial password
    confirmation.
-2. Open **Add** and paste a direct public Instagram profile, post, reel, or TV
-   URL. A post/reel/TV link queues one media download; a profile URL tracks that
-   profile and queues its first sync.
+2. Open **Add** and paste a direct public Instagram profile, post, Reel, Story,
+   or TV URL. A post/Reel/Story/TV link queues one media download; a profile URL
+   tracks that profile and queues its first sync.
 3. Open **Activity** to follow queued and running work. It reports the current
    progress message and reaches **succeeded** or **failed** when the worker has
    finished. Activity refreshes automatically every ten seconds; select
    **Refresh** to poll immediately.
-4. Open **Profiles** to browse a tracked account's saved posts and reels, or
-   open an item to view its downloaded assets, caption, and original link.
+4. Open **Profiles** to browse a tracked account's saved Feed media and Stories.
+   Feed combines saved posts and Reels; open any item to view its downloaded
+   assets, caption, and original Instagram link.
 5. In **Settings**, set the profile sync interval in minutes or queue an
    immediate sync of all active profiles. The default is 360 minutes.
 

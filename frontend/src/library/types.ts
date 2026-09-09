@@ -2,7 +2,8 @@
  * Immutable shapes returned by the public-library endpoints. These names and
  * fields intentionally mirror backend/src/instaloader_webui/api/library_dtos.py.
  */
-export type MediaKind = "post" | "reel" | "story";
+export type MediaCollection = "feed" | "story";
+export type OperationalMediaKind = "post" | "reel" | "story";
 export type AssetKind = "image" | "video";
 export type AssetRole = "content" | "poster";
 
@@ -26,7 +27,7 @@ export type MediaSummary = Readonly<{
   identity_type: string;
   identity_value: string;
   owner_profile_id: string;
-  kind: MediaKind;
+  collection: MediaCollection;
   caption: string;
   accessibility_caption: string;
   published_at: string;
@@ -71,7 +72,7 @@ export type JobIssue = Readonly<{
   identity_value: string;
   shortcode: string | null;
   story_media_id: string | null;
-  media_kind: MediaKind;
+  media_kind: OperationalMediaKind;
   error_code: string;
   safe_message: string;
   exception_class_chain: readonly string[];

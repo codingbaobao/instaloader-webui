@@ -48,7 +48,7 @@ const reelFixture = {
   identity_type: "shortcode",
   identity_value: "REEL123",
   owner_profile_id: "profile-1",
-  kind: "reel",
+  collection: "feed",
   caption: "",
   accessibility_caption: "A mountain sunrise",
   published_at: "2026-08-01T00:00:00Z",
@@ -91,7 +91,7 @@ const storyFixture = {
   story_media_id: "3952742051065980676",
   identity_type: "story_media_id",
   identity_value: "3952742051065980676",
-  kind: "story",
+  collection: "story",
   original_url:
     "https://www.instagram.com/stories/katerina.soria/3952742051065980676/",
   story_expires_at: "2026-08-02T00:00:00Z",
@@ -110,7 +110,7 @@ const carouselFixture = {
   instagram_media_id: "789",
   shortcode: "POST123",
   identity_value: "POST123",
-  kind: "post",
+  collection: "feed",
   original_url: "https://www.instagram.com/p/POST123/",
   assets: [
     {
@@ -194,9 +194,10 @@ function renderViewer(
       | typeof newerReelFixture
       | typeof olderReelFixture
     )[];
-    source?: "profile" | "recent";
+    source?: "profile" | "recent" | "none";
     newerCursor?: string | null;
     olderCursor?: string | null;
+    onFeedRequest?: (query: URLSearchParams) => void;
     onCursorRequest?: (cursor: string) => void;
     cursorItems?: Readonly<Record<string, readonly (
       | typeof reelFixture
@@ -227,7 +228,9 @@ function renderViewer(
   const remainingCursorFailures = { ...options.cursorFailures };
   server.use(
     http.get("/api/media/feed", async ({ request }) => {
-      const cursor = new URL(request.url).searchParams.get("cursor");
+      const query = new URL(request.url).searchParams;
+      options.onFeedRequest?.(query);
+      const cursor = query.get("cursor");
       if (cursor !== null) {
         options.onCursorRequest?.(cursor);
         const delayMs = options.cursorDelayMs?.[cursor] ?? 0;
@@ -258,7 +261,7 @@ function renderViewer(
           }),
         );
       }
-      const anchorId = new URL(request.url).searchParams.get("anchor_id");
+      const anchorId = query.get("anchor_id");
       return HttpResponse.json(
         successEnvelope({
           items: anchorId === null
@@ -291,11 +294,13 @@ function renderViewer(
     http.get("/api/media", () => HttpResponse.json(successEnvelope([]))),
   );
   const sourceQuery = source === "recent"
-    ? "source=recent"
-    : `source=profile&profileId=profile-1&kind=${media.kind}`;
+    ? "?source=recent"
+    : source === "profile"
+      ? `?source=profile&profileId=profile-1&collection=${media.collection}`
+      : "";
   return render(
     <TestRouter
-      initialPath={`/media/${media.id}?${sourceQuery}`}
+      initialPath={`/media/${media.id}${sourceQuery}`}
       initialSession={authenticatedSession}
     >
       <AppRoutes />
@@ -329,11 +334,11 @@ describe("MediaViewerPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows one Reel content video with its matching poster and no carousel", async () => {
+  it("shows one Feed content video with its matching poster and no carousel", async () => {
     const { container } = renderViewer(reelFixture);
 
     expect(
-      await screen.findByRole("heading", { name: "Reel" }),
+      await screen.findByRole("heading", { name: "Feed media" }),
     ).toBeVisible();
     const video = container.querySelector("video");
     expect(video).toHaveAttribute(
@@ -370,7 +375,7 @@ describe("MediaViewerPage", () => {
     const { container } = renderViewer(carouselFixture);
 
     const carousel = await screen.findByRole("region", {
-      name: "Post media carousel",
+      name: "Feed media carousel",
     });
     Object.defineProperty(carousel, "clientWidth", {
       configurable: true,
@@ -427,7 +432,7 @@ describe("MediaViewerPage", () => {
     renderViewer(carouselFixture);
 
     const carousel = await screen.findByRole("region", {
-      name: "Post media carousel",
+      name: "Feed media carousel",
     });
     Object.defineProperties(carousel, {
       clientWidth: { configurable: true, value: 320 },
@@ -448,7 +453,7 @@ describe("MediaViewerPage", () => {
     renderViewer(reelFixture);
 
     expect(
-      await screen.findByRole("heading", { name: "Reel" }),
+      await screen.findByRole("heading", { name: "Feed media" }),
     ).toBeVisible();
     const actions = screen.getByRole("group", { name: "Media actions" });
     const instagramLink = within(actions).getByRole("link", {
@@ -488,7 +493,7 @@ describe("MediaViewerPage", () => {
     const user = userEvent.setup();
     renderViewer(reelFixture);
 
-    await screen.findByRole("heading", { name: "Reel" });
+    await screen.findByRole("heading", { name: "Feed media" });
     const actions = screen.getByRole("group", { name: "Media actions" });
     const deleteButton = within(actions).getByRole("button", {
       name: "Delete downloaded media",
@@ -511,7 +516,7 @@ describe("MediaViewerPage", () => {
 
     const feed = await screen.findByRole("region", { name: "Media feed" });
     const reelSlide = within(feed).getByRole("group", {
-      name: "Reel REEL123",
+      name: "Feed media REEL123",
     });
     const storySlide = within(feed).getByRole("group", {
       name: "Story 3952742051065980676",
@@ -563,12 +568,43 @@ describe("MediaViewerPage", () => {
     ).toBeVisible();
   });
 
-  it("returns profile media to the same profile tab", async () => {
-    renderViewer(storyFixture);
+  it("returns profile Feed media to the Feed tab", async () => {
+    renderViewer(reelFixture);
+
+    expect(
+      await screen.findByRole("link", { name: "Back to profile" }),
+    ).toHaveAttribute("href", "/profiles/profile-1?tab=feed");
+  });
+
+  it("infers the Story collection for a context-free anchor", async () => {
+    const feedQueries: URLSearchParams[] = [];
+    renderViewer(storyFixture, {
+      source: "none",
+      onFeedRequest: (query) => feedQueries.push(new URLSearchParams(query)),
+    });
 
     expect(
       await screen.findByRole("link", { name: "Back to profile" }),
     ).toHaveAttribute("href", "/profiles/profile-1?tab=story");
+    expect(feedQueries[0]?.get("collection")).toBe("story");
+    expect(feedQueries[0]?.has("kind")).toBe(false);
+  });
+
+  it("keeps initial and cursor paging requests bound to the Feed collection", async () => {
+    const feedQueries: URLSearchParams[] = [];
+    renderViewer(reelFixture, {
+      olderCursor: "older-feed-page",
+      cursorItems: { "older-feed-page": [olderReelFixture] },
+      onFeedRequest: (query) => feedQueries.push(new URLSearchParams(query)),
+    });
+
+    await screen.findByRole("group", { name: "Feed media OLDER" });
+    expect(feedQueries).toHaveLength(2);
+    expect(feedQueries[0]?.get("anchor_id")).toBe("reel-1");
+    expect(feedQueries[0]?.get("collection")).toBe("feed");
+    expect(feedQueries[1]?.get("cursor")).toBe("older-feed-page");
+    expect(feedQueries[1]?.get("collection")).toBe("feed");
+    expect(feedQueries.every((query) => !query.has("kind"))).toBe(true);
   });
 
   it("loads the next cursor page before reaching the loaded boundary", async () => {
@@ -603,7 +639,10 @@ describe("MediaViewerPage", () => {
     await user.click(screen.getByRole("button", { name: "Next media" }));
 
     expect(
-      await screen.findByRole("group", { name: "Reel OLDER", current: true }),
+      await screen.findByRole("group", {
+        name: "Feed media OLDER",
+        current: true,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -634,7 +673,10 @@ describe("MediaViewerPage", () => {
     await user.click(screen.getByRole("button", { name: "Previous media" }));
 
     expect(
-      await screen.findByRole("group", { name: "Reel NEWER", current: true }),
+      await screen.findByRole("group", {
+        name: "Feed media NEWER",
+        current: true,
+      }),
     ).toBeInTheDocument();
     await waitFor(() => expect(feed.scrollTop).toBe(0));
   });
@@ -771,10 +813,10 @@ describe("MediaViewerPage", () => {
 
     const feed = await screen.findByRole("region", { name: "Media feed" });
     expect(
-      await within(feed).findByRole("group", { name: "Reel NEWER" }),
+      await within(feed).findByRole("group", { name: "Feed media NEWER" }),
     ).toBeInTheDocument();
     expect(
-      within(feed).getByRole("group", { name: "Reel OLDER" }),
+      within(feed).getByRole("group", { name: "Feed media OLDER" }),
     ).toBeInTheDocument();
   });
 

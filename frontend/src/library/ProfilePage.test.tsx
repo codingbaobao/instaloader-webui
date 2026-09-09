@@ -31,6 +31,52 @@ const profileFixture = {
   media_count: 1,
 };
 
+const feedPostFixture = {
+  id: "feed-post-1",
+  instagram_media_id: "101",
+  shortcode: "POST1",
+  story_media_id: null,
+  identity_type: "shortcode",
+  identity_value: "POST1",
+  owner_profile_id: "profile-1",
+  collection: "feed",
+  caption: "Saved post",
+  accessibility_caption: "",
+  published_at: "2026-08-03T00:00:00Z",
+  original_url: "https://www.instagram.com/p/POST1/",
+  story_expires_at: null,
+  downloaded_at: "2026-08-03T00:01:00Z",
+  created_at: "2026-08-03T00:01:00Z",
+  updated_at: "2026-08-03T00:01:00Z",
+  assets: [],
+};
+
+const feedReelFixture = {
+  ...feedPostFixture,
+  id: "feed-reel-1",
+  instagram_media_id: "102",
+  shortcode: "REEL1",
+  identity_value: "REEL1",
+  caption: "Saved reel",
+  published_at: "2026-08-02T00:00:00Z",
+  original_url: "https://www.instagram.com/reel/REEL1/",
+};
+
+const storyFixture = {
+  ...feedPostFixture,
+  id: "story-1",
+  instagram_media_id: "103",
+  shortcode: null,
+  story_media_id: "103",
+  identity_type: "story_media_id",
+  identity_value: "103",
+  collection: "story",
+  caption: "Saved story",
+  published_at: "2026-08-01T00:00:00Z",
+  original_url: "https://www.instagram.com/stories/katerina.soria/103/",
+  story_expires_at: "2026-08-02T00:00:00Z",
+};
+
 function successEnvelope<T>(data: T) {
   return { success: true, data, error: null, meta: {} };
 }
@@ -69,13 +115,62 @@ function HistoryProbe() {
 }
 
 describe("ProfilePage", () => {
-  it("shows all media tabs, links safely to the profile, and requests Stories", async () => {
+  it("renders mixed Feed media in backend order and switches to Story links", async () => {
+    server.use(
+      http.get("/api/profiles/profile-1", () =>
+        HttpResponse.json(successEnvelope(profileFixture)),
+      ),
+      http.get("/api/media", ({ request }) => {
+        const collection = new URL(request.url).searchParams.get("collection");
+        return HttpResponse.json(
+          successEnvelope(
+            collection === "story"
+              ? [storyFixture]
+              : [feedPostFixture, feedReelFixture],
+          ),
+        );
+      }),
+    );
+    render(
+      <TestRouter
+        initialPath="/profiles/profile-1"
+        initialSession={authenticatedSession}
+      />,
+    );
+    const user = userEvent.setup();
+
+    const feedLinks = await screen.findAllByRole("link", {
+      name: /Open Feed media/,
+    });
+    expect(feedLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "/media/feed-post-1?source=profile&profileId=profile-1&collection=feed",
+      "/media/feed-reel-1?source=profile&profileId=profile-1&collection=feed",
+    ]);
+    expect(screen.queryByRole("link", { name: /Open Story/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Story" }));
+
+    const storyLink = await screen.findByRole("link", { name: /Open Story/ });
+    expect(storyLink).toHaveAttribute(
+      "href",
+      "/media/story-1?source=profile&profileId=profile-1&collection=story",
+    );
+    expect(screen.queryByRole("link", { name: /Open Feed media/ })).not.toBeInTheDocument();
+  });
+
+  it("shows only Feed and Story tabs and requests each collection", async () => {
     const mediaQueries = renderProfile();
-    const postsTab = await screen.findByRole("tab", { name: "Posts" });
-    expect(postsTab).toBeVisible();
-    expect(screen.getByRole("tab", { name: "Reels" })).toBeVisible();
+    const feedTab = await screen.findByRole("tab", { name: "Feed" });
+    expect(feedTab).toBeVisible();
     const storyTab = screen.getByRole("tab", { name: "Story" });
     expect(storyTab).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "Posts" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Reels" })).not.toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(mediaQueries.at(-1)).toContain("collection=feed");
+    });
+    expect(mediaQueries.at(-1)).not.toContain("kind=");
 
     const instagramLink = screen.getByRole("link", {
       name: "Open @katerina.soria on Instagram",
@@ -103,74 +198,73 @@ describe("ProfilePage", () => {
     await userEvent.click(storyTab);
 
     await waitFor(() => {
-      expect(mediaQueries.at(-1)).toContain("kind=story");
+      expect(mediaQueries.at(-1)).toContain("collection=story");
     });
+    expect(mediaQueries.at(-1)).not.toContain("kind=");
   });
 
   it("connects the tabs to their panel and keeps only the selected tab in the tab order", async () => {
     renderProfile();
 
-    const postsTab = await screen.findByRole("tab", { name: "Posts" });
-    const reelsTab = screen.getByRole("tab", { name: "Reels" });
+    const feedTab = await screen.findByRole("tab", { name: "Feed" });
     const storyTab = screen.getByRole("tab", { name: "Story" });
     const panel = screen.getByRole("tabpanel");
 
     expect(panel).toHaveAttribute("id", "profile-media-panel");
-    expect(panel).toHaveAttribute("aria-labelledby", "posts-tab");
-    expect(postsTab).toHaveAttribute("aria-controls", "profile-media-panel");
-    expect(reelsTab).toHaveAttribute("aria-controls", "profile-media-panel");
+    expect(panel).toHaveAttribute("aria-labelledby", "feed-tab");
+    expect(feedTab).toHaveAttribute("aria-controls", "profile-media-panel");
     expect(storyTab).toHaveAttribute("aria-controls", "profile-media-panel");
-    expect(postsTab).toHaveAttribute("tabindex", "0");
-    expect(reelsTab).toHaveAttribute("tabindex", "-1");
+    expect(feedTab).toHaveAttribute("tabindex", "0");
     expect(storyTab).toHaveAttribute("tabindex", "-1");
   });
 
   it("moves focus and selection with Arrow, Home, and End keys", async () => {
     const mediaQueries = renderProfile();
     const user = userEvent.setup();
-    const postsTab = await screen.findByRole("tab", { name: "Posts" });
-    const reelsTab = screen.getByRole("tab", { name: "Reels" });
+    const feedTab = await screen.findByRole("tab", { name: "Feed" });
     const storyTab = screen.getByRole("tab", { name: "Story" });
 
-    postsTab.focus();
+    feedTab.focus();
     await user.keyboard("{ArrowRight}");
-    expect(reelsTab).toHaveFocus();
-    expect(reelsTab).toHaveAttribute("aria-selected", "true");
-    expect(reelsTab).toHaveAttribute("tabindex", "0");
-    expect(postsTab).toHaveAttribute("tabindex", "-1");
+    expect(storyTab).toHaveFocus();
+    expect(storyTab).toHaveAttribute("aria-selected", "true");
+    expect(storyTab).toHaveAttribute("tabindex", "0");
+    expect(feedTab).toHaveAttribute("tabindex", "-1");
 
     await user.keyboard("{ArrowLeft}");
-    expect(postsTab).toHaveFocus();
-    expect(postsTab).toHaveAttribute("aria-selected", "true");
+    expect(feedTab).toHaveFocus();
+    expect(feedTab).toHaveAttribute("aria-selected", "true");
 
     await user.keyboard("{ArrowLeft}");
     expect(storyTab).toHaveFocus();
     expect(storyTab).toHaveAttribute("aria-selected", "true");
 
     await user.keyboard("{Home}");
-    expect(postsTab).toHaveFocus();
-    expect(postsTab).toHaveAttribute("aria-selected", "true");
+    expect(feedTab).toHaveFocus();
+    expect(feedTab).toHaveAttribute("aria-selected", "true");
 
     await user.keyboard("{End}");
     expect(storyTab).toHaveFocus();
     expect(storyTab).toHaveAttribute("aria-selected", "true");
     expect(storyTab).toHaveAttribute("tabindex", "0");
-    expect(reelsTab).toHaveAttribute("tabindex", "-1");
+    expect(feedTab).toHaveAttribute("tabindex", "-1");
 
     await waitFor(() => {
-      expect(mediaQueries.at(-1)).toContain("kind=story");
+      expect(mediaQueries.at(-1)).toContain("collection=story");
     });
   });
 
-  it("restores the selected media tab from the profile URL", async () => {
+  it("defaults an unknown profile tab to Feed without requesting Reel", async () => {
     const mediaQueries = renderProfile([], "/profiles/profile-1?tab=reel");
 
-    const reelsTab = await screen.findByRole("tab", { name: "Reels" });
-    expect(reelsTab).toHaveAttribute("aria-selected", "true");
-    expect(reelsTab).toHaveAttribute("tabindex", "0");
+    const feedTab = await screen.findByRole("tab", { name: "Feed" });
+    expect(feedTab).toHaveAttribute("aria-selected", "true");
+    expect(feedTab).toHaveAttribute("tabindex", "0");
     await waitFor(() => {
-      expect(mediaQueries.at(-1)).toContain("kind=reel");
+      expect(mediaQueries.at(-1)).toContain("collection=feed");
     });
+    expect(mediaQueries.at(-1)).not.toContain("collection=reel");
+    expect(mediaQueries.at(-1)).not.toContain("kind=");
   });
 
   it("pushes tab changes into history and restores the tab on browser back", async () => {
@@ -182,7 +276,7 @@ describe("ProfilePage", () => {
     );
     render(
       <TestRouter
-        initialPath="/profiles/profile-1?tab=post"
+        initialPath="/profiles/profile-1?tab=feed"
         initialSession={authenticatedSession}
       >
         <AppRoutes />
@@ -191,9 +285,9 @@ describe("ProfilePage", () => {
     );
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("tab", { name: "Reels" }));
-    expect(screen.getByTestId("location-search")).toHaveTextContent("tab=reel");
-    expect(screen.getByRole("tab", { name: "Reels" })).toHaveAttribute(
+    await user.click(await screen.findByRole("tab", { name: "Story" }));
+    expect(screen.getByTestId("location-search")).toHaveTextContent("tab=story");
+    expect(screen.getByRole("tab", { name: "Story" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -201,8 +295,8 @@ describe("ProfilePage", () => {
     await user.click(screen.getByRole("button", { name: "Browser back" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("location-search")).toHaveTextContent("tab=post");
-      expect(screen.getByRole("tab", { name: "Posts" })).toHaveAttribute(
+      expect(screen.getByTestId("location-search")).toHaveTextContent("tab=feed");
+      expect(screen.getByRole("tab", { name: "Feed" })).toHaveAttribute(
         "aria-selected",
         "true",
       );

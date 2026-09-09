@@ -25,10 +25,14 @@ from instaloader_webui.db.models import (
     SchemaMarker,
 )
 
-CURRENT_SCHEMA_VERSION = "pre-1.0-feed-sync-2"
-_LEGACY_SCHEMA_VERSION = "pre-1.0-fresh-schema-1"
-_LEGACY_SCHEMA_DIGEST = (
+CURRENT_SCHEMA_VERSION = "pre-1.0-unified-feed-3"
+_VERSION_ONE_SCHEMA_VERSION = "pre-1.0-fresh-schema-1"
+_VERSION_ONE_SCHEMA_DIGEST = (
     "5edfc7cdd9d45fe1dea7ad4507417d5b1ea599793c49000cea26f90bab82e3b7"
+)
+_VERSION_TWO_SCHEMA_VERSION = "pre-1.0-feed-sync-2"
+_VERSION_TWO_SCHEMA_DIGEST = (
+    "bcedde12385ce0343501808eb9d9b06070a8bf89b1c045b356662c06e8c36191"
 )
 SCHEMA_COMPATIBILITY_ERROR = (
     "Unsupported pre-1.0 database schema. Delete and recreate the database."
@@ -154,13 +158,24 @@ def _read_marker_and_signature(
     return marker_rows, signature
 
 
-def _validate_legacy_schema(database_path: Path, tables: set[str]) -> bool:
+def _validate_version_one_schema(database_path: Path, tables: set[str]) -> bool:
     if "alembic_version" in tables or "schema_marker" not in tables:
         return False
     marker_rows, signature = _read_marker_and_signature(database_path)
-    if marker_rows != [(_GLOBAL_SINGLETON_ID, _LEGACY_SCHEMA_VERSION)]:
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, _VERSION_ONE_SCHEMA_VERSION)]:
         return False
-    if _schema_digest(signature) != _LEGACY_SCHEMA_DIGEST:
+    if _schema_digest(signature) != _VERSION_ONE_SCHEMA_DIGEST:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    return True
+
+
+def _validate_version_two_schema(database_path: Path, tables: set[str]) -> bool:
+    if "alembic_version" in tables or "schema_marker" not in tables:
+        return False
+    marker_rows, signature = _read_marker_and_signature(database_path)
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, _VERSION_TWO_SCHEMA_VERSION)]:
+        return False
+    if _schema_digest(signature) != _VERSION_TWO_SCHEMA_DIGEST:
         raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
     return True
 
@@ -168,6 +183,18 @@ def _validate_legacy_schema(database_path: Path, tables: set[str]) -> bool:
 def _create_version_two_tables(connection: Any) -> None:
     cast(Table, JobProgressSegment.__table__).create(connection)
     cast(Table, ProfileSyncCheckpoint.__table__).create(connection)
+
+
+def _assert_version_two_schema_in_transaction(connection: Any) -> None:
+    marker_rows = [
+        (str(row[0]), str(row[1]))
+        for row in connection.exec_driver_sql("SELECT id, version FROM schema_marker")
+    ]
+    signature = _schema_signature(connection.exec_driver_sql(_SCHEMA_DEFINITION_QUERY))
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, _VERSION_TWO_SCHEMA_VERSION)]:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    if _schema_digest(signature) != _VERSION_TWO_SCHEMA_DIGEST:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
 
 
 def _assert_current_schema_in_transaction(connection: Any) -> None:
@@ -234,11 +261,11 @@ def _migrate_version_one_schema(database_path: Path) -> None:
                     "UPDATE schema_marker SET version = :version "
                     "WHERE id = :singleton_id",
                     {
-                        "version": CURRENT_SCHEMA_VERSION,
+                        "version": _VERSION_TWO_SCHEMA_VERSION,
                         "singleton_id": _GLOBAL_SINGLETON_ID,
                     },
                 )
-                _assert_current_schema_in_transaction(connection)
+                _assert_version_two_schema_in_transaction(connection)
             except SchemaCompatibilityError:
                 connection.rollback()
                 raise
@@ -250,6 +277,102 @@ def _migrate_version_one_schema(database_path: Path) -> None:
                 raise
             else:
                 connection.commit()
+    finally:
+        engine.dispose()
+
+
+def _rebuild_media_items_without_kind(connection: Any) -> None:
+    connection.exec_driver_sql(
+        "CREATE TABLE media_items_v3 (\n"
+        "\tid VARCHAR(36) NOT NULL, \n"
+        "\tinstagram_media_id VARCHAR(64), \n"
+        "\tshortcode VARCHAR(64), \n"
+        "\tidentity_type VARCHAR(32) NOT NULL, \n"
+        "\tidentity_value VARCHAR(64) NOT NULL, \n"
+        "\towner_profile_id VARCHAR(36) NOT NULL, \n"
+        "\tcaption TEXT NOT NULL, \n"
+        "\taccessibility_caption TEXT NOT NULL, \n"
+        "\tpublished_at DATETIME NOT NULL, \n"
+        "\toriginal_url TEXT NOT NULL, \n"
+        "\tstory_expires_at DATETIME, \n"
+        "\tdownloaded_at DATETIME, \n"
+        "\tcreated_at DATETIME NOT NULL, \n"
+        "\tupdated_at DATETIME NOT NULL, \n"
+        "\tPRIMARY KEY (id), \n"
+        "\tCONSTRAINT uq_media_items_identity UNIQUE (identity_type, identity_value), \n"
+        "\tCONSTRAINT ck_media_items_identity_type "
+        "CHECK (identity_type IN ('shortcode', 'story_media_id')), \n"
+        "\tUNIQUE (instagram_media_id), \n"
+        "\tFOREIGN KEY(owner_profile_id) REFERENCES profiles (id) ON DELETE CASCADE\n"
+        ")"
+    )
+    connection.exec_driver_sql(
+        "INSERT INTO media_items_v3 ("
+        "id, instagram_media_id, shortcode, identity_type, identity_value, "
+        "owner_profile_id, caption, accessibility_caption, published_at, "
+        "original_url, story_expires_at, downloaded_at, created_at, updated_at"
+        ") SELECT "
+        "id, instagram_media_id, shortcode, identity_type, identity_value, "
+        "owner_profile_id, caption, accessibility_caption, published_at, "
+        "original_url, story_expires_at, downloaded_at, created_at, updated_at "
+        "FROM media_items"
+    )
+    connection.exec_driver_sql("DROP TABLE media_items")
+    connection.exec_driver_sql("ALTER TABLE media_items_v3 RENAME TO media_items")
+    connection.exec_driver_sql(
+        "CREATE INDEX ix_media_items_owner_profile_published_at "
+        "ON media_items (owner_profile_id, published_at)"
+    )
+    connection.exec_driver_sql("PRAGMA writable_schema = ON")
+    try:
+        connection.exec_driver_sql(
+            "UPDATE sqlite_schema SET sql = replace("
+            "sql, 'CREATE TABLE \"media_items\"', 'CREATE TABLE media_items'"
+            ") WHERE type = 'table' AND name = 'media_items'"
+        )
+    finally:
+        connection.exec_driver_sql("PRAGMA writable_schema = OFF")
+
+
+def _migrate_version_two_schema(database_path: Path) -> None:
+    engine = build_engine(database_path)
+    try:
+        with engine.connect() as connection:
+            foreign_keys = int(
+                connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+            )
+            connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+            try:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    _rebuild_media_items_without_kind(connection)
+                    foreign_key_errors = list(
+                        connection.exec_driver_sql("PRAGMA foreign_key_check")
+                    )
+                    if foreign_key_errors:
+                        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+                    connection.exec_driver_sql(
+                        "UPDATE schema_marker SET version = :version "
+                        "WHERE id = :singleton_id",
+                        {
+                            "version": CURRENT_SCHEMA_VERSION,
+                            "singleton_id": _GLOBAL_SINGLETON_ID,
+                        },
+                    )
+                    _assert_current_schema_in_transaction(connection)
+                except SchemaCompatibilityError:
+                    connection.rollback()
+                    raise
+                except Exception as error:
+                    connection.rollback()
+                    raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR) from error
+                except BaseException:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
+            finally:
+                connection.exec_driver_sql(f"PRAGMA foreign_keys = {foreign_keys}")
     finally:
         engine.dispose()
 
@@ -313,8 +436,20 @@ def initialize_database(settings: Settings) -> None:
         marker_rows, _ = _read_marker_and_signature(database_path)
         if marker_rows == [(_GLOBAL_SINGLETON_ID, CURRENT_SCHEMA_VERSION)]:
             _validate_supported_schema(database_path, existing_tables)
-        elif _validate_legacy_schema(database_path, existing_tables):
+        elif _validate_version_one_schema(database_path, existing_tables):
             _migrate_version_one_schema(database_path)
+            migrated_tables = _read_existing_tables(database_path)
+            if migrated_tables is None:
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+            if not _validate_version_two_schema(database_path, migrated_tables):
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+            _migrate_version_two_schema(database_path)
+            migrated_tables = _read_existing_tables(database_path)
+            if migrated_tables is None:
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+            _validate_supported_schema(database_path, migrated_tables)
+        elif _validate_version_two_schema(database_path, existing_tables):
+            _migrate_version_two_schema(database_path)
             migrated_tables = _read_existing_tables(database_path)
             if migrated_tables is None:
                 raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)

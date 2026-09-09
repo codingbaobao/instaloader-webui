@@ -42,7 +42,7 @@ class MediaResponse(BaseModel):
     identity_type: str
     identity_value: str
     owner_profile_id: str
-    kind: str
+    collection: Literal["feed", "story"]
     caption: str
     accessibility_caption: str
     published_at: datetime
@@ -173,7 +173,7 @@ def serialize_media(media: MediaSnapshot) -> MediaResponse:
         identity_type=media.identity_type,
         identity_value=media.identity_value,
         owner_profile_id=media.owner_profile_id,
-        kind=media.kind,
+        collection=media.collection,
         caption=media.caption,
         accessibility_caption=media.accessibility_caption,
         published_at=media.published_at,

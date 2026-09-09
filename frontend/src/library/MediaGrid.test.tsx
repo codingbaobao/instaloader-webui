@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { MediaGrid } from "./MediaGrid";
+import { mediaLabel } from "./mediaPresentation";
 
 const reelFixture = {
   id: "reel-1",
@@ -12,7 +13,7 @@ const reelFixture = {
   identity_type: "shortcode",
   identity_value: "REEL123",
   owner_profile_id: "profile-1",
-  kind: "reel" as const,
+  collection: "feed" as const,
   caption: "",
   accessibility_caption: "A mountain sunrise",
   published_at: "2026-08-01T00:00:00Z",
@@ -55,7 +56,7 @@ const storyFixture = {
   story_media_id: "3952742051065980676",
   identity_type: "story_media_id",
   identity_value: "3952742051065980676",
-  kind: "story" as const,
+  collection: "story" as const,
   original_url:
     "https://www.instagram.com/stories/katerina.soria/3952742051065980676/",
   story_expires_at: "2026-08-02T00:00:00Z",
@@ -63,7 +64,7 @@ const storyFixture = {
 };
 
 describe("MediaGrid", () => {
-  it("uses a Reel poster without counting it as carousel content", () => {
+  it("uses a Feed poster without counting it as carousel content", () => {
     render(
       <MemoryRouter>
         <MediaGrid media={[reelFixture]} />
@@ -73,8 +74,13 @@ describe("MediaGrid", () => {
     expect(
       screen.getByRole("img", { name: "A mountain sunrise" }),
     ).toHaveAttribute("src", "/api/media/reel-1/assets/poster-1");
-    expect(screen.getByText("Reel")).toBeInTheDocument();
+    expect(screen.getByText("Feed media")).toBeInTheDocument();
     expect(screen.queryByText("2 items")).not.toBeInTheDocument();
+  });
+
+  it("presents shortcode media as Feed media and story media as Story", () => {
+    expect(mediaLabel(reelFixture)).toBe("Feed media");
+    expect(mediaLabel(storyFixture)).toBe("Story");
   });
 
   it("labels a Story with its Story media ID when shortcode is null", () => {
@@ -100,25 +106,29 @@ describe("MediaGrid", () => {
     );
 
     expect(
-      screen.getByRole("link", { name: "Open Reel REEL123" }),
+      screen.getByRole("link", { name: "Open Feed media REEL123" }),
     ).toHaveAttribute("href", "/media/reel-1?source=recent");
   });
 
-  it("links profile media with its profile and active kind", () => {
+  it("links profile media with its profile and active collection", () => {
     render(
       <MemoryRouter>
         <MediaGrid
           media={[reelFixture]}
-          source={{ type: "profile", profileId: "profile-1", kind: "reel" }}
+          source={{
+            type: "profile",
+            profileId: "profile-1",
+            collection: "feed",
+          }}
         />
       </MemoryRouter>,
     );
 
     expect(
-      screen.getByRole("link", { name: "Open Reel REEL123" }),
+      screen.getByRole("link", { name: "Open Feed media REEL123" }),
     ).toHaveAttribute(
       "href",
-      "/media/reel-1?source=profile&profileId=profile-1&kind=reel",
+      "/media/reel-1?source=profile&profileId=profile-1&collection=feed",
     );
   });
 });

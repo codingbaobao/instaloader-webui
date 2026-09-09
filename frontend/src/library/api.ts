@@ -6,7 +6,7 @@ import type {
   LibrarySettings,
   MediaDetail,
   MediaFeedPage,
-  MediaKind,
+  MediaCollection,
   MediaSummary,
   ProfileCreateResult,
   ProfileDetail,
@@ -17,7 +17,7 @@ import type {
 
 type MediaListOptions = Readonly<{
   profileId?: string;
-  kind?: MediaKind;
+  collection?: MediaCollection;
   limit?: number;
 }>;
 
@@ -25,7 +25,7 @@ type MediaFeedOptions = Readonly<{
   anchorId?: string;
   cursor?: string;
   profileId?: string;
-  kind?: MediaKind;
+  collection?: MediaCollection;
   limit?: number;
 }>;
 
@@ -107,8 +107,8 @@ export function listMedia(
   if (options.profileId) {
     query.set("profile_id", options.profileId);
   }
-  if (options.kind) {
-    query.set("kind", options.kind);
+  if (options.collection) {
+    query.set("collection", options.collection);
   }
   if (options.limit !== undefined) {
     query.set("limit", String(options.limit));
@@ -140,8 +140,8 @@ export function listMediaFeed(
   if (options.profileId) {
     query.set("profile_id", options.profileId);
   }
-  if (options.kind) {
-    query.set("kind", options.kind);
+  if (options.collection) {
+    query.set("collection", options.collection);
   }
   if (options.limit !== undefined) {
     query.set("limit", String(options.limit));
