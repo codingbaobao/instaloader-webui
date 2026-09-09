@@ -35,14 +35,18 @@ import { ProfileAvatar } from "./ProfileAvatar";
 import type {
   MediaDetail,
   MediaFeedPage,
-  MediaKind,
+  MediaCollection,
   ProfileDetail,
 } from "./types";
 
 type MediaViewerPageProps = Readonly<{ session: SessionData }>;
 type FeedSource =
   | Readonly<{ type: "recent" }>
-  | Readonly<{ type: "profile"; profileId: string; kind: MediaKind }>;
+  | Readonly<{
+      type: "profile";
+      profileId: string;
+      collection: MediaCollection;
+    }>;
 type FeedState = Readonly<{
   source: FeedSource;
   items: readonly MediaDetail[];
@@ -60,8 +64,8 @@ const MUTED_STORAGE_KEY = "instaloader-webui:media-muted";
 const FEED_PAGE_SIZE = 20;
 const RENDER_RADIUS = 2;
 
-function isMediaKind(value: string | null): value is MediaKind {
-  return value === "post" || value === "reel" || value === "story";
+function isMediaCollection(value: string | null): value is MediaCollection {
+  return value === "feed" || value === "story";
 }
 
 function requestedSource(searchParams: URLSearchParams): FeedSource | null {
@@ -70,16 +74,16 @@ function requestedSource(searchParams: URLSearchParams): FeedSource | null {
     return { type: "recent" };
   }
   const profileId = searchParams.get("profileId");
-  const kind = searchParams.get("kind");
-  if (source === "profile" && profileId && isMediaKind(kind)) {
-    return { type: "profile", profileId, kind };
+  const collection = searchParams.get("collection");
+  if (source === "profile" && profileId && isMediaCollection(collection)) {
+    return { type: "profile", profileId, collection };
   }
   return null;
 }
 
 function feedOptions(source: FeedSource) {
   return source.type === "profile"
-    ? { profileId: source.profileId, kind: source.kind }
+    ? { profileId: source.profileId, collection: source.collection }
     : {};
 }
 
@@ -90,7 +94,7 @@ function returnTarget(source: FeedSource): Readonly<{
   if (source.type === "recent") {
     return { href: "/", label: "Back to recent media" };
   }
-  const query = new URLSearchParams({ tab: source.kind });
+  const query = new URLSearchParams({ tab: source.collection });
   return {
     href: `/profiles/${encodeURIComponent(source.profileId)}?${query.toString()}`,
     label: "Back to profile",
@@ -203,7 +207,7 @@ export function MediaViewerPage({ session }: MediaViewerPageProps) {
           source = {
             type: "profile",
             profileId: media.owner_profile_id,
-            kind: media.kind,
+            collection: media.collection,
           };
         }
         const page = await listMediaFeed(
@@ -679,7 +683,12 @@ function MediaSlide({
         {owner ? (
           <div className="viewer-owner">
             <ProfileAvatar profile={owner} />
-            <Link to={`/profiles/${encodeURIComponent(owner.id)}?tab=${media.kind}`}>
+            <Link
+              to={
+                `/profiles/${encodeURIComponent(owner.id)}`
+                + `?tab=${media.collection}`
+              }
+            >
               @{owner.username}
             </Link>
           </div>
@@ -793,7 +802,7 @@ function AssetCarousel({
   return (
     <>
       <div
-        aria-label={`${mediaLabel(media)} media carousel`}
+        aria-label={`${mediaLabel(media)} carousel`}
         aria-roledescription="carousel"
         className="viewer-carousel-track"
         ref={carouselRef}

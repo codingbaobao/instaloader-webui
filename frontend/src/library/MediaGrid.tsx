@@ -7,14 +7,14 @@ import {
   mediaLabel,
   thumbnailAsset,
 } from "./mediaPresentation";
-import type { MediaSummary } from "./types";
+import type { MediaCollection, MediaSummary } from "./types";
 
 export type MediaGridSource =
   | Readonly<{ type: "recent" }>
   | Readonly<{
       type: "profile";
       profileId: string;
-      kind: MediaSummary["kind"];
+      collection: MediaCollection;
     }>;
 
 type MediaGridProps = Readonly<{
@@ -32,7 +32,7 @@ function mediaViewerUrl(mediaId: string, source?: MediaGridSource): string {
   const query = new URLSearchParams({ source: source.type });
   if (source.type === "profile") {
     query.set("profileId", source.profileId);
-    query.set("kind", source.kind);
+    query.set("collection", source.collection);
   }
   return `${path}?${query.toString()}`;
 }

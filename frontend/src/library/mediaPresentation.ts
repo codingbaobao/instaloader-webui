@@ -32,13 +32,8 @@ export function thumbnailAsset(media: MediaSummary): MediaAsset | null {
   );
 }
 
-export function mediaLabel(media: MediaSummary): "Post" | "Reel" | "Story" {
-  const labels = {
-    post: "Post",
-    reel: "Reel",
-    story: "Story",
-  } as const;
-  return labels[media.kind];
+export function mediaLabel(media: MediaSummary): "Feed media" | "Story" {
+  return media.collection === "story" ? "Story" : "Feed media";
 }
 
 export function mediaDisplayIdentifier(media: MediaSummary): string {
