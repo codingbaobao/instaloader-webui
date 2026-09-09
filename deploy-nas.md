@@ -54,10 +54,12 @@ Expected health response:
 - Recreating the containers preserves the database, downloaded media, settings,
   and encrypted Instagram Cookie session in the NAS data mount.
 
-## Schema v2 migration (`pre-1.0-feed-sync-2`)
+## Schema v3 migration (`pre-1.0-unified-feed-3`)
 
 This migration is intentionally one-way. Never start an older image against a
-database that already reports `pre-1.0-feed-sync-2`.
+database that already reports `pre-1.0-unified-feed-3`. Version 3 removes the
+stored Post/Reel discriminator and derives saved-media browsing as Feed or
+Story without changing original Instagram URLs.
 
 Before changing the live database:
 
@@ -66,9 +68,9 @@ Before changing the live database:
 2. Run the image against a temporary data root and verify `/api/health`,
    `PRAGMA integrity_check`, and the fresh schema marker.
 3. Use SQLite's backup API from the currently trusted image to make a timestamped
-   v1 backup while the application is still running.
+   v2 backup while the application is still running.
 4. Migrate a separate copy of that backup with the new image. Verify integrity,
-   the v2 marker, row counts, and Posts/Reels checkpoint counts before touching
+   the v3 marker, row counts, and Posts/Reels checkpoint counts before touching
    the live database.
 
 For the live cutover, first confirm there are no pending or running jobs, then:
@@ -113,7 +115,7 @@ the profile target plus Stories and Feed content rows. Confirm Feed progresses
 beyond the former repeated prefix and the job either completes or retains
 source checkpoints after a blocking outcome.
 
-### 2026-08-28 migration record
+### Prior 2026-08-28 v2 migration record
 
 - Git revision: `c6485655a2cb428af23986f3586e7a881f8a8c45`
 - Image tag: `instaloader-webui:feed-sync-v2-c648565`
@@ -134,8 +136,8 @@ published immutable image and `docker compose pull`.
 
 ### Rollback
 
-Rollback requires restoring the final v1 backup; the old image cannot read the
-v2 database. Stop both services, preserve the failed v2 database separately,
+Rollback requires restoring the final v2 backup; the prior image cannot read the
+v3 database. Stop both services, preserve the failed v3 database separately,
 restore the verified backup to `/data/database/app.sqlite3` with SQLite's backup
 API, restore the saved pre-migration `.env`, and start the recorded old image
 revision. Re-run integrity and row-count checks before starting the worker.
