@@ -178,33 +178,58 @@ def _decode_feed_cursor(
         )
         if not isinstance(payload, dict):
             raise TypeError
-        direction = payload.get("direction")
-        media_id = payload.get("id")
-        published_at_raw = payload.get("published_at")
+        if set(payload) != {
+            "collection",
+            "direction",
+            "id",
+            "profile_id",
+            "published_at",
+            "version",
+        }:
+            raise ValueError
+        direction = payload["direction"]
+        media_id = payload["id"]
+        published_at_raw = payload["published_at"]
+        payload_profile_id = payload["profile_id"]
+        payload_collection = payload["collection"]
         if (
-            payload.get("version") != 2
+            type(payload["version"]) is not int
+            or payload["version"] != 2
+            or not isinstance(direction, str)
             or direction not in ("newer", "older")
-            or not isinstance(media_id, str)
+            or type(media_id) is not str
             or not media_id
             or len(media_id) > 36
-            or not isinstance(published_at_raw, str)
-            or payload.get("profile_id") != profile_id
-            or payload.get("collection") != collection
+            or type(published_at_raw) is not str
+            or not (
+                payload_profile_id is None or type(payload_profile_id) is str
+            )
+            or payload_profile_id != profile_id
+            or not (
+                payload_collection is None or type(payload_collection) is str
+            )
+            or payload_collection not in (None, "feed", "story")
+            or payload_collection != collection
         ):
             raise ValueError
+        cursor_direction: Literal["newer", "older"] = (
+            "newer" if direction == "newer" else "older"
+        )
         published_at = datetime.fromisoformat(published_at_raw)
         if published_at.tzinfo is None or published_at.utcoffset() is None:
             raise ValueError
+        published_at = published_at.astimezone(UTC)
     except (
         binascii.Error,
         json.JSONDecodeError,
+        OverflowError,
         TypeError,
         UnicodeDecodeError,
         ValueError,
     ):
         raise _invalid_feed_cursor() from None
     return _FeedCursor(
-        direction=direction,
+        direction=cursor_direction,
         position=MediaFeedPosition(
             published_at=published_at,
             media_id=media_id,

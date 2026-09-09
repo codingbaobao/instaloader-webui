@@ -31,6 +31,52 @@ const profileFixture = {
   media_count: 1,
 };
 
+const feedPostFixture = {
+  id: "feed-post-1",
+  instagram_media_id: "101",
+  shortcode: "POST1",
+  story_media_id: null,
+  identity_type: "shortcode",
+  identity_value: "POST1",
+  owner_profile_id: "profile-1",
+  collection: "feed",
+  caption: "Saved post",
+  accessibility_caption: "",
+  published_at: "2026-08-03T00:00:00Z",
+  original_url: "https://www.instagram.com/p/POST1/",
+  story_expires_at: null,
+  downloaded_at: "2026-08-03T00:01:00Z",
+  created_at: "2026-08-03T00:01:00Z",
+  updated_at: "2026-08-03T00:01:00Z",
+  assets: [],
+};
+
+const feedReelFixture = {
+  ...feedPostFixture,
+  id: "feed-reel-1",
+  instagram_media_id: "102",
+  shortcode: "REEL1",
+  identity_value: "REEL1",
+  caption: "Saved reel",
+  published_at: "2026-08-02T00:00:00Z",
+  original_url: "https://www.instagram.com/reel/REEL1/",
+};
+
+const storyFixture = {
+  ...feedPostFixture,
+  id: "story-1",
+  instagram_media_id: "103",
+  shortcode: null,
+  story_media_id: "103",
+  identity_type: "story_media_id",
+  identity_value: "103",
+  collection: "story",
+  caption: "Saved story",
+  published_at: "2026-08-01T00:00:00Z",
+  original_url: "https://www.instagram.com/stories/katerina.soria/103/",
+  story_expires_at: "2026-08-02T00:00:00Z",
+};
+
 function successEnvelope<T>(data: T) {
   return { success: true, data, error: null, meta: {} };
 }
@@ -69,6 +115,49 @@ function HistoryProbe() {
 }
 
 describe("ProfilePage", () => {
+  it("renders mixed Feed media in backend order and switches to Story links", async () => {
+    server.use(
+      http.get("/api/profiles/profile-1", () =>
+        HttpResponse.json(successEnvelope(profileFixture)),
+      ),
+      http.get("/api/media", ({ request }) => {
+        const collection = new URL(request.url).searchParams.get("collection");
+        return HttpResponse.json(
+          successEnvelope(
+            collection === "story"
+              ? [storyFixture]
+              : [feedPostFixture, feedReelFixture],
+          ),
+        );
+      }),
+    );
+    render(
+      <TestRouter
+        initialPath="/profiles/profile-1"
+        initialSession={authenticatedSession}
+      />,
+    );
+    const user = userEvent.setup();
+
+    const feedLinks = await screen.findAllByRole("link", {
+      name: /Open Feed media/,
+    });
+    expect(feedLinks.map((link) => link.getAttribute("href"))).toEqual([
+      "/media/feed-post-1?source=profile&profileId=profile-1&collection=feed",
+      "/media/feed-reel-1?source=profile&profileId=profile-1&collection=feed",
+    ]);
+    expect(screen.queryByRole("link", { name: /Open Story/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Story" }));
+
+    const storyLink = await screen.findByRole("link", { name: /Open Story/ });
+    expect(storyLink).toHaveAttribute(
+      "href",
+      "/media/story-1?source=profile&profileId=profile-1&collection=story",
+    );
+    expect(screen.queryByRole("link", { name: /Open Feed media/ })).not.toBeInTheDocument();
+  });
+
   it("shows only Feed and Story tabs and requests each collection", async () => {
     const mediaQueries = renderProfile();
     const feedTab = await screen.findByRole("tab", { name: "Feed" });

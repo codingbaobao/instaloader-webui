@@ -100,6 +100,13 @@ def _decode_cursor(cursor: str) -> dict[str, object]:
     return json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
 
 
+def _encode_cursor(payload: dict[str, object]) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
+    return encoded.decode("ascii").rstrip("=")
+
+
 async def test_media_list_filters_collection_and_omits_browsing_kind(
     authenticated_client,
 ) -> None:
@@ -412,6 +419,72 @@ async def test_feed_rejects_malformed_cursor_payload(
     response = await authenticated_client.get(
         "/api/media/feed",
         params={"cursor": "not-a-valid-cursor"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_media_feed_cursor"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2.0,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "kind": "post",
+            "profile_id": None,
+            "published_at": NOW.isoformat(),
+            "version": 2,
+        },
+        {
+            "collection": None,
+            "direction": "older",
+            "id": "media-1",
+            "profile_id": None,
+            "published_at": "0001-01-01T00:00:00+01:00",
+            "version": 2,
+        },
+    ],
+    ids=[
+        "missing-profile-id",
+        "missing-collection",
+        "float-version",
+        "extra-legacy-kind",
+        "overflowing-timestamp",
+    ],
+)
+async def test_feed_rejects_noncanonical_v2_cursor_payloads(
+    authenticated_client,
+    payload: dict[str, object],
+) -> None:
+    await _complete_password_change(authenticated_client)
+
+    response = await authenticated_client.get(
+        "/api/media/feed",
+        params={"cursor": _encode_cursor(payload)},
     )
 
     assert response.status_code == 422
