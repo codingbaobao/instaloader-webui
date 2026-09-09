@@ -18,6 +18,9 @@ from instaloader_webui.db.library_repositories import (
 )
 from instaloader_webui.db.schema import initialize_database
 from instaloader_webui.instagram.profile_lookup import ProfileLookupResolver
+from instaloader_webui.instagram.profile_sync_checkpoints import (
+    ProfileSyncCheckpointRepository,
+)
 from instaloader_webui.instagram.public_adapter import PublicInstaloaderAdapter
 from instaloader_webui.instagram.safe_issues import MediaItemFailure
 from instaloader_webui.instagram.worker_runtime import (
@@ -188,6 +191,7 @@ def make_adapter(
     repository: LibraryRepository,
     loader: FakeLoader,
     configured: bool = True,
+    checkpoints: ProfileSyncCheckpointRepository | None = None,
 ) -> PublicInstaloaderAdapter:
     return PublicInstaloaderAdapter(
         data_root=test_settings.data_root,
@@ -203,6 +207,7 @@ def make_adapter(
             ProfileLookupResolver,
             RejectingProfileLookupResolver(),
         ),
+        checkpoints=checkpoints,
     )
 
 
@@ -312,6 +317,32 @@ def test_direct_story_validates_owner_and_downloads_only_story(
     assert lookup_calls == [(loader.context, int(STORY_MEDIA_ID))]
     assert item.download_calls == 1
     assert item.shared_reel_download_calls == 0
+
+
+def test_direct_story_does_not_create_a_feed_boundary_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    session_factory,
+    test_settings: Settings,
+) -> None:
+    # Break caught: applying Feed boundary state to ephemeral Stories leaves
+    # irrelevant exclusions that no Feed manifest can consume.
+    item = FakeStoryItem(owner_profile=FakeProfile())
+    loader = FakeLoader()
+    patch_story_lookup(monkeypatch, item)
+    checkpoints = ProfileSyncCheckpointRepository(session_factory)
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        checkpoints=checkpoints,
+    )
+
+    saved = adapter.download_input(story_input(), "job-story-no-exclusion")
+
+    assert checkpoints.list_boundary_exclusions(
+        saved.owner_profile_id
+    ) == frozenset()
 
 
 def test_direct_story_owner_mismatch_is_a_safe_item_failure(
@@ -619,9 +650,51 @@ def test_typed_post_and_reel_inputs_use_shortcode_resolution(
         ),
     ),
 )
+def test_successful_direct_feed_input_records_a_sync_boundary_exclusion(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: LibraryRepository,
+    session_factory,
+    test_settings: Settings,
+    parsed: PostInput | ReelInput,
+) -> None:
+    # Break caught: persisting direct Feed media without its origin lets the next
+    # completed profile sync mistake it for the previous sync boundary.
+    post = FakePost(owner_profile=FakeProfile())
+    loader = FakeLoader(logged_in=False)
+    patch_post_lookup(monkeypatch, post)
+    checkpoints = ProfileSyncCheckpointRepository(session_factory)
+    adapter = make_adapter(
+        test_settings=test_settings,
+        repository=repository,
+        loader=loader,
+        configured=False,
+        checkpoints=checkpoints,
+    )
+
+    saved = adapter.download_input(parsed, f"job-exclusion-{parsed.kind}")
+
+    assert checkpoints.list_boundary_exclusions(
+        saved.owner_profile_id
+    ) == frozenset({SHORTCODE})
+
+
+@pytest.mark.parametrize(
+    "parsed",
+    (
+        PostInput(
+            shortcode=SHORTCODE,
+            canonical_url=f"https://www.instagram.com/p/{SHORTCODE}/",
+        ),
+        ReelInput(
+            shortcode=SHORTCODE,
+            canonical_url=f"https://www.instagram.com/reel/{SHORTCODE}/",
+        ),
+    ),
+)
 def test_complete_local_post_or_reel_skips_shortcode_lookup(
     monkeypatch: pytest.MonkeyPatch,
     repository: LibraryRepository,
+    session_factory,
     test_settings: Settings,
     parsed: PostInput | ReelInput,
 ) -> None:
@@ -630,13 +703,16 @@ def test_complete_local_post_or_reel_skips_shortcode_lookup(
     post = FakePost(owner_profile=FakeProfile())
     loader = FakeLoader(logged_in=False)
     patch_post_lookup(monkeypatch, post)
+    checkpoints = ProfileSyncCheckpointRepository(session_factory)
     adapter = make_adapter(
         test_settings=test_settings,
         repository=repository,
         loader=loader,
         configured=False,
+        checkpoints=checkpoints,
     )
     first = adapter.download_input(parsed, f"job-seed-{parsed.kind}")
+    checkpoints.clear_boundary_exclusions(first.owner_profile_id)
 
     lookup_calls = patch_post_lookup(
         monkeypatch,
@@ -647,6 +723,9 @@ def test_complete_local_post_or_reel_skips_shortcode_lookup(
     assert second == first
     assert lookup_calls == []
     assert loader.downloaded_posts == [post]
+    assert checkpoints.list_boundary_exclusions(
+        second.owner_profile_id
+    ) == frozenset({SHORTCODE})
 
 
 def test_new_direct_media_reuses_local_profile_without_avatar_refresh(

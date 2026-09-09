@@ -293,6 +293,18 @@ class ProfileSyncCheckpoint(Base):
     )
 
 
+class ProfileSyncBoundaryExclusion(Base):
+    __tablename__ = "profile_sync_boundary_exclusions"
+
+    profile_id: Mapped[str] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"), primary_key=True
+    )
+    shortcode: Mapped[str] = mapped_column(String(64), primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class JobIssue(Base):
     __tablename__ = "job_issues"
     __table_args__ = (

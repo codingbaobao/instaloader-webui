@@ -201,6 +201,54 @@ def test_checkpoint_completion_clears_cursor_and_reset_restarts_backfill(
     assert reset.backfill_complete is False
 
 
+def test_boundary_exclusions_are_deduplicated_and_cleared_per_profile(
+    checkpoint_repository,
+) -> None:
+    # Break caught: without a durable per-profile exclusion, a successful direct
+    # add is indistinguishable from the prior profile-sync boundary.
+    checkpoints, library, profile = checkpoint_repository
+    other = library.upsert_profile_stub(
+        username="other_profile",
+        tracked=True,
+        now=NOW,
+    )
+
+    checkpoints.add_boundary_exclusion(
+        profile_id=profile.id,
+        shortcode="direct-one",
+        now=NOW,
+    )
+    checkpoints.add_boundary_exclusion(
+        profile_id=profile.id,
+        shortcode="direct-one",
+        now=NOW + timedelta(seconds=1),
+    )
+    checkpoints.add_boundary_exclusion(
+        profile_id=profile.id,
+        shortcode="direct-two",
+        now=NOW + timedelta(seconds=2),
+    )
+    checkpoints.add_boundary_exclusion(
+        profile_id=other.id,
+        shortcode="other-direct",
+        now=NOW + timedelta(seconds=3),
+    )
+
+    assert checkpoints.list_boundary_exclusions(profile.id) == frozenset(
+        {"direct-one", "direct-two"}
+    )
+    assert checkpoints.list_boundary_exclusions(other.id) == frozenset(
+        {"other-direct"}
+    )
+
+    checkpoints.clear_boundary_exclusions(profile.id)
+
+    assert checkpoints.list_boundary_exclusions(profile.id) == frozenset()
+    assert checkpoints.list_boundary_exclusions(other.id) == frozenset(
+        {"other-direct"}
+    )
+
+
 def test_checkpoint_rows_cascade_when_profile_is_deleted(
     checkpoint_repository,
     session_factory,
@@ -212,11 +260,17 @@ def test_checkpoint_rows_cascade_when_profile_is_deleted(
         frozen=_frozen(),
         now=NOW,
     )
+    checkpoints.add_boundary_exclusion(
+        profile_id=profile.id,
+        shortcode="directly-added",
+        now=NOW,
+    )
     with session_factory.begin() as session:
         session.execute(delete(Profile).where(Profile.id == profile.id))
 
     with session_factory() as session:
         assert session.get(ProfileSyncCheckpoint, (profile.id, "posts")) is None
+        assert checkpoints.list_boundary_exclusions(profile.id) == frozenset()
 
 
 def test_checkpoint_repository_hides_corrupt_cursor_content(

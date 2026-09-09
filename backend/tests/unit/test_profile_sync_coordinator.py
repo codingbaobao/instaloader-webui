@@ -198,6 +198,8 @@ class RecordingCheckpointStore:
     completed: list[str] = field(default_factory=list)
     reset_sources: list[str] = field(default_factory=list)
     corrupt_sources: set[str] = field(default_factory=set)
+    boundary_exclusions: set[str] = field(default_factory=set)
+    cleared_boundary_exclusions: list[str] = field(default_factory=list)
 
     def get(self, _profile_id: str, source: str) -> SimpleNamespace | None:
         if source in self.corrupt_sources:
@@ -238,6 +240,15 @@ class RecordingCheckpointStore:
         assert profile_id == "profile-1"
         assert now.tzinfo is not None
         self.reset_sources.append(source)
+
+    def list_boundary_exclusions(self, profile_id: str) -> frozenset[str]:
+        assert profile_id == "profile-1"
+        return frozenset(self.boundary_exclusions)
+
+    def clear_boundary_exclusions(self, profile_id: str) -> None:
+        assert profile_id == "profile-1"
+        self.cleared_boundary_exclusions.append(profile_id)
+        self.boundary_exclusions.clear()
 
 
 @dataclass(slots=True)
@@ -767,6 +778,152 @@ def test_recent_existing_boundary_depends_on_completed_backfill(
     ).run(profile=PROFILE, job_id="job-1")
 
     assert [item.identity.value for item in processed] == expected
+
+
+def test_direct_add_is_not_a_completed_backfill_boundary() -> None:
+    # Break caught: treating a directly-added newest item as the prior profile-sync
+    # boundary stops before a missing item immediately behind it.
+    items = tuple(
+        reel(value, published_at=NOW - timedelta(minutes=index))
+        for index, value in enumerate(
+            (
+                "directly-added-one",
+                "directly-added-two",
+                "missing-behind-direct-add",
+                "prior-sync-boundary",
+                "historical-older",
+            )
+        )
+    )
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [RecordingManifest(items)],
+            "posts": [RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=True, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        },
+        boundary_exclusions={"directly-added-one", "directly-added-two"},
+    )
+    processed: list[MediaCandidate] = []
+
+    result = make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={
+            "directly-added-one": "existing",
+            "directly-added-two": "existing",
+            "prior-sync-boundary": "existing",
+        },
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == [
+        "directly-added-one",
+        "directly-added-two",
+        "missing-behind-direct-add",
+        "prior-sync-boundary",
+    ]
+    assert result.feed == SegmentCounts(scanned=4, saved=1, existing=3)
+    assert checkpoints.cleared_boundary_exclusions == ["profile-1"]
+    assert checkpoints.boundary_exclusions == set()
+
+
+def test_failed_feed_sync_preserves_direct_add_boundary_exclusions() -> None:
+    # Break caught: clearing exclusions before both Feed sources complete makes a
+    # retry vulnerable to the same premature existing boundary.
+    blocked = reel("blocked", published_at=NOW - timedelta(minutes=1))
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [
+                RecordingManifest(
+                    (
+                        reel("directly-added", published_at=NOW),
+                        blocked,
+                    )
+                )
+            ],
+            "posts": [RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=True, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        },
+        boundary_exclusions={"directly-added"},
+    )
+
+    with pytest.raises(MediaItemFailure):
+        make_resumable_coordinator(
+            source=source,
+            checkpoints=checkpoints,
+            statuses={"directly-added": "existing"},
+            failures={blocked.identity.value: rate_limited_failure(blocked)},
+        ).run(profile=PROFILE, job_id="job-1")
+
+    assert checkpoints.boundary_exclusions == {"directly-added"}
+    assert checkpoints.cleared_boundary_exclusions == []
+
+
+def test_excluded_shortcode_is_deduplicated_without_stopping_either_source() -> None:
+    # Break caught: a Reel duplicated in the Posts manifest must not stop that
+    # second source after the shared direct-add candidate was already counted.
+    direct = "directly-added-reel"
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [
+                RecordingManifest(
+                    (
+                        reel(direct, published_at=NOW),
+                        reel("missing-reel", published_at=NOW - timedelta(minutes=2)),
+                        reel("reel-boundary", published_at=NOW - timedelta(minutes=4)),
+                    )
+                )
+            ],
+            "posts": [
+                RecordingManifest(
+                    (
+                        post(direct, published_at=NOW),
+                        post("missing-post", published_at=NOW - timedelta(minutes=1)),
+                        post("post-boundary", published_at=NOW - timedelta(minutes=3)),
+                    )
+                )
+            ],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=True, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        },
+        boundary_exclusions={direct},
+    )
+    processed: list[MediaCandidate] = []
+
+    result = make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={
+            direct: "existing",
+            "reel-boundary": "existing",
+            "post-boundary": "existing",
+        },
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert [item.identity.value for item in processed] == [
+        direct,
+        "missing-post",
+        "missing-reel",
+        "post-boundary",
+        "reel-boundary",
+    ]
+    assert result.feed == SegmentCounts(scanned=5, saved=2, existing=3)
+    assert checkpoints.cleared_boundary_exclusions == ["profile-1"]
 
 
 def test_stored_cursor_scans_recent_then_thaws_historical_manifest() -> None:

@@ -54,12 +54,14 @@ Expected health response:
 - Recreating the containers preserves the database, downloaded media, settings,
   and encrypted Instagram Cookie session in the NAS data mount.
 
-## Schema v3 migration (`pre-1.0-unified-feed-3`)
+## Current schema migration (`pre-1.0-sync-boundary-4`)
 
 This migration is intentionally one-way. Never start an older image against a
-database that already reports `pre-1.0-unified-feed-3`. Version 3 removes the
-stored Post/Reel discriminator and derives saved-media browsing as Feed or
-Story without changing original Instagram URLs.
+database that already reports `pre-1.0-sync-boundary-4`. A v2 database is
+migrated directly to v4 by removing the stored Post/Reel discriminator and
+adding `profile_sync_boundary_exclusions`; an exact unified Feed v3 database
+only receives the boundary table. Both paths preserve profile, media, job,
+progress, and checkpoint rows.
 
 Before changing the live database:
 
@@ -68,9 +70,9 @@ Before changing the live database:
 2. Run the image against a temporary data root and verify `/api/health`,
    `PRAGMA integrity_check`, and the fresh schema marker.
 3. Use SQLite's backup API from the currently trusted image to make a timestamped
-   v2 backup while the application is still running.
+   v2 or v3 backup while the application is still running.
 4. Migrate a separate copy of that backup with the new image. Verify integrity,
-   the v3 marker, row counts, and Posts/Reels checkpoint counts before touching
+   the v4 marker, row counts, and Posts/Reels checkpoint counts before touching
    the live database.
 
 For the live cutover, first confirm there are no pending or running jobs, then:
@@ -136,8 +138,9 @@ published immutable image and `docker compose pull`.
 
 ### Rollback
 
-Rollback requires restoring the final v2 backup; the prior image cannot read the
-v3 database. Stop both services, preserve the failed v3 database separately,
+Rollback requires restoring the final pre-migration backup; an older image
+cannot read the v4 database. Stop both services, preserve the failed v4 database
+separately,
 restore the verified backup to `/data/database/app.sqlite3` with SQLite's backup
 API, restore the saved pre-migration `.env`, and start the recorded old image
 revision. Re-run integrity and row-count checks before starting the worker.

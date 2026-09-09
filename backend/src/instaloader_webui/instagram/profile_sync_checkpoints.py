@@ -9,9 +9,13 @@ from datetime import UTC, datetime
 from typing import Any, Literal, NoReturn, cast
 
 from instaloader.nodeiterator import FrozenNodeIterator
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from instaloader_webui.db.models import ProfileSyncCheckpoint
+from instaloader_webui.db.models import (
+    ProfileSyncBoundaryExclusion,
+    ProfileSyncCheckpoint,
+)
 
 CURSOR_VERSION = 1
 MAX_CURSOR_JSON_BYTES = 2 * 1024 * 1024
@@ -253,6 +257,48 @@ class ProfileSyncCheckpointRepository:
             backfill_complete=False,
             now=now,
         )
+
+    def add_boundary_exclusion(
+        self,
+        *,
+        profile_id: str,
+        shortcode: str,
+        now: datetime,
+    ) -> None:
+        current_time = _as_utc(now)
+        with self._session_factory.begin() as session:
+            model = session.get(
+                ProfileSyncBoundaryExclusion,
+                (profile_id, shortcode),
+            )
+            if model is None:
+                session.add(
+                    ProfileSyncBoundaryExclusion(
+                        profile_id=profile_id,
+                        shortcode=shortcode,
+                        updated_at=current_time,
+                    )
+                )
+            else:
+                model.updated_at = current_time
+
+    def list_boundary_exclusions(self, profile_id: str) -> frozenset[str]:
+        with self._session_factory() as session:
+            return frozenset(
+                session.scalars(
+                    select(ProfileSyncBoundaryExclusion.shortcode).where(
+                        ProfileSyncBoundaryExclusion.profile_id == profile_id
+                    )
+                )
+            )
+
+    def clear_boundary_exclusions(self, profile_id: str) -> None:
+        with self._session_factory.begin() as session:
+            session.execute(
+                delete(ProfileSyncBoundaryExclusion).where(
+                    ProfileSyncBoundaryExclusion.profile_id == profile_id
+                )
+            )
 
     def _replace(
         self,
