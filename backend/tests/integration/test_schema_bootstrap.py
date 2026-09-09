@@ -24,6 +24,9 @@ LEGACY_SCHEMA_DIGEST = (
 VERSION_TWO_SCHEMA_DIGEST = (
     "bcedde12385ce0343501808eb9d9b06070a8bf89b1c045b356662c06e8c36191"
 )
+VERSION_THREE_SCHEMA_DIGEST = (
+    "a6adf6ca45706e7c7a849a7cbf26e710abde0899323973eef9ab0e8acb42d9a6"
+)
 _VERSION_TWO_MEDIA_ITEMS_DDL = """
 CREATE TABLE media_items (
     id VARCHAR(36) NOT NULL,
@@ -117,6 +120,7 @@ def _create_exact_version_two_schema(test_settings: Settings) -> None:
         connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute("PRAGMA legacy_alter_table = ON")
         connection.execute("BEGIN IMMEDIATE")
+        connection.execute("DROP TABLE profile_sync_boundary_exclusions")
         connection.execute("ALTER TABLE media_items RENAME TO media_items_v3")
         connection.execute("DROP INDEX ix_media_items_owner_profile_published_at")
         connection.execute(_VERSION_TWO_MEDIA_ITEMS_DDL)
@@ -373,11 +377,12 @@ def _create_exact_version_one_database(test_settings: Settings) -> None:
     assert _normalized_schema_digest(database_path) == LEGACY_SCHEMA_DIGEST
 
 
-def test_exact_version_two_database_migrates_to_unified_feed_version_three(
+def test_exact_version_two_database_migrates_to_current_schema(
     test_settings: Settings,
 ) -> None:
     # Break caught: retaining media_items.kind leaves the three former content
-    # classes incompatible with the unified Feed library.
+    # classes incompatible with the unified Feed library, while omitting the
+    # boundary table makes direct media adds block later profile syncs.
     _create_exact_version_two_database(test_settings)
     schema = _schema_module()
 
@@ -389,6 +394,12 @@ def test_exact_version_two_database_migrates_to_unified_feed_version_three(
         ).fetchone()[0]
         media_item_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(media_items)")
+        }
+        exclusion_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(profile_sync_boundary_exclusions)"
+            )
         }
         identities = connection.execute(
             "SELECT identity_type, identity_value FROM media_items ORDER BY id"
@@ -419,8 +430,9 @@ def test_exact_version_two_database_migrates_to_unified_feed_version_three(
         ).fetchone()[0]
         foreign_key_errors = connection.execute("PRAGMA foreign_key_check").fetchall()
 
-    assert marker == "pre-1.0-unified-feed-3"
+    assert marker == "pre-1.0-sync-boundary-4"
     assert "kind" not in media_item_columns
+    assert exclusion_columns == {"profile_id", "shortcode", "updated_at"}
     assert identities == [
         ("shortcode", "POST1"),
         ("shortcode", "REEL1"),
@@ -494,6 +506,113 @@ def test_exact_version_two_database_migrates_to_unified_feed_version_three(
     assert foreign_key_errors == []
 
 
+def _create_exact_version_three_database(test_settings: Settings) -> None:
+    schema = _schema_module()
+    schema.initialize_database(test_settings)
+    database_path = test_settings.database_path
+    now = "2026-09-09T00:00:00+00:00"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("DROP TABLE profile_sync_boundary_exclusions")
+        connection.execute(
+            "UPDATE schema_marker SET version = 'pre-1.0-unified-feed-3' "
+            "WHERE id = 'global'"
+        )
+        connection.execute(
+            "INSERT INTO profiles "
+            "(id, instagram_user_id, username, full_name, biography, "
+            "profile_pic_url, tracked, status, last_sync_attempted_at, "
+            "last_sync_succeeded_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "profile-v3",
+                "727",
+                "mihi_727",
+                "Mihi",
+                "preserve version three profile",
+                None,
+                1,
+                "active",
+                now,
+                now,
+                now,
+                now,
+            ),
+        )
+
+    assert _normalized_schema_digest(database_path) == VERSION_THREE_SCHEMA_DIGEST
+
+
+def test_exact_version_three_database_migrates_to_current_schema(
+    test_settings: Settings,
+) -> None:
+    # Break caught: the release already on main must gain the boundary table
+    # without losing profile or unified Feed data.
+    _create_exact_version_three_database(test_settings)
+    schema = _schema_module()
+
+    schema.initialize_database(test_settings)
+
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        exclusion_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(profile_sync_boundary_exclusions)"
+            )
+        }
+        preserved_profile = connection.execute(
+            "SELECT username, biography FROM profiles WHERE id = 'profile-v3'"
+        ).fetchone()
+
+    assert marker == "pre-1.0-sync-boundary-4"
+    assert exclusion_columns == {"profile_id", "shortcode", "updated_at"}
+    assert preserved_profile == ("mihi_727", "preserve version three profile")
+
+
+def test_version_three_migration_rolls_back_after_boundary_creation_failure(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Break caught: a partial v4 migration must not leave a table behind while
+    # the marker still advertises the exact unified Feed v3 schema.
+    _create_exact_version_three_database(test_settings)
+    schema = _schema_module()
+
+    def fail_after_create(connection: Any) -> None:
+        connection.exec_driver_sql(
+            "CREATE TABLE profile_sync_boundary_exclusions "
+            "(profile_id TEXT NOT NULL, shortcode TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, PRIMARY KEY (profile_id, shortcode))"
+        )
+        raise sqlite3.OperationalError("injected migration failure")
+
+    monkeypatch.setattr(
+        schema.ProfileSyncBoundaryExclusion.__table__,
+        "create",
+        fail_after_create,
+    )
+
+    with pytest.raises(schema.SchemaCompatibilityError) as caught:
+        schema.initialize_database(test_settings)
+
+    assert str(caught.value) == SAFE_SCHEMA_ERROR
+    assert _normalized_schema_digest(test_settings.database_path) == VERSION_THREE_SCHEMA_DIGEST
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        tables = _user_tables(test_settings.database_path)
+        preserved_profile = connection.execute(
+            "SELECT username, biography FROM profiles WHERE id = 'profile-v3'"
+        ).fetchone()
+    assert marker == "pre-1.0-unified-feed-3"
+    assert "profile_sync_boundary_exclusions" not in tables
+    assert preserved_profile == ("mihi_727", "preserve version three profile")
+
+
 def test_drifted_version_two_database_fails_closed_before_migration(
     test_settings: Settings,
 ) -> None:
@@ -510,6 +629,13 @@ def test_drifted_version_two_database_fails_closed_before_migration(
 
     assert str(caught.value) == SAFE_SCHEMA_ERROR
     assert test_settings.database_path.read_bytes() == before_bytes
+    with sqlite3.connect(test_settings.database_path) as connection:
+        marker = connection.execute(
+            "SELECT version FROM schema_marker WHERE id = 'global'"
+        ).fetchone()[0]
+        tables = _user_tables(test_settings.database_path)
+    assert marker == "pre-1.0-feed-sync-2"
+    assert "profile_sync_boundary_exclusions" not in tables
 
 
 def test_version_two_migration_rolls_back_after_rebuild_failure(
@@ -545,7 +671,7 @@ def test_version_two_migration_rolls_back_after_rebuild_failure(
     assert counts == (1, 3, 3)
 
 
-def test_exact_version_one_database_migrates_to_unified_feed_version_three(
+def test_exact_version_one_database_migrates_to_current_schema(
     test_settings: Settings,
 ) -> None:
     _create_exact_version_one_database(test_settings)
@@ -589,7 +715,7 @@ def test_exact_version_one_database_migrates_to_unified_feed_version_three(
             for table_name in ("media_items", "media_assets", "job_issues")
         )
 
-    assert marker == "pre-1.0-unified-feed-3"
+    assert marker == "pre-1.0-sync-boundary-4"
     assert job_columns >= {"target_label", "target_url"}
     assert profile_target == "@mihi_727"
     assert single_target == "https://www.instagram.com/p/DcdTMB3iXSB/"
@@ -705,7 +831,13 @@ def test_version_one_migration_rolls_back_after_alter_table_failure(
         )
     assert marker == "pre-1.0-fresh-schema-1"
     assert columns.isdisjoint({"target_label", "target_url"})
-    assert tables.isdisjoint({"job_progress_segments", "profile_sync_checkpoints"})
+    assert tables.isdisjoint(
+        {
+            "job_progress_segments",
+            "profile_sync_checkpoints",
+            "profile_sync_boundary_exclusions",
+        }
+    )
     assert preserved_counts == (1, 2, 1, 1, 1)
 
 

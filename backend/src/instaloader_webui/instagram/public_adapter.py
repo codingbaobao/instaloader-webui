@@ -444,6 +444,12 @@ class PublicInstaloaderAdapter:
                     session_configured=session_configured,
                 )
             result = self._processor(loader).process(candidate, job_id=job_id)
+            if self._checkpoints is not None and not isinstance(parsed, StoryInput):
+                self._checkpoints.add_boundary_exclusion(
+                    profile_id=result.media.owner_profile_id,
+                    shortcode=parsed.shortcode,
+                    now=datetime.now(UTC),
+                )
             if result.status == "existing":
                 self._report(
                     len(result.media.assets),

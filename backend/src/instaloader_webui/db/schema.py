@@ -21,11 +21,12 @@ from instaloader_webui.db.engine import build_engine
 from instaloader_webui.db.models import (
     AppSetting,
     JobProgressSegment,
+    ProfileSyncBoundaryExclusion,
     ProfileSyncCheckpoint,
     SchemaMarker,
 )
 
-CURRENT_SCHEMA_VERSION = "pre-1.0-unified-feed-3"
+CURRENT_SCHEMA_VERSION = "pre-1.0-sync-boundary-4"
 _VERSION_ONE_SCHEMA_VERSION = "pre-1.0-fresh-schema-1"
 _VERSION_ONE_SCHEMA_DIGEST = (
     "5edfc7cdd9d45fe1dea7ad4507417d5b1ea599793c49000cea26f90bab82e3b7"
@@ -33,6 +34,10 @@ _VERSION_ONE_SCHEMA_DIGEST = (
 _VERSION_TWO_SCHEMA_VERSION = "pre-1.0-feed-sync-2"
 _VERSION_TWO_SCHEMA_DIGEST = (
     "bcedde12385ce0343501808eb9d9b06070a8bf89b1c045b356662c06e8c36191"
+)
+_VERSION_THREE_SCHEMA_VERSION = "pre-1.0-unified-feed-3"
+_VERSION_THREE_SCHEMA_DIGEST = (
+    "a6adf6ca45706e7c7a849a7cbf26e710abde0899323973eef9ab0e8acb42d9a6"
 )
 SCHEMA_COMPATIBILITY_ERROR = (
     "Unsupported pre-1.0 database schema. Delete and recreate the database."
@@ -176,6 +181,17 @@ def _validate_version_two_schema(database_path: Path, tables: set[str]) -> bool:
     if marker_rows != [(_GLOBAL_SINGLETON_ID, _VERSION_TWO_SCHEMA_VERSION)]:
         return False
     if _schema_digest(signature) != _VERSION_TWO_SCHEMA_DIGEST:
+        raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+    return True
+
+
+def _validate_version_three_schema(database_path: Path, tables: set[str]) -> bool:
+    if "alembic_version" in tables or "schema_marker" not in tables:
+        return False
+    marker_rows, signature = _read_marker_and_signature(database_path)
+    if marker_rows != [(_GLOBAL_SINGLETON_ID, _VERSION_THREE_SCHEMA_VERSION)]:
+        return False
+    if _schema_digest(signature) != _VERSION_THREE_SCHEMA_DIGEST:
         raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
     return True
 
@@ -346,6 +362,7 @@ def _migrate_version_two_schema(database_path: Path) -> None:
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 try:
                     _rebuild_media_items_without_kind(connection)
+                    cast(Table, ProfileSyncBoundaryExclusion.__table__).create(connection)
                     foreign_key_errors = list(
                         connection.exec_driver_sql("PRAGMA foreign_key_check")
                     )
@@ -373,6 +390,37 @@ def _migrate_version_two_schema(database_path: Path) -> None:
                     connection.commit()
             finally:
                 connection.exec_driver_sql(f"PRAGMA foreign_keys = {foreign_keys}")
+    finally:
+        engine.dispose()
+
+
+def _migrate_version_three_schema(database_path: Path) -> None:
+    engine = build_engine(database_path)
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                cast(Table, ProfileSyncBoundaryExclusion.__table__).create(connection)
+                connection.exec_driver_sql(
+                    "UPDATE schema_marker SET version = :version "
+                    "WHERE id = :singleton_id",
+                    {
+                        "version": CURRENT_SCHEMA_VERSION,
+                        "singleton_id": _GLOBAL_SINGLETON_ID,
+                    },
+                )
+                _assert_current_schema_in_transaction(connection)
+            except SchemaCompatibilityError:
+                connection.rollback()
+                raise
+            except Exception as error:
+                connection.rollback()
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR) from error
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
     finally:
         engine.dispose()
 
@@ -450,6 +498,12 @@ def initialize_database(settings: Settings) -> None:
             _validate_supported_schema(database_path, migrated_tables)
         elif _validate_version_two_schema(database_path, existing_tables):
             _migrate_version_two_schema(database_path)
+            migrated_tables = _read_existing_tables(database_path)
+            if migrated_tables is None:
+                raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)
+            _validate_supported_schema(database_path, migrated_tables)
+        elif _validate_version_three_schema(database_path, existing_tables):
+            _migrate_version_three_schema(database_path)
             migrated_tables = _read_existing_tables(database_path)
             if migrated_tables is None:
                 raise SchemaCompatibilityError(SCHEMA_COMPATIBILITY_ERROR)

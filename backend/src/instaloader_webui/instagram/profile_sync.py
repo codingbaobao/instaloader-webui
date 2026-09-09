@@ -94,6 +94,10 @@ class ProfileCheckpointStore(Protocol):
         now: datetime,
     ) -> None: ...
 
+    def list_boundary_exclusions(self, profile_id: str) -> frozenset[str]: ...
+
+    def clear_boundary_exclusions(self, profile_id: str) -> None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class SegmentCounts:
@@ -229,6 +233,7 @@ class ProfileSyncCoordinator:
         self._segment("feed", "running", feed, None, _SCANNING_FEED)
 
         states = self._fresh_states(profile)
+        boundary_exclusions = self._boundary_exclusions()
         seen: dict[str, Literal["saved", "existing", "warning"]] = {}
         historical_states: list[_FeedState] = []
         try:
@@ -237,6 +242,7 @@ class ProfileSyncCoordinator:
                 feed=feed,
                 seen=seen,
                 job_id=job_id,
+                boundary_exclusions=boundary_exclusions,
             )
             if stopped:
                 self._freeze_active(states)
@@ -249,11 +255,13 @@ class ProfileSyncCoordinator:
                 feed=feed,
                 seen=seen,
                 job_id=job_id,
+                boundary_exclusions=boundary_exclusions,
             )
             if stopped:
                 self._freeze_active(historical_states)
                 self._segment("feed", "completed", feed, None, _STOPPED)
                 return ProfileSyncResult(stories=stories, feed=feed, stopped=True)
+            self._clear_boundary_exclusions()
         except BaseException:
             self._freeze_active(states)
             self._freeze_active(historical_states)
@@ -315,6 +323,7 @@ class ProfileSyncCoordinator:
         feed: SegmentCounts,
         seen: dict[str, Literal["saved", "existing", "warning"]],
         job_id: str,
+        boundary_exclusions: frozenset[str],
     ) -> tuple[SegmentCounts, bool]:
         pause_before_new = False
         for state, candidate in self._merge(states):
@@ -336,7 +345,11 @@ class ProfileSyncCoordinator:
                     pause_before_new = outcome == "saved"
                 self.progress(feed.scanned, None, "processing_feed", _SCANNING_FEED)
                 self._segment("feed", "running", feed, None, _SCANNING_FEED)
-            if outcome == "existing" and state.stop_on_existing:
+            if (
+                outcome == "existing"
+                and state.stop_on_existing
+                and identity not in boundary_exclusions
+            ):
                 state.active = False
             state.source_scanned += 1
             if (
@@ -398,6 +411,15 @@ class ProfileSyncCoordinator:
         except ProfileSyncCheckpointError:
             self._reset(source)
             return None
+
+    def _boundary_exclusions(self) -> frozenset[str]:
+        if self.checkpoints is None or self.profile_id is None:
+            return frozenset()
+        return self.checkpoints.list_boundary_exclusions(self.profile_id)
+
+    def _clear_boundary_exclusions(self) -> None:
+        if self.checkpoints is not None and self.profile_id is not None:
+            self.checkpoints.clear_boundary_exclusions(self.profile_id)
 
     def _save(self, state: _FeedState) -> None:
         if self.checkpoints is None or self.profile_id is None:
