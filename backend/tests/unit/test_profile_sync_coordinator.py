@@ -734,24 +734,31 @@ def test_profile_sync_has_no_time_or_item_cap_and_reports_two_segments() -> None
 
 
 @pytest.mark.parametrize(
-    ("backfill_complete", "expected"),
+    ("backfill_complete", "expected_count", "expected_last"),
     [
-        (True, ["new-one", "new-two", "existing-boundary"]),
-        (
-            False,
-            ["new-one", "new-two", "existing-boundary", "historical-older"],
-        ),
+        (True, 12, "historical-09"),
+        (False, 13, "historical-10"),
     ],
 )
 def test_recent_existing_boundary_depends_on_completed_backfill(
     backfill_complete: bool,
-    expected: list[str],
+    expected_count: int,
+    expected_last: str,
 ) -> None:
     items = tuple(reel(value, published_at=NOW - timedelta(minutes=index)) for index, value in enumerate((
         "new-one",
         "new-two",
         "existing-boundary",
-        "historical-older",
+        "historical-01",
+        "historical-02",
+        "historical-03",
+        "historical-04",
+        "historical-05",
+        "historical-06",
+        "historical-07",
+        "historical-08",
+        "historical-09",
+        "historical-10",
     )))
     source = ResumableRecordingSource(
         manifests={
@@ -777,7 +784,99 @@ def test_recent_existing_boundary_depends_on_completed_backfill(
         processed=processed,
     ).run(profile=PROFILE, job_id="job-1")
 
-    assert [item.identity.value for item in processed] == expected
+    assert [item.identity.value for item in processed[:3]] == [
+        "new-one",
+        "new-two",
+        "existing-boundary",
+    ]
+    assert len(processed) == expected_count
+    assert processed[-1].identity.value == expected_last
+
+
+@pytest.mark.parametrize("feed_source", ["posts", "reels"])
+def test_completed_backfill_scans_first_manifest_page_before_existing_boundary(
+    feed_source: Literal["posts", "reels"],
+) -> None:
+    # Break caught: a reordered or pinned existing item at the start of a Feed
+    # manifest must not hide missing recent content later on the same API page.
+    candidate_factory = post if feed_source == "posts" else reel
+    items = tuple(
+        candidate_factory(
+            f"{feed_source}-{index:02d}",
+            published_at=NOW - timedelta(minutes=index),
+        )
+        for index in range(1, 14)
+    )
+    manifest = RecordingManifest(items)
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [manifest if feed_source == "reels" else RecordingManifest(())],
+            "posts": [manifest if feed_source == "posts" else RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=True, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        }
+    )
+    processed: list[MediaCandidate] = []
+
+    result = make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        statuses={f"{feed_source}-01": "existing"},
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert len(processed) == 12
+    assert processed[0].identity.value == f"{feed_source}-01"
+    assert processed[-1].identity.value == f"{feed_source}-12"
+    assert all(item.identity.value != f"{feed_source}-13" for item in processed)
+    assert result.feed == SegmentCounts(scanned=12, saved=11, existing=1)
+    assert manifest.index == 12
+
+
+@pytest.mark.parametrize("feed_source", ["posts", "reels"])
+def test_completed_backfill_continues_when_first_page_has_no_existing_boundary(
+    feed_source: Literal["posts", "reels"],
+) -> None:
+    # Break caught: stopping every completed-backfill scan after one page loses
+    # content when more than 12 new items arrived since the previous sync.
+    candidate_factory = post if feed_source == "posts" else reel
+    manifest = RecordingManifest(
+        tuple(
+            candidate_factory(
+                f"{feed_source}-new-{index:02d}",
+                published_at=NOW - timedelta(minutes=index),
+            )
+            for index in range(1, 14)
+        )
+    )
+    source = ResumableRecordingSource(
+        manifests={
+            "reels": [manifest if feed_source == "reels" else RecordingManifest(())],
+            "posts": [manifest if feed_source == "posts" else RecordingManifest(())],
+        }
+    )
+    checkpoints = RecordingCheckpointStore(
+        states={
+            "reels": SimpleNamespace(backfill_complete=True, frozen=None),
+            "posts": SimpleNamespace(backfill_complete=True, frozen=None),
+        }
+    )
+    processed: list[MediaCandidate] = []
+
+    result = make_resumable_coordinator(
+        source=source,
+        checkpoints=checkpoints,
+        processed=processed,
+    ).run(profile=PROFILE, job_id="job-1")
+
+    assert len(processed) == 13
+    assert processed[-1].identity.value == f"{feed_source}-new-13"
+    assert result.feed == SegmentCounts(scanned=13, saved=13)
+    assert manifest.index == 13
 
 
 def test_direct_add_is_not_a_completed_backfill_boundary() -> None:
@@ -791,13 +890,22 @@ def test_direct_add_is_not_a_completed_backfill_boundary() -> None:
                 "directly-added-two",
                 "missing-behind-direct-add",
                 "prior-sync-boundary",
-                "historical-older",
+                "historical-01",
+                "historical-02",
+                "historical-03",
+                "historical-04",
+                "historical-05",
+                "historical-06",
+                "historical-07",
+                "historical-08",
+                "historical-09",
             )
         )
     )
+    manifest = RecordingManifest(items)
     source = ResumableRecordingSource(
         manifests={
-            "reels": [RecordingManifest(items)],
+            "reels": [manifest],
             "posts": [RecordingManifest(())],
         }
     )
@@ -821,13 +929,17 @@ def test_direct_add_is_not_a_completed_backfill_boundary() -> None:
         processed=processed,
     ).run(profile=PROFILE, job_id="job-1")
 
-    assert [item.identity.value for item in processed] == [
+    assert [item.identity.value for item in processed[:4]] == [
         "directly-added-one",
         "directly-added-two",
         "missing-behind-direct-add",
         "prior-sync-boundary",
     ]
-    assert result.feed == SegmentCounts(scanned=4, saved=1, existing=3)
+    assert len(processed) == 12
+    assert processed[-1].identity.value == "historical-08"
+    assert all(item.identity.value != "historical-09" for item in processed)
+    assert result.feed == SegmentCounts(scanned=12, saved=9, existing=3)
+    assert manifest.index == 12
     assert checkpoints.cleared_boundary_exclusions == ["profile-1"]
     assert checkpoints.boundary_exclusions == set()
 
