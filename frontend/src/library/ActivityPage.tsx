@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useId } from "react";
 import { Link } from "react-router-dom";
 
 import { listJobs } from "./api";
@@ -84,34 +84,58 @@ function stateLabel(state: string): string {
   }
 }
 
-function segmentPercent(segment: JobProgressSegment): number | undefined {
-  if (segment.state === "completed") return 100;
-  if (segment.total === null || segment.total <= 0) return undefined;
-  return Math.min(100, Math.round((segment.scanned / segment.total) * 100));
+function segmentStateLabel(segment: JobProgressSegment): string {
+  switch (segment.state) {
+    case "pending":
+      return "Waiting";
+    case "running":
+      return segment.segment === "stories"
+        ? "Saving & downloading"
+        : "Scanning & downloading";
+    case "completed":
+      return "Complete";
+    case "failed":
+      return "Failed";
+  }
 }
 
-function SegmentProgress({
-  segment,
-  target,
-}: Readonly<{ segment: JobProgressSegment; target: string }>) {
-  const percent = segmentPercent(segment);
+function SegmentProgress({ segment }: Readonly<{ segment: JobProgressSegment }>) {
+  const headingId = useId();
+  const waiting = segment.state === "pending";
+  const metrics = [
+    { label: "Scanned", value: segment.scanned, primary: true },
+    { label: "Saved", value: segment.saved },
+    { label: "Already in library", value: segment.existing },
+    { label: "Warnings", value: segment.warnings, warning: true },
+  ];
   return (
-    <section className={`job-segment job-segment-${segment.state}`}>
+    <section
+      aria-labelledby={headingId}
+      className={`job-segment job-segment-${segment.state}`}
+    >
       <div className="job-segment-heading">
-        <strong>{segment.label}</strong>
-        <span>{stateLabel(segment.state)}</span>
+        <h3 id={headingId}>{segment.label}</h3>
+        <span className={`job-segment-state job-segment-state-${segment.state}`}>
+          {segmentStateLabel(segment)}
+        </span>
       </div>
-      <progress
-        aria-label={`${target} ${segment.label} progress`}
-        max="100"
-        value={percent}
-      />
-      <div className="job-segment-counts">
-        <span>Scanned {segment.scanned}</span>
-        <span>Saved {segment.saved}</span>
-        <span>Existing {segment.existing}</span>
-        <span>Warnings {segment.warnings}</span>
-      </div>
+      <dl className="job-segment-counts">
+        {metrics.map((metric) => (
+          <div
+            className={[
+              "job-segment-count",
+              metric.primary ? "job-segment-count-primary" : "",
+              metric.warning && !waiting && metric.value > 0
+                ? "job-segment-count-warning"
+                : "",
+            ].filter(Boolean).join(" ")}
+            key={metric.label}
+          >
+            <dt>{metric.label}</dt>
+            <dd>{waiting ? "—" : metric.value}</dd>
+          </div>
+        ))}
+      </dl>
     </section>
   );
 }
@@ -170,7 +194,6 @@ export function ActivityPage() {
                     <SegmentProgress
                       key={segment.segment}
                       segment={segment}
-                      target={job.target_label || jobTitle(job)}
                     />
                   ))}
                 </div>
