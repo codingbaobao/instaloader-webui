@@ -195,6 +195,7 @@ class _FeedState:
     head: MediaCandidate | None = None
     head_cursor: FrozenNodeIterator | None = None
     source_scanned: int = 0
+    existing_boundary_seen: bool = False
 
 
 @dataclass(slots=True)
@@ -350,8 +351,16 @@ class ProfileSyncCoordinator:
                 and state.stop_on_existing
                 and identity not in boundary_exclusions
             ):
-                state.active = False
+                state.existing_boundary_seen = True
             state.source_scanned += 1
+            # Finish the already-loaded first page so pinned or reordered items
+            # cannot hide newer media, but stop before requesting the next page.
+            if (
+                state.stop_on_existing
+                and state.existing_boundary_seen
+                and state.source_scanned >= _CHECKPOINT_PAGE_SIZE
+            ):
+                state.active = False
             if (
                 state.checkpoint_enabled
                 and state.active
