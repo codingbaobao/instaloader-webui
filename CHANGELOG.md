@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.3.0...v0.4.0) (2026-09-09)
+
+
+### Features
+
+* add fair profile sync scheduling and global cooldown ([#15](https://github.com/codingbaobao/instaloader-webui/issues/15)) ([b1eb4b8](https://github.com/codingbaobao/instaloader-webui/commit/b1eb4b80c698a5008a96f65295655a6a6f3bb750))
+* unify profile browsing into feed and stories ([#19](https://github.com/codingbaobao/instaloader-webui/issues/19)) ([0df88d2](https://github.com/codingbaobao/instaloader-webui/commit/0df88d29abb7804fc53c30b42c2f07c2ae6fd269))
+
+
+### Bug Fixes
+
+* improve profile sync activity metrics ([#18](https://github.com/codingbaobao/instaloader-webui/issues/18)) ([177fcbd](https://github.com/codingbaobao/instaloader-webui/commit/177fcbdde9740fc533d6caa3a79dd9855888397e))
+* make profile sync resumable and anchor viewer directly ([#13](https://github.com/codingbaobao/instaloader-webui/issues/13)) ([3adfe03](https://github.com/codingbaobao/instaloader-webui/commit/3adfe0381bdb74dc44e219d2b5a464515aac565e))
+* preserve profile sync after direct media adds ([#20](https://github.com/codingbaobao/instaloader-webui/issues/20)) ([af0b4ff](https://github.com/codingbaobao/instaloader-webui/commit/af0b4ff21c49b1fdaf88173d97499f629bb296ae))
+* resume complete profile feed syncs ([#17](https://github.com/codingbaobao/instaloader-webui/issues/17)) ([253aa22](https://github.com/codingbaobao/instaloader-webui/commit/253aa223f6e5f4fb0c0ba6c09f4ae905ab8778d5))
+* scan first feed page before existing boundary ([#21](https://github.com/codingbaobao/instaloader-webui/issues/21)) ([1f6618e](https://github.com/codingbaobao/instaloader-webui/commit/1f6618effcc29f61079c506b1a973fad17a727d2))
+
 ## [0.3.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.2.0...v0.3.0) (2026-08-05)
 
 
