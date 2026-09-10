@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.4.0...v0.5.0) (2026-09-10)
+
+
+### Features
+
+* add structured job diagnostics ([#22](https://github.com/codingbaobao/instaloader-webui/issues/22)) ([541e640](https://github.com/codingbaobao/instaloader-webui/commit/541e640273cd4049613d2838d62a599b0a0f82a9))
+
 ## [0.4.0](https://github.com/codingbaobao/instaloader-webui/compare/v0.3.0...v0.4.0) (2026-09-09)
 
 
