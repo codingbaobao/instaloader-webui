@@ -3,10 +3,11 @@
 import re
 from dataclasses import dataclass, field
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 _USERNAME_PATTERN = re.compile(r"[A-Za-z0-9._]{1,30}\Z")
 _STORY_MEDIA_ID_PATTERN = re.compile(r"[0-9]{1,32}\Z")
+_CAROUSEL_INDEX_PATTERN = re.compile(r"[1-9][0-9]{0,3}\Z")
 _INSTAGRAM_HOSTS = frozenset({"instagram.com", "www.instagram.com"})
 _INVALID_INPUT_MESSAGE = "Enter a profile, post, reel, TV, or Story URL."
 
@@ -98,9 +99,12 @@ def parse_instagram_input(raw: str) -> InstagramInput:
     if len(path_parts) == 2 and _is_shortcode(path_parts[1]):
         route, shortcode = path_parts
         if route.casefold() in {"p", "tv"}:
+            carousel_suffix = _carousel_index_suffix(parsed.query)
             return PostInput(
                 shortcode=shortcode,
-                canonical_url=f"https://www.instagram.com/p/{shortcode}/",
+                canonical_url=(
+                    f"https://www.instagram.com/p/{shortcode}/{carousel_suffix}"
+                ),
             )
         if route.casefold() == "reel":
             return ReelInput(
@@ -128,3 +132,17 @@ def parse_instagram_input(raw: str) -> InstagramInput:
 
 def _is_shortcode(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value))
+
+
+def _carousel_index_suffix(query: str) -> str:
+    indexes = [
+        value
+        for key, value in parse_qsl(query, keep_blank_values=True)
+        if key == "img_index"
+    ]
+    if (
+        len(indexes) == 1
+        and _CAROUSEL_INDEX_PATTERN.fullmatch(indexes[0]) is not None
+    ):
+        return f"?img_index={indexes[0]}"
+    return ""

@@ -1,7 +1,7 @@
 import { HttpResponse, http } from "msw";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { TestRouter } from "../test/TestRouter";
 import { server } from "../test/server";
@@ -292,6 +292,304 @@ describe("ActivityPage", () => {
       await screen.findByRole("alert"),
     ).toHaveTextContent("Filesystem operation failed: Permission denied.");
     expect(screen.getByText("Failed")).toBeVisible();
+  });
+
+  it("loads structured diagnostics for a failed media item and copies a safe report", async () => {
+    const failedJob = jobFixture({
+      id: "b013f459-6c07-48e5-9a36-265c2a072628",
+      type: "single_media",
+      state: "failed",
+      payload: {
+        input: "https://www.instagram.com/p/DYteeVyEvBu/?sessionid=secret",
+      },
+      progress_current: 1,
+      progress_total: 2,
+      status_text: "Media download failed.",
+      error: "Instagram could not be reached. Try again later.",
+      phase: "processing_feed",
+      target_label: "https://www.instagram.com/p/DYteeVyEvBu/?img_index=1",
+      target_url: "https://www.instagram.com/p/DYteeVyEvBu/?img_index=1",
+      issue_count: 1,
+      completed_at: "2026-09-09T17:34:38Z",
+      updated_at: "2026-09-09T17:34:38Z",
+    });
+    const failedDetail = {
+      ...failedJob,
+      issues: [
+        {
+          identity_type: "shortcode" as const,
+          identity_value: "DYteeVyEvBu",
+          shortcode: "DYteeVyEvBu",
+          story_media_id: null,
+          media_kind: "post" as const,
+          error_code: "instagram_unavailable",
+          safe_message: "Instagram could not be reached. Try again later.",
+          exception_class_chain: ["BadResponseException", "KeyError"],
+          occurred_at: "2026-09-09T17:34:38Z",
+        },
+      ],
+    };
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([failedJob])),
+      ),
+      http.get("/api/jobs/b013f459-6c07-48e5-9a36-265c2a072628", () =>
+        HttpResponse.json(successEnvelope(failedDetail)),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View diagnostic details" }),
+    );
+
+    const diagnostics = await screen.findByRole("region", {
+      name: "Job diagnostic details",
+    });
+    const affectedLink = within(diagnostics).getByRole("link", {
+      name: /instagram\.com\/p\/DYteeVyEvBu\/\?img_index=1/i,
+    });
+    expect(affectedLink).toHaveAttribute(
+      "href",
+      "https://www.instagram.com/p/DYteeVyEvBu/?img_index=1",
+    );
+    expect(screen.getByText("instagram_unavailable")).toBeVisible();
+    expect(screen.getByText("BadResponseException → KeyError")).toBeVisible();
+    expect(screen.getByText("processing_feed")).toBeVisible();
+    expect(screen.getByText("0.4.0")).toBeVisible();
+    expect(screen.getByText("b013f459-6c07-48e5-9a36-265c2a072628")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy debug report" }));
+
+    expect(writeText).toHaveBeenCalledOnce();
+    const report = String(writeText.mock.calls[0][0]);
+    expect(report).toContain(
+      "Affected content: https://www.instagram.com/p/DYteeVyEvBu/?img_index=1",
+    );
+    expect(report).toContain("Error code: instagram_unavailable");
+    expect(report).toContain("Exception classes: BadResponseException → KeyError");
+    expect(report).not.toContain("sessionid=secret");
+    expect(await screen.findByText("Safe debug report copied.")).toBeVisible();
+  });
+
+  it("uses the Instagram profile URL when a failed sync has no media identity", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([
+          jobFixture({
+            state: "failed",
+            target_label: "@katerina.soria",
+            status_text: "Stories sync failed before a media item was identified.",
+            error: "Request failed for /stories?sessionid=profile-secret",
+            phase: "saving_stories",
+            completed_at: "2026-09-09T17:34:38Z",
+            updated_at: "2026-09-09T17:34:38Z",
+          }),
+        ])),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View diagnostic details" }),
+    );
+
+    const diagnostics = screen.getByRole("region", {
+      name: "Job diagnostic details",
+    });
+    expect(screen.getByText("No individual media URL was available when the request failed."))
+      .toBeVisible();
+    expect(screen.getByRole("link", { name: "https://www.instagram.com/katerina.soria/" }))
+      .toHaveAttribute("href", "https://www.instagram.com/katerina.soria/");
+    expect(screen.getByText("saving_stories")).toBeVisible();
+    expect(within(diagnostics).getByText("Error code")).toBeVisible();
+    expect(within(diagnostics).getByText("Exception classes")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Copy debug report" }));
+
+    expect(String(writeText.mock.calls[0][0])).toContain(
+      "Affected profile: https://www.instagram.com/katerina.soria/",
+    );
+    expect(String(writeText.mock.calls[0][0])).not.toContain("profile-secret");
+  });
+
+  it("uses the issue media URL for a failed profile sync", async () => {
+    const failedJob = jobFixture({
+      id: "profile-sync-with-item-issue",
+      type: "profile_sync",
+      state: "failed",
+      target_label: "@katerina.soria",
+      target_url: "https://www.instagram.com/katerina.soria/",
+      status_text: "Profile sync failed.",
+      error: "Instagram could not be reached. Try again later.",
+      phase: "processing_feed",
+      issue_count: 1,
+    });
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([failedJob])),
+      ),
+      http.get("/api/jobs/profile-sync-with-item-issue", () =>
+        HttpResponse.json(successEnvelope({
+          ...failedJob,
+          issues: [
+            {
+              identity_type: "shortcode",
+              identity_value: "EARLIERwarning",
+              shortcode: "EARLIERwarning",
+              story_media_id: null,
+              media_kind: "post",
+              error_code: "media_not_found",
+              safe_message: "Earlier media was unavailable.",
+              exception_class_chain: ["QueryReturnedNotFoundException"],
+              occurred_at: "2026-09-09T17:30:00Z",
+            },
+            {
+              identity_type: "shortcode",
+              identity_value: "DYteeVyEvBu",
+              shortcode: "DYteeVyEvBu",
+              story_media_id: null,
+              media_kind: "post",
+              error_code: "instagram_unavailable",
+              safe_message: "Instagram could not be reached. Try again later.",
+              exception_class_chain: ["BadResponseException"],
+              occurred_at: "2026-09-09T17:34:38Z",
+            },
+          ],
+        })),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View diagnostic details" }),
+    );
+
+    expect(await screen.findByRole("link", {
+      name: "https://www.instagram.com/p/DYteeVyEvBu/",
+    })).toHaveAttribute("href", "https://www.instagram.com/p/DYteeVyEvBu/");
+  });
+
+  it("labels a profile fallback when an issue has no usable media identity", async () => {
+    const failedJob = jobFixture({
+      id: "profile-sync-with-invalid-item-issue",
+      type: "profile_sync",
+      state: "failed",
+      target_label: "@katerina.soria",
+      status_text: "Profile sync failed.",
+      error: "Instagram could not be reached. Try again later.",
+      issue_count: 1,
+    });
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([failedJob])),
+      ),
+      http.get("/api/jobs/profile-sync-with-invalid-item-issue", () =>
+        HttpResponse.json(successEnvelope({
+          ...failedJob,
+          issues: [{
+            identity_type: "story_media_id",
+            identity_value: "not-a-story-id",
+            shortcode: null,
+            story_media_id: "not-a-story-id",
+            media_kind: "story",
+            error_code: "instagram_unavailable",
+            safe_message: "Instagram could not be reached. Try again later.",
+            exception_class_chain: ["BadResponseException"],
+            occurred_at: "2026-09-09T17:34:38Z",
+          }],
+        })),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View diagnostic details" }),
+    );
+
+    expect(await screen.findByText(
+      "No individual media URL was available when the request failed.",
+    )).toBeVisible();
+    expect(screen.getByText("Affected profile")).toBeVisible();
+    expect(screen.getByRole("link", {
+      name: "https://www.instagram.com/katerina.soria/",
+    })).toHaveAttribute("href", "https://www.instagram.com/katerina.soria/");
+  });
+
+  it("does not mislabel an earlier warning as a generic terminal failure", async () => {
+    const failedJob = jobFixture({
+      id: "profile-sync-generic-terminal-failure",
+      type: "profile_sync",
+      state: "failed",
+      target_label: "@katerina.soria",
+      status_text: "Profile sync stopped.",
+      error: "Filesystem operation failed: Permission denied.",
+      issue_count: 1,
+      completed_at: "2026-09-09T17:34:38Z",
+    });
+    server.use(
+      http.get("/api/jobs", () =>
+        HttpResponse.json(successEnvelope([failedJob])),
+      ),
+      http.get("/api/jobs/profile-sync-generic-terminal-failure", () =>
+        HttpResponse.json(successEnvelope({
+          ...failedJob,
+          issues: [{
+            identity_type: "shortcode",
+            identity_value: "EARLIERwarning",
+            shortcode: "EARLIERwarning",
+            story_media_id: null,
+            media_kind: "post",
+            error_code: "media_not_found",
+            safe_message: "Earlier media was unavailable.",
+            exception_class_chain: ["QueryReturnedNotFoundException"],
+            occurred_at: "2026-09-09T17:30:00Z",
+          }],
+        })),
+      ),
+    );
+
+    render(
+      <TestRouter initialPath="/activity" initialSession={authenticatedSession} />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View diagnostic details" }),
+    );
+
+    expect(await screen.findByText(
+      "No individual media URL was available when the request failed.",
+    )).toBeVisible();
+    expect(screen.getByRole("link", {
+      name: "https://www.instagram.com/katerina.soria/",
+    })).toBeVisible();
+    expect(screen.queryByRole("link", {
+      name: "https://www.instagram.com/p/EARLIERwarning/",
+    })).not.toBeInTheDocument();
+    expect(screen.queryByText("media_not_found")).not.toBeInTheDocument();
+    expect(screen.queryByText("QueryReturnedNotFoundException")).not.toBeInTheDocument();
   });
 
   it("loads and shows only safe warning details after expansion", async () => {

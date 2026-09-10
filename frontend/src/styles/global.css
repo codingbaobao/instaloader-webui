@@ -542,6 +542,42 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
 
 .job-issues { margin-top: 17px; padding-top: 15px; border-top: 1px solid #ececec; }
 
+.job-diagnostics { margin-top: 17px; padding-top: 15px; border-top: 1px solid #ececec; }
+
+.job-diagnostics-toggle { color: #8f1b13; }
+
+.job-diagnostics-content { margin-top: 12px; padding: 16px; border: 1px solid #f0b8b3; border-radius: 10px; background: #fff8f7; }
+
+.job-diagnostics-content h3 { margin: 0 0 5px; font-size: 15px; }
+
+.job-diagnostics-content > p { margin-top: 0; }
+
+.job-diagnostics-note { color: #737373 !important; font-size: 13px; }
+
+.job-diagnostics-affected { display: grid; gap: 5px; margin-top: 14px; padding: 12px; border-radius: 8px; background: #fff; }
+
+.job-diagnostics-affected > span, .job-diagnostics-fields dt { color: #737373; font-size: 11px; font-weight: 750; text-transform: uppercase; }
+
+.job-diagnostics-affected a { color: #0064a8; font-size: 13px; overflow-wrap: anywhere; }
+
+.job-diagnostics-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; margin: 16px 0 0; }
+
+.job-diagnostics-fields div { min-width: 0; }
+
+.job-diagnostics-fields dt { margin-bottom: 4px; }
+
+.job-diagnostics-fields dd { margin: 0; overflow-wrap: anywhere; color: #383838; font-size: 13px; line-height: 1.45; }
+
+.job-diagnostics-fields code { font-size: 12px; }
+
+.job-diagnostics-wide { grid-column: 1 / -1; }
+
+.job-diagnostics-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 17px; padding-top: 14px; border-top: 1px solid #f0d7d4; }
+
+.job-diagnostics-footer p { margin: 0; color: #737373; font-size: 12px; }
+
+.job-diagnostics-copy-status { min-height: 18px; margin-top: 7px !important; color: #067647 !important; font-size: 12px; }
+
 .job-issues-toggle { color: #93370d; }
 
 .job-issues-content { margin-top: 12px; }
@@ -749,6 +785,9 @@ h1 { margin-bottom: 12px; font-size: clamp(27px, 5vw, 38px); letter-spacing: -.0
   .job-segment-count:nth-child(3) { padding-left: 0; border-left: 0; }
   .job-issue-fields { grid-template-columns: 1fr; }
   .job-issue-message, .job-issue-chain { grid-column: auto; }
+  .job-diagnostics-fields { grid-template-columns: 1fr; }
+  .job-diagnostics-wide { grid-column: auto; }
+  .job-diagnostics-footer { align-items: stretch; flex-direction: column; }
   .job-result { grid-template-columns: 1fr; }
   .result-actions { grid-column: auto; }
   .followee-import-summary { grid-template-columns: 1fr; }
