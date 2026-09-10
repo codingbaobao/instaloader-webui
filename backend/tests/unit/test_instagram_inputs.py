@@ -76,6 +76,20 @@ def test_parse_instagram_input_normalizes_tv_to_post_url() -> None:
     )
 
 
+def test_parse_instagram_input_preserves_only_a_valid_carousel_index() -> None:
+    parsed = parse_instagram_input(
+        "https://www.instagram.com/p/DYteeVyEvBu/"
+        "?img_index=3&utm_source=ig_web_copy_link&sessionid=secret"
+    )
+
+    assert parsed == PostInput(
+        shortcode="DYteeVyEvBu",
+        canonical_url=(
+            "https://www.instagram.com/p/DYteeVyEvBu/?img_index=3"
+        ),
+    )
+
+
 def test_parse_instagram_input_normalizes_story_url() -> None:
     parsed = parse_instagram_input(
         "https://www.instagram.com/stories/katerina.soria/3952742051065980676?igsh=secret"

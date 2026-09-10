@@ -3,7 +3,9 @@ import { Link } from "react-router-dom";
 
 import { listJobs } from "./api";
 import { formatDate } from "./dateFormatters";
+import { JobDiagnostics } from "./JobDiagnostics";
 import { JobIssues } from "./JobIssues";
+import { canonicalInstagramUrl } from "./instagramUrl";
 import type { JobProgressSegment, JobSummary } from "./types";
 import { usePolling } from "./usePolling";
 
@@ -14,26 +16,6 @@ function jobTitle(job: JobSummary): string {
 function profileId(job: JobSummary): string | null {
   const value = job.payload.profile_id;
   return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function canonicalInstagramUrl(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    const parsed = new URL(value);
-    if (
-      parsed.protocol !== "https:"
-      || parsed.hostname !== "www.instagram.com"
-      || parsed.username
-      || parsed.password
-      || parsed.search
-      || parsed.hash
-    ) {
-      return null;
-    }
-    return parsed.toString();
-  } catch {
-    return null;
-  }
 }
 
 function JobTarget({ job }: Readonly<{ job: JobSummary }>) {
@@ -213,6 +195,7 @@ export function ActivityPage() {
               {job.state === "failed" && job.error ? (
                 <p className="job-error" role="alert">{job.error}</p>
               ) : null}
+              {job.state === "failed" ? <JobDiagnostics job={job} /> : null}
               {job.state === "completed_with_warnings" && job.issue_count > 0 ? (
                 <JobIssues jobId={job.id} issueCount={job.issue_count} />
               ) : null}
